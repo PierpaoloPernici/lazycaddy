@@ -1,0 +1,41 @@
+# Operating system and editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go build and test output
+/bin/
+/build/
+/dist/
+*.test
+*.out
+coverage.out
+coverage.html
+*.prof
+
+# Local tooling and caches
+.cache/
+.tmp/
+tmp/
+debug.log
+
+# lazycaddy runtime state
+.lazycaddy/
+**/.lazycaddy/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+

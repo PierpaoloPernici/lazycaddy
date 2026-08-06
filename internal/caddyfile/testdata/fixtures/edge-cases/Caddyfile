@@ -1,0 +1,11 @@
+# This fixture is intentionally parser-focused and is not required to validate with Caddy.
+
+example.test {
+	# Preserve comments and unusual spacing.
+	custom_plugin_directive "keep this raw"
+
+	route {
+		reverse_proxy localhost:8080
+	}
+}
+

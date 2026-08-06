@@ -1,0 +1,7 @@
+{
+	email admin@example.test
+}
+
+import snippets/security_headers.caddy
+import sites/*.caddy
+
