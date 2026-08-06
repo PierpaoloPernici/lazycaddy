@@ -77,14 +77,22 @@ type ImportGraph struct {
 //   - importing a missing specific file is an error; importing an empty file
 //     is a warning;
 //   - a file importing itself (transitively) and a snippet importing itself
-//     are errors, as are cycles among snippets.
+//     are errors, as are cycles among snippets;
+//   - a parse error in the root document or in any imported file is recorded
+//     in Err; the failing document keeps its own Err as well;
+//   - rootPath is normalized with filepath.Clean so that ./Caddyfile and
+//     root/../root/Caddyfile identify the same document.
 //
 // readFile is injected so resolution is testable without touching the real
 // filesystem and the caller controls access. Resolution never writes.
 func Resolve(rootPath string, rootSrc []byte, readFile func(string) ([]byte, error)) *ImportGraph {
+	rootPath = filepath.Clean(rootPath)
 	g := &ImportGraph{Root: Parse(rootSrc)}
 	g.Root.Path = rootPath
 	g.Documents = []*Document{g.Root}
+	if g.Root.Err != nil {
+		g.setErr("parse error in %s: %v", rootPath, g.Root.Err)
+	}
 
 	snippets := map[string]*Document{}
 	collectSnippets := func(d *Document) {
@@ -160,6 +168,9 @@ func Resolve(rootPath string, rootSrc []byte, readFile func(string) ([]byte, err
 					}
 					doc = Parse(src)
 					doc.Path = p
+					if doc.Err != nil {
+						g.setErr("parse error in %s: %v", p, doc.Err)
+					}
 					loaded[p] = doc
 					g.Documents = append(g.Documents, doc)
 					collectSnippets(doc)

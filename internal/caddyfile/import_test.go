@@ -244,6 +244,84 @@ func TestResolveSnippetRedeclarationIsError(t *testing.T) {
 	}
 }
 
+func TestResolveMalformedRootPropagatesError(t *testing.T) {
+	g := Resolve("root/Caddyfile", []byte("example.test {\n"), fakeFS{}.readFile)
+	if g.Err == nil || !strings.Contains(g.Err.Error(), "unclosed") {
+		t.Fatalf("Err = %v, want the root parse error propagated", g.Err)
+	}
+	if g.Root.Err == nil {
+		t.Errorf("root document must keep its own Err")
+	}
+}
+
+func TestResolveMalformedImportedFilePropagatesError(t *testing.T) {
+	fs := fakeFS{
+		"root/Caddyfile": "import a.caddy\n",
+		"root/a.caddy":   "example.test {\n",
+	}
+	g := Resolve("root/Caddyfile", []byte(fs["root/Caddyfile"]), fs.readFile)
+	if g.Err == nil || !strings.Contains(g.Err.Error(), "unclosed") {
+		t.Fatalf("Err = %v, want the imported file parse error propagated", g.Err)
+	}
+	if !strings.Contains(g.Err.Error(), "a.caddy") {
+		t.Errorf("Err = %v, want it to identify the failing file", g.Err)
+	}
+	if g.Documents[1].Err == nil {
+		t.Errorf("imported document must keep its own Err")
+	}
+}
+
+func TestResolveLexerErrorInImportedFilePropagatesError(t *testing.T) {
+	fs := fakeFS{
+		"root/Caddyfile": "import a.caddy\n",
+		"root/a.caddy":   "respond \"unterminated\n",
+	}
+	g := Resolve("root/Caddyfile", []byte(fs["root/Caddyfile"]), fs.readFile)
+	if g.Err == nil || !strings.Contains(g.Err.Error(), "unterminated") {
+		t.Fatalf("Err = %v, want the lexer error propagated", g.Err)
+	}
+}
+
+func TestResolveNormalizesRootPath(t *testing.T) {
+	fs := fakeFS{
+		"root/Caddyfile":      "import a.caddy\nimport sub/../a.caddy\n",
+		"root/a.caddy":        "respond ok\n",
+		"root/sub/../a.caddy": "unused\n",
+	}
+	src := []byte(fs["root/Caddyfile"])
+	g := Resolve("./root/../root/Caddyfile", src, fs.readFile)
+	if g.Err != nil {
+		t.Fatalf("Resolve returned error: %v", g.Err)
+	}
+	if g.Root.Path != "root/Caddyfile" {
+		t.Errorf("root path = %q, want normalized root/Caddyfile", g.Root.Path)
+	}
+	aDocs := 0
+	for _, d := range g.Documents {
+		if d.Path == "root/a.caddy" {
+			aDocs++
+		}
+	}
+	if aDocs != 1 {
+		t.Errorf("a.caddy loaded %d times, want 1 (root path normalization)", aDocs)
+	}
+	// Both imports must reference the same shared document.
+	if g.Imports[0].Files[0] != g.Imports[1].Files[0] {
+		t.Errorf("normalized imports must share one document")
+	}
+}
+
+func TestResolveCycleViaUnnormalizedRootPath(t *testing.T) {
+	fs := fakeFS{
+		"root/Caddyfile": "import a.caddy\n",
+		"root/a.caddy":   "import ../root/Caddyfile\n",
+	}
+	g := Resolve("./root/../root/Caddyfile", []byte(fs["root/Caddyfile"]), fs.readFile)
+	if g.Err == nil || !strings.Contains(g.Err.Error(), "cycle") {
+		t.Fatalf("Err = %v, want a cycle detected via the normalized root path", g.Err)
+	}
+}
+
 func TestResolveImportWithBlockArgs(t *testing.T) {
 	// The block after import is data, not directives to resolve.
 	src := "example.com {\n\timport hello-world {\n\t\tContent-Type text/html\n\t}\n}\n(hello-world) {\n\t{block}\n}\n"
