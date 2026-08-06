@@ -1,0 +1,134 @@
+# Sanitized homelab fixture derived from a real-world configuration.
+
+{
+	# Exercise global options and nested blocks.
+	servers {
+		protocols h1 h2 h3
+	}
+
+	# Optional global logging configuration.
+	# log {
+	# 	output file /var/log/caddy/access.log {
+	# 		roll_size 10MB
+	# 		roll_keep 5
+	# 		roll_keep_for 720h
+	# 	}
+	# 	format json
+	# 	level ERROR
+	# }
+}
+
+# Standard HTTP reverse proxy snippet.
+(reverse_proxy_http) {
+	reverse_proxy {args[0]} {
+		header_up Upgrade {http.request.header.Upgrade}
+		header_up Connection {http.request.header.Connection}
+		header_up X-Real-IP {remote_host}
+		header_up Host {host}
+	}
+}
+
+# HTTPS reverse proxy snippet for self-signed upstream certificates.
+(reverse_proxy_https) {
+	reverse_proxy {args[0]} {
+		transport http {
+			tls_insecure_skip_verify
+		}
+		header_up Upgrade {http.request.header.Upgrade}
+		header_up Connection {http.request.header.Connection}
+		header_up X-Real-IP {remote_host}
+		header_up Host {host}
+	}
+}
+
+# Wildcard TLS configuration for the sanitized example domain.
+*.example.test {
+	tls {
+		# Requires a Caddy build with the Cloudflare DNS module.
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+		protocols tls1.2 tls1.3
+	}
+
+	header {
+		# Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
+# Individual services.
+adguard1.example.test {
+	import reverse_proxy_http 192.0.2.4:80
+}
+
+adguard2.example.test {
+	import reverse_proxy_http 192.0.2.4:80
+}
+
+dns.example.test {
+	import reverse_proxy_http 192.0.2.4:80
+}
+
+grafana.example.test {
+	import reverse_proxy_http 192.0.2.6:3000
+}
+
+pbs.example.test {
+	import reverse_proxy_https https://192.0.2.7:8007
+}
+
+pxe.example.test {
+	import reverse_proxy_https https://192.0.2.2:8006
+}
+
+router.example.test {
+	import reverse_proxy_https https://192.0.2.1
+}
+
+zb.example.test {
+	import reverse_proxy_http 192.0.2.245:80
+}
+
+tower.example.test {
+	import reverse_proxy_http 192.0.2.6:80
+}
+
+rock.example.test {
+	import reverse_proxy_http 192.0.2.225:80
+}
+
+roon.example.test {
+	import reverse_proxy_http 192.0.2.8:3001
+}
+
+couchdb.example.test {
+	import reverse_proxy_http 198.51.100.14:5984
+}
+
+crawl.example.test {
+	reverse_proxy 192.0.2.8:11235
+}
+
+mao.example.test {
+	reverse_proxy http://198.51.100.3:9199
+}
+
+browse.example.test {
+	reverse_proxy 192.0.2.8:9377 {
+		header_up Host {upstream_hostport}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		flush_interval -1
+		health_uri /health
+		health_interval 10s
+		health_timeout 5s
+	}
+}
+
+search.example.test {
+	# Keep this comment to exercise comments near an import.
+	import reverse_proxy_http 192.0.2.8:8080
+}
+
