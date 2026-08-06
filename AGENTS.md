@@ -56,9 +56,52 @@ When a task affects parsing, directives, modules, runtime integration, the Admin
 
 Use releases and official documentation as authoritative. Treat Issues, pull requests and forum discussions as signals that must be verified before changing behavior. For each relevant Caddy release, check parser fixtures, source-range patching, Admin API behavior, capability detection, structured UI summaries, regression tests and supported-version documentation. Preserve unknown directives even when support for their semantics is not yet implemented.
 
-## Commit & Pull Request Guidelines
+## Git, Commit, Pull Request, and Merge Workflow
 
-Use short imperative commit subjects, preferably Conventional Commit style (for example, `feat: add source range parser`). PRs should explain the change, list tests, document safety implications, and attach terminal screenshots for UI changes.
+Before the 1.0 release, `main` is the maintainer's active integration branch and
+direct pushes are allowed while the project is developed by a single maintainer.
+Feature branches and pull requests are still recommended for substantial or
+isolated changes. Before the project approaches 1.0, enable branch protection so
+all changes go through a pull request and the required GitHub Actions check
+named `test` passes before merging.
+
+### Branches
+
+- Start from an up-to-date `main` branch.
+- Use a focused branch for each change, with a descriptive prefix such as `feat/`, `fix/`, `docs/`, `test/`, or `chore/`.
+- Before 1.0, direct work on `main` is allowed for small, local changes. Use a
+  focused branch for substantial changes, experiments, UI work or changes that
+  benefit from an isolated review.
+- Keep unrelated work out of the branch. If the scope changes materially, create a separate branch or pull request.
+
+### Commits
+
+- Use short, imperative English subjects in Conventional Commit style, for example `feat: add source range parser`.
+- Keep commits focused and logically reviewable. Do not mix formatting-only changes with feature work unless required.
+- Before committing, inspect the diff and run `make check` plus `git diff --check`.
+- Never commit secrets, real credentials, private homelab data, generated binaries, or temporary files.
+- Do not create a local merge commit on `main` for work that is intended to be delivered through a pull request.
+
+### Pull requests
+
+- When using a feature branch, push it to `origin` and open a pull request
+  targeting `main`.
+- Write the title and description in English. The description must explain the motivation, summarize the changes, list verification commands and results, and document safety implications.
+- UI changes should include a terminal screenshot or recording when it helps reviewers evaluate the result.
+- Wait for the `test` status check to complete successfully when using a pull
+  request. A local test run does not replace CI verification.
+- If a check remains `Expected` or `Waiting for status to be reported`, inspect the Actions run and repository status before merging. Do not bypass the protection or invent a successful status; retry the workflow or push a harmless new commit only when appropriate.
+- Resolve review comments and merge the pull request through GitHub when a PR is
+  being used. Before 1.0, do not create unnecessary local merge commits merely
+  to simulate a pull request workflow.
+
+### After merging
+
+- Update the local repository with `git fetch origin` after a remote merge or
+  when switching back from a feature branch.
+- Ensure the working tree is clean, then align local `main` with `origin/main`.
+- Delete the local and remote feature branches only after confirming that the pull request is merged and no unique work remains.
+- Keep active Dependabot branches until their pull requests are merged or closed.
 
 ## Security & Configuration Tips
 

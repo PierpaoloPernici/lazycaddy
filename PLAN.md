@@ -21,8 +21,8 @@ The UI must never reload Caddy implicitly after an edit.
 
 ## Current implementation status
 
-The repository has completed the configuration-engine spike and is ready to
-start the first read-only TUI vertical slice.
+The repository has completed the configuration-engine spike and the first
+read-only TUI vertical slice.
 
 Completed:
 
@@ -38,11 +38,15 @@ Completed:
   snippet precedence, warnings, duplicate detection and cycle detection;
 - propagation of root and imported-document parse errors;
 - formatter, test and vet commands plus GitHub Actions configuration.
+- testable application state and a read-only Bubble Tea inspector with
+  document/site navigation, raw source viewing and parse-error fallback;
+- CLI configuration loading with an explicit read-only mode and no file writes
+  or Caddy daemon dependency.
 
 Next milestone:
 
-- integrate the parser and import graph into a testable application state model
-  and a minimal read-only Bubble Tea inspector.
+- add formatting, validation and diff workflows around a temporary working
+  copy.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -270,14 +274,14 @@ lossless parser and patcher spike
 - [x] Choose Go as the implementation language and establish module/toolchain versions.
 - [x] Complete a lossless-editing spike before building the full TUI: parse representative fixtures, identify exact source ranges and patch one directive without changing any unrelated byte.
 - [x] Cover imports, comments, nested blocks, malformed input and unknown/plugin directives with golden fixtures during the spike.
-- [ ] Add a minimal TUI shell, configuration loading flags and a testable application state model.
+- [x] Add a minimal TUI shell, configuration loading flags and a testable application state model.
 - [x] Add CI for formatting, static analysis and unit tests.
 
 Acceptance: the spike proves targeted byte-preserving patches across the fixture corpus; the binary starts, shows a helpful empty state, exits cleanly and has deterministic unit tests.
 
-Status: the lossless parser, patcher and import resolver parts of Phase 0 are
-complete. The TUI shell and application state model remain before Phase 0 is
-fully complete.
+Status: Phase 0 is complete. The lossless parser, patcher, import resolver,
+TUI shell and application state model are implemented and covered by local
+tests and CI.
 
 ### v0.1 — read-only inspector with a safe vertical slice
 
@@ -379,3 +383,16 @@ Add an end-to-end test using a fake Caddy command and fake Admin API. Tests must
 - No operation writes or reloads without an automated test covering its guard.
 - Documentation explains configuration discovery, Admin API permissions, backup location and recovery.
 - Errors identify the failed operation and provide a safe next action.
+
+## Repository delivery policy
+
+Until the 1.0 release, this is a single-maintainer project and direct pushes to
+`main` are allowed. Feature branches and pull requests remain recommended for
+substantial, isolated or review-sensitive changes, and CI must remain green on
+every integrated change.
+
+Before the project approaches 1.0, enable branch protection and require all
+changes to go through pull requests targeting `main`, with the GitHub Actions
+check named `test` passing before merge. Local `main` must be synchronized with
+`origin/main` after remote merges. Detailed operating instructions live in
+`AGENTS.md`.
