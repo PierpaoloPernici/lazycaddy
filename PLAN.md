@@ -19,6 +19,35 @@ The UI must never reload Caddy implicitly after an edit.
 
 `lazycaddy` is not a web GUI or a greenfield configuration generator. The raw Caddyfile must remain accessible, and every structured view is a projection over the user's existing source rather than a replacement for it.
 
+## Current implementation status
+
+The repository has completed the configuration-engine spike and is ready to
+start the first read-only TUI vertical slice.
+
+Completed:
+
+- Go module, repository scaffold, development commands and CI checks;
+- representative sanitized Caddyfile fixtures, including homelab, imports,
+  snippets, nested blocks and unknown directives;
+- lossless lexer with comments, quotes, backticks, heredocs, escaped newlines,
+  CRLF, BOM and exact token offsets;
+- token-driven parser and source ranges for global options, sites, snippets,
+  named routes, nested directives and brace-less single-site files;
+- byte-preserving range patching with invalid-range guards;
+- import resolver with separate documents, relative paths, sorted globs,
+  snippet precedence, warnings, duplicate detection and cycle detection;
+- propagation of root and imported-document parse errors;
+- formatter, test and vet commands plus GitHub Actions configuration.
+
+Next milestone:
+
+- integrate the parser and import graph into a testable application state model
+  and a minimal read-only Bubble Tea inspector.
+
+The resolver intentionally records snippet arguments and `{block}` data without
+substituting them yet. That expansion belongs to a later milestone and must not
+change the original source documents.
+
 ## Scope for the first release
 
 ### In scope
@@ -238,18 +267,24 @@ lossless parser and patcher spike
 
 ### Phase 0 — bootstrap
 
-- Choose Go as the implementation language and establish module/toolchain versions.
-- Complete a lossless-editing spike before building the full TUI: parse representative fixtures, identify exact source ranges and patch one directive without changing any unrelated byte.
-- Cover imports, comments, nested blocks, malformed input and unknown/plugin directives with golden fixtures during the spike.
-- Add a minimal TUI shell, configuration loading flags and a testable application state model.
-- Add CI for formatting, static analysis and unit tests.
+- [x] Choose Go as the implementation language and establish module/toolchain versions.
+- [x] Complete a lossless-editing spike before building the full TUI: parse representative fixtures, identify exact source ranges and patch one directive without changing any unrelated byte.
+- [x] Cover imports, comments, nested blocks, malformed input and unknown/plugin directives with golden fixtures during the spike.
+- [ ] Add a minimal TUI shell, configuration loading flags and a testable application state model.
+- [x] Add CI for formatting, static analysis and unit tests.
 
 Acceptance: the spike proves targeted byte-preserving patches across the fixture corpus; the binary starts, shows a helpful empty state, exits cleanly and has deterministic unit tests.
 
+Status: the lossless parser, patcher and import resolver parts of Phase 0 are
+complete. The TUI shell and application state model remain before Phase 0 is
+fully complete.
+
 ### v0.1 — read-only inspector with a safe vertical slice
 
-- Load a configured or default Caddyfile path and resolve imports.
-- Parse site blocks/common directives with source ranges and opaque nodes.
+- [ ] Load a configured or default Caddyfile path and resolve imports. The
+  resolver engine is complete; application integration is pending.
+- [ ] Parse site blocks/common directives with source ranges and opaque nodes.
+  The parser engine is complete; application integration is pending.
 - Show sites, raw source, search, basic runtime/version information and diagnostics.
 - Detect capabilities and fall back to read-only mode without blocking inspection.
 - Support `$EDITOR`, temporary-file formatting and validation.
