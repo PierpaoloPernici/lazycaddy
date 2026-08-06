@@ -1,5 +1,9 @@
 # lazycaddy
 
+<p align="center">
+  <img src="docs/assets/lazycaddy-logo.png" alt="lazycaddy logo" width="280">
+</p>
+
 > The lazier way to manage your Caddyfile.
 
 lazycaddy is a keyboard-first terminal user interface for inspecting and managing Caddy while preserving the Caddyfile as the source of truth.
@@ -35,4 +39,3 @@ The first implementation milestone is a lossless Caddyfile parser and patcher. T
 ## License
 
 See [LICENSE](LICENSE).
-
