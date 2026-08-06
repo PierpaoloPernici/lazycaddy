@@ -17,14 +17,6 @@ func loadFixture(t *testing.T, name string) []byte {
 	return src
 }
 
-// walkNodes visits every node in the tree, including children.
-func walkNodes(nodes []Node, fn func(Node)) {
-	for _, n := range nodes {
-		fn(n)
-		walkNodes(n.Children, fn)
-	}
-}
-
 // countDirectives returns the number of directives with the given name.
 func countDirectives(nodes []Node, name string) int {
 	count := 0

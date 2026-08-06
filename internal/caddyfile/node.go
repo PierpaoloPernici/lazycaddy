@@ -58,3 +58,11 @@ type Node struct {
 func (n Node) IsDirective(name string) bool {
 	return n.Kind == KindDirective && n.Name == name
 }
+
+// walkNodes visits every node in the tree, including children.
+func walkNodes(nodes []Node, fn func(Node)) {
+	for _, n := range nodes {
+		fn(n)
+		walkNodes(n.Children, fn)
+	}
+}
