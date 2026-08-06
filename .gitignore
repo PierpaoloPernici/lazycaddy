@@ -39,3 +39,6 @@ debug.log
 *.p12
 *.pfx
 
+
+# Local tool configuration
+reasonix.toml

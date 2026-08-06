@@ -10,6 +10,10 @@ import (
 type Document struct {
 	Source []byte
 	Nodes  []Node
+	// Path is the filesystem path this document was loaded from, when known.
+	// Imported files keep their own Path so every edit identifies the exact
+	// file it changes.
+	Path string
 	// Err is the first structural or lexing error found, if any. Nodes are
 	// still returned so the raw file view stays available and the failing
 	// range can be identified.
