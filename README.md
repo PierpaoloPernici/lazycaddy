@@ -34,7 +34,46 @@ Run checks:
 make check
 ~~~
 
-The lossless Caddyfile parser and patcher are complete. The current milestone is a read-only inspector with an opt-in format and validate workflow: the TUI loads a Caddyfile, resolves imports, lists sites and raw source, and runs `caddy fmt` and `caddy validate` (`v`) against a temporary working copy, surfacing structured diagnostics in a compact list with a full detail view.
+## Current status
+
+The lossless Caddyfile parser and patcher are complete. The current vertical
+slice is a read-only inspector with an opt-in format, validate, diff and save
+workflow:
+
+- load a Caddyfile and resolve nested imports while keeping imported files as
+  separate documents;
+- browse sites, directives, parse errors and raw source without discarding
+  comments, whitespace or unknown directives;
+- run `caddy fmt` and `caddy validate` (`v`) against a temporary working copy,
+  with structured diagnostics and a detailed view;
+- review a colored unified diff (`D`) before applying formatting changes;
+- save only after successful validation (`s` in writable mode), creating a
+  timestamped backup and replacing the source through a same-directory atomic
+  write;
+- detect external changes before saving and report a recovery backup if a
+  write fails after backup creation.
+
+The application is read-only by default and never reloads Caddy implicitly.
+The current release does not yet include Admin API reload or loaded-state
+verification, `$EDITOR` round-trips, search, runtime information or log views.
+
+### Safe change workflow
+
+```text
+load -> edit working copy -> format and validate -> review diff
+  -> confirm -> create backup -> atomic save
+```
+
+To enable formatting and validation, provide the Caddy binary explicitly:
+
+~~~sh
+go run ./cmd/lazycaddy --config ./Caddyfile --caddy-path /usr/bin/caddy
+~~~
+
+To enable saving, add `--write`. The default backup directory is
+`<config-dir>/.lazycaddy/backups`; it can be overridden with `--backup-dir`.
+Validation and saving use temporary or atomic file operations and do not
+require a running Caddy daemon.
 
 ## License
 
