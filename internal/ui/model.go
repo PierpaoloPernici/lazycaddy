@@ -14,6 +14,7 @@ import (
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
+	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
@@ -94,6 +95,13 @@ type Model struct {
 	diagnostics     []validator.Diagnostic
 	diagCursor      int
 
+	// Diff modal state. The modal is shown when showDiff is true;
+	// diffLines and diffTitle are populated while the modal is open.
+	showDiff     bool
+	diffViewport viewport.Model
+	diffLines    []diff.Line
+	diffTitle    string
+
 	// validatorTimeout is read from settings on Load and is the timeout
 	// applied to each format+validate invocation. Zero means "no extra
 	// timeout on top of the validator package default (5s)".
@@ -111,6 +119,7 @@ func New(loader app.Loader, formatter app.Formatter) *Model {
 		collapsed:      map[string]bool{},
 		viewport:       viewport.New(1, 1),
 		detailViewport: viewport.New(1, 1),
+		diffViewport:   viewport.New(1, 1),
 	}
 }
 
@@ -150,6 +159,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The diff modal takes precedence over the main keymap.
+	if m.showDiff {
+		return m.updateDiffKey(msg)
+	}
 	// The diagnostics modal takes precedence over every other key.
 	if m.showDiagnostics {
 		return m.updateDiagnosticsKey(msg)
@@ -174,6 +187,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.PageDown()
 	case "v":
 		return m.startFormatAndValidate()
+	case "D":
+		return m.startDiff()
 	}
 	return m, nil
 }
@@ -437,6 +452,121 @@ func (m *Model) closeDiagnostics() {
 	m.diagCursor = 0
 }
 
+// startDiff opens the unified diff modal comparing the original root
+// source with the formatted working copy. It is a no-op when no
+// configuration is loaded or no working copy exists yet; on error the
+// failure is surfaced in the status line. The modal is allowed even
+// when validation previously failed or a validation is still in
+// flight, because the working copy is retained in both cases.
+func (m *Model) startDiff() (tea.Model, tea.Cmd) {
+	if m.state == nil || m.state.Graph == nil {
+		return m, nil
+	}
+	if m.workingBytes == nil {
+		m.statusMessage = "no working copy — press v to format & validate first"
+		return m, nil
+	}
+	lines, err := diff.Unified(
+		m.state.Graph.Root.Source,
+		m.workingBytes,
+		m.state.Settings.ConfigPath,
+		m.state.Settings.ConfigPath+" (formatted)",
+	)
+	if err != nil {
+		m.statusMessage = "✗ diff failed: " + err.Error()
+		return m, nil
+	}
+	m.diffLines = lines
+	m.diffTitle = "Diff · " + m.state.Settings.ConfigPath
+	m.showDiff = true
+	m.syncDiffContent()
+	m.diffViewport.GotoTop()
+	return m, nil
+}
+
+// updateDiffKey handles keys when the diff modal is open. Esc and q
+// close the modal; the arrow keys and PgUp/PgDown scroll the viewport.
+func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.closeDiff()
+	case "up", "k":
+		m.diffViewport.LineUp(1)
+	case "down", "j":
+		m.diffViewport.LineDown(1)
+	case "pgup":
+		m.diffViewport.PageUp()
+	case "pgdown":
+		m.diffViewport.PageDown()
+	}
+	return m, nil
+}
+
+// closeDiff dismisses the diff modal and clears its state. Called by
+// Esc and q from inside the modal.
+func (m *Model) closeDiff() {
+	m.showDiff = false
+	m.diffLines = nil
+	m.diffTitle = ""
+	m.diffViewport.SetContent("")
+}
+
+// syncDiffContent sets the diff viewport size and content from the
+// current state. The body is rebuilt only when the size changes:
+// rebuilding resets the viewport scroll, so doing it on every render
+// would make PgUp / PgDown unusable.
+func (m *Model) syncDiffContent() {
+	paneContentW := m.width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	bodyW := paneContentW - 2 // padding (1 each side)
+	if bodyW < 1 {
+		bodyW = 1
+	}
+	bodyH := m.paneHeight() - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	m.diffViewport.Width = bodyW
+	m.diffViewport.Height = bodyH
+	m.diffViewport.SetContent(m.diffBody(bodyW))
+}
+
+// diffBody returns the colored, width-truncated content for the diff
+// viewport. When the diff contains no additions, removals or hunk
+// headers, it returns a dim "no changes" message instead.
+func (m *Model) diffBody(bodyW int) string {
+	hasChanges := false
+	for _, line := range m.diffLines {
+		switch line.Kind {
+		case diff.KindAdd, diff.KindRemove, diff.KindHunkHeader:
+			hasChanges = true
+		}
+	}
+	if !hasChanges {
+		return dimStyle.Render("no changes — the working copy matches the source")
+	}
+	var b strings.Builder
+	for _, line := range m.diffLines {
+		text := truncateToWidth(line.Text, bodyW)
+		switch line.Kind {
+		case diff.KindAdd:
+			b.WriteString(diffAddStyle.Render(text))
+		case diff.KindRemove:
+			b.WriteString(diffRemoveStyle.Render(text))
+		case diff.KindHunkHeader:
+			b.WriteString(diffHunkStyle.Render(text))
+		case diff.KindFileHeader:
+			b.WriteString(diffFileStyle.Render(text))
+		default:
+			b.WriteString(text)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // View implements tea.Model.
 func (m *Model) View() string {
 	if m.state == nil && m.err == nil {
@@ -471,7 +601,10 @@ func (m *Model) View() string {
 		b.WriteString(m.statusLine(width))
 		b.WriteString("\n")
 	}
-	if m.showDiagnostics {
+	if m.showDiff {
+		b.WriteString(m.diffView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showDiagnostics {
 		if m.showDetail {
 			b.WriteString(m.diagnosticDetailView(width, paneH))
 		} else {
@@ -683,14 +816,16 @@ func (m *Model) footer(width int) string {
 	// never shows keys that are not active in the current context.
 	var keys string
 	switch {
+	case m.showDiff:
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.showDetail:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
 	case m.showDiagnostics:
 		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · q quit · %d items", len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · q quit · %d items", len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · q quit"
 	}
 	return statusLineStyle.Width(width).Render(keys)
 }
@@ -789,6 +924,29 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	return paneStyle.Width(paneContentW).Height(height).Render(
 		title + "\n" + m.detailViewport.View(),
 	)
+}
+
+// diffView renders the unified diff modal. The content is only rebuilt
+// when the body height changes, so scrolling with PgUp/PgDown is
+// preserved across renders.
+func (m *Model) diffView(width, height int) string {
+	title := m.diffTitle + " · Esc close"
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	// Re-sync only when the size has changed since the last set
+	// (e.g. the terminal was resized while the diff modal was open).
+	// Re-syncing resets the scroll; doing it on every render would
+	// make PgUp / PgDown unusable.
+	if m.diffViewport.Height != bodyH {
+		m.syncDiffContent()
+	}
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.diffViewport.View())
 }
 
 // wrapText wraps text to fit within the given cell width, breaking on
