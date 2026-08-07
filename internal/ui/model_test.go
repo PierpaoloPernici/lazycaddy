@@ -162,6 +162,16 @@ func fsReader(fs map[string]string) app.FileReader {
 	}
 }
 
+// ansiRe matches ANSI escape sequences emitted by lipgloss styles.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+
+// stripANSI removes ANSI escape sequences so assertions can match the
+// visible text of a rendered view. It is a no-op when the environment does
+// not emit ANSI (non-TTY test runs).
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
+}
+
 func TestModelRendersDocumentTree(t *testing.T) {
 	fs := map[string]string{
 		"config/Caddyfile":     "import sites/a.caddy\n",
@@ -184,12 +194,12 @@ func TestModelRendersDocumentTree(t *testing.T) {
 	}
 	// The source pane shows the selected document: the root at first, and
 	// the imported file once the cursor moves to it.
-	if !strings.Contains(view, "import sites/a.caddy") {
+	if !strings.Contains(stripANSI(view), "import sites/a.caddy") {
 		t.Errorf("View missing the root source text")
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(m.View(), "respond ok") {
+	if !strings.Contains(stripANSI(m.View()), "respond ok") {
 		t.Errorf("View missing the imported file's raw source text")
 	}
 }
@@ -265,17 +275,19 @@ func TestModelParseErrorKeepsRawView(t *testing.T) {
 		t.Errorf("View missing the PARSE ERROR marker")
 	}
 	// The raw source view stays available, preserving the unknown directive
-	// and the malformed region byte-for-byte.
+	// and the malformed region byte-for-byte. ANSI styling is injected
+	// between tokens, so match against the stripped visible text.
+	visible := stripANSI(view)
 	for _, want := range []string{
 		"custom_plugin_directive",
 		`"keep this raw"`,
 		"example.test {",
 	} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(visible, want) {
 			t.Errorf("View missing raw source %q:\n%s", want, view)
 		}
 	}
-	if !strings.Contains(view, "1│") || !strings.Contains(view, "2│") {
+	if !strings.Contains(visible, "1│") || !strings.Contains(visible, "2│") {
 		t.Errorf("View missing line numbers:\n%s", view)
 	}
 }
@@ -287,7 +299,7 @@ func TestModelUnknownDirectivePreserved(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30) // wide window so source lines are not truncated
 	view := m.View()
-	if !strings.Contains(view, "custom_plugin_directive \"keep this raw\"") {
+	if !strings.Contains(stripANSI(view), "custom_plugin_directive \"keep this raw\"") {
 		t.Errorf("unknown directive not preserved in the view:\n%s", view)
 	}
 }
@@ -398,10 +410,11 @@ func TestModelSelectionJumpsToNodeStartLine(t *testing.T) {
 		t.Errorf("YOffset = 0, want a reveal of pbs.example.test (line 74)")
 	}
 	view := m.View()
-	if !strings.Contains(view, "pbs.example.test {") {
+	visible := stripANSI(view)
+	if !strings.Contains(visible, "pbs.example.test {") {
 		t.Errorf("selected block not visible after the reveal:\n%s", view)
 	}
-	if strings.Contains(view, "respond ok") {
+	if strings.Contains(visible, "respond ok") {
 		t.Errorf("document start still visible after the reveal (viewport must be scrolled down)")
 	}
 }
@@ -452,7 +465,7 @@ func TestModelRevealScrollsBackUpWhenBlockAbove(t *testing.T) {
 	if m.viewport.YOffset != 0 {
 		t.Errorf("YOffset = %d, want the block above the viewport revealed at the top", m.viewport.YOffset)
 	}
-	if !strings.Contains(m.View(), "respond ok") {
+	if !strings.Contains(stripANSI(m.View()), "respond ok") {
 		t.Errorf("first site not visible after scrolling back up")
 	}
 }
@@ -470,9 +483,8 @@ func TestModelLayoutFitsWindowWidth(t *testing.T) {
 	m = resize(m, 100, 20)
 
 	view := m.View()
-	var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 	for i, line := range strings.Split(view, "\n") {
-		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 100 {
+		if w := lipgloss.Width(stripANSI(line)); w > 100 {
 			t.Errorf("rendered line %d is %d columns wide, exceeds the 100-column window:\n%s", i+1, w, line)
 		}
 	}
@@ -937,9 +949,8 @@ func TestModelDiagnosticsView_LongMessageTruncated(t *testing.T) {
 	if !strings.Contains(view, "…") {
 		t.Errorf("expected the long message to be truncated with '…', view:\n%s", view)
 	}
-	ansi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 	for i, line := range strings.Split(view, "\n") {
-		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 60 {
+		if w := lipgloss.Width(stripANSI(line)); w > 60 {
 			t.Errorf("rendered line %d is %d columns wide, exceeds the 60-column window:\n%s", i+1, w, line)
 		}
 	}
@@ -1076,9 +1087,8 @@ func TestModelDiagnosticsDetail_LongMessageWraps(t *testing.T) {
 	m.Update(cmd())
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view := m.View()
-	ansi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 	for i, line := range strings.Split(view, "\n") {
-		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 60 {
+		if w := lipgloss.Width(stripANSI(line)); w > 60 {
 			t.Errorf("rendered line %d is %d columns wide, exceeds the 60-column window:\n%s", i+1, w, line)
 		}
 	}
@@ -1498,9 +1508,8 @@ func TestModelDiff_LongLineTruncated(t *testing.T) {
 	if !strings.Contains(view, strings.Repeat("a", 20)) {
 		t.Errorf("View missing the long line content, got:\n%s", view)
 	}
-	ansi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 	for i, line := range strings.Split(view, "\n") {
-		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 60 {
+		if w := lipgloss.Width(stripANSI(line)); w > 60 {
 			t.Errorf("rendered line %d is %d columns wide, exceeds the 60-column window:\n%s", i+1, w, line)
 		}
 	}

@@ -1423,14 +1423,8 @@ func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 	return items
 }
 
-func numberedSource(src []byte) string {
-	if len(src) == 0 {
-		return dimStyle.Render("(empty source — raw view still available)")
-	}
-	lines := strings.Split(string(src), "\n")
-	var b strings.Builder
-	for i, ln := range lines {
-		fmt.Fprintf(&b, "%4d│ %s\n", i+1, ln)
-	}
-	return b.String()
-}
+// numberedSource renders the source pane content: line numbers, the exact
+// source bytes and syntax highlighting. It is a thin wrapper around
+// highlightSource; the signature is unchanged because syncSource calls it by
+// name for the viewport content.
+func numberedSource(src []byte) string { return highlightSource(src) }
