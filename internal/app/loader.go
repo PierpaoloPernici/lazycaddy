@@ -1,8 +1,3 @@
-// Package app owns the application state and orchestration: loading a
-// Caddyfile, resolving its imports and exposing the resulting state to the
-// UI through a small interface. The package never writes files, never
-// executes commands and never talks to Caddy; read access is injected as a
-// plain function so the whole layer is testable without a real filesystem.
 package app
 
 import (

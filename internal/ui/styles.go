@@ -19,6 +19,11 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color("15")).
 			Background(lipgloss.Color("238"))
+	writableBadge = lipgloss.NewStyle().
+			Bold(true).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("28"))
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203")).
 			Padding(0, 1)
