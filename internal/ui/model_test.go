@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -71,6 +72,23 @@ func (f *fakeSaver) Save(ctx context.Context, path string, original, working []b
 	return f.result, f.err
 }
 
+// fakeReloader is a programmable app.Reloader for tests. It records the
+// path and saved bytes of the last Reload call.
+type fakeReloader struct {
+	result        app.ReloadResult
+	err           error
+	calls         int
+	capturedPath  string
+	capturedSaved []byte
+}
+
+func (f *fakeReloader) Reload(ctx context.Context, path string, saved []byte) (app.ReloadResult, error) {
+	f.calls++
+	f.capturedPath = path
+	f.capturedSaved = saved
+	return f.result, f.err
+}
+
 type noSuchFile struct{ path string }
 
 func (e *noSuchFile) Error() string { return "no such file: " + e.path }
@@ -98,22 +116,25 @@ func writableStateFor(t *testing.T, path, backupDir string, readFile app.FileRea
 	return state
 }
 
-// newLoadedModel builds a Model from loader with an optional
-// formatter and saver. The variadic options accept either an
-// app.Formatter, an app.Saver, both, or neither.
+// newLoadedModel builds a Model from loader with optional formatter,
+// saver and reloader. The variadic options accept an app.Formatter, an
+// app.Saver, an app.Reloader, any combination, or none.
 func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	t.Helper()
 	var f app.Formatter
 	var s app.Saver
+	var r app.Reloader
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		case app.Formatter:
 			f = v
 		case app.Saver:
 			s = v
+		case app.Reloader:
+			r = v
 		}
 	}
-	m := New(loader, f, s)
+	m := New(loader, f, s, r)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -286,7 +307,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -542,7 +563,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -1866,5 +1887,469 @@ func TestModelHeader_WriteModeBadge(t *testing.T) {
 	}
 	if !strings.Contains(view, "WRITE") {
 		t.Errorf("View should show WRITE badge in write mode:\n%s", view)
+	}
+}
+
+// TestModelReload_NoReloaderShowsHint verifies that pressing r without
+// a configured reloader surfaces a status hint and does not open the
+// confirmation modal.
+func TestModelReload_NoReloaderShowsHint(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}) // no reloader
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd != nil {
+		t.Errorf("expected nil cmd when reloader is nil, got %v", cmd)
+	}
+	if !strings.Contains(m.statusMessage, "reload unavailable") {
+		t.Errorf("statusMessage = %q, want reload unavailable hint", m.statusMessage)
+	}
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true, want false without reloader")
+	}
+}
+
+// TestModelReload_NoWorkingCopyShowsHint verifies that pressing r
+// before a working copy exists surfaces a status hint instead of
+// opening the confirmation modal.
+func TestModelReload_NoWorkingCopyShowsHint(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, reloader)
+	m = resize(m, 80, 24)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true, want false before validation")
+	}
+	if !strings.Contains(m.statusMessage, "working copy") {
+		t.Errorf("statusMessage = %q, want working copy hint", m.statusMessage)
+	}
+	if reloader.calls != 0 {
+		t.Errorf("reloader.calls = %d, want 0", reloader.calls)
+	}
+}
+
+// TestModelReload_NotValidatedBlocks verifies that a failed validation
+// marks the working copy as invalid and prevents the reload
+// confirmation from opening.
+func TestModelReload_NotValidatedBlocks(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("formatted"), err: errors.New("caddy exit 1")}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true, want false after failed validation")
+	}
+	if !strings.Contains(m.statusMessage, "validation failed") {
+		t.Errorf("statusMessage = %q, want validation failure", m.statusMessage)
+	}
+	if reloader.calls != 0 {
+		t.Errorf("reloader.calls = %d, want 0", reloader.calls)
+	}
+}
+
+// TestModelReload_UnsavedChangesBlock verifies that a working copy that
+// differs from the file on disk (not yet saved) blocks reload with a
+// "save first" hint.
+func TestModelReload_UnsavedChangesBlock(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true, want false when working copy differs from disk")
+	}
+	if !strings.Contains(m.statusMessage, "save") {
+		t.Errorf("statusMessage = %q, want hint about saving first", m.statusMessage)
+	}
+	if reloader.calls != 0 {
+		t.Errorf("reloader.calls = %d, want 0", reloader.calls)
+	}
+}
+
+// TestModelReload_AlreadyLoadedBlocks verifies that a second r press
+// after a successful reload is a no-op with an "already loaded" hint.
+func TestModelReload_AlreadyLoadedBlocks(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{result: app.ReloadResult{Endpoint: "http://localhost:2019", LoadedAt: time.Now()}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	m.Update(cmd()) // deliver the successful reload result
+	if m.loaded != loadedMatches {
+		t.Fatalf("precondition: loaded = %v, want loadedMatches", m.loaded)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true, want false when already loaded")
+	}
+	if !strings.Contains(m.statusMessage, "already loaded") {
+		t.Errorf("statusMessage = %q, want already-loaded hint", m.statusMessage)
+	}
+	if reloader.calls != 1 {
+		t.Errorf("reloader.calls = %d, want 1 (second r must not trigger a reload)", reloader.calls)
+	}
+}
+
+// TestModelReload_OpensConfirmation verifies the happy path: a
+// successful validation that leaves the working copy identical to the
+// saved bytes opens the reload-confirmation modal.
+func TestModelReload_OpensConfirmation(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !m.showReloadConfirm {
+		t.Fatal("showReloadConfirm = false, want true")
+	}
+	if reloader.calls != 0 {
+		t.Errorf("reloader.calls = %d, want 0 before confirm", reloader.calls)
+	}
+}
+
+// TestModelReload_ConfirmNamesEndpoint verifies that the confirmation
+// modal names the Admin API endpoint and the config path, so the
+// operator can review the network target before confirming.
+func TestModelReload_ConfirmNamesEndpoint(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	// stateFor builds settings with only ConfigPath; set the endpoint
+	// explicitly so the modal body renders it.
+	state.Settings.AdminEndpoint = "http://localhost:2019"
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !m.showReloadConfirm {
+		t.Fatal("showReloadConfirm = false, want true")
+	}
+	view := m.View()
+	if !strings.Contains(view, "http://localhost:2019") {
+		t.Errorf("View missing Admin API endpoint:\n%s", view)
+	}
+	if !strings.Contains(view, "config/Caddyfile") {
+		t.Errorf("View missing config path:\n%s", view)
+	}
+}
+
+// TestModelReload_EscCancels verifies that Esc closes the reload
+// confirmation modal without calling the reloader.
+func TestModelReload_EscCancels(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !m.showReloadConfirm {
+		t.Fatal("confirm modal not open")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true after Esc, want false")
+	}
+	if reloader.calls != 0 {
+		t.Errorf("reloader.calls = %d, want 0 after cancel", reloader.calls)
+	}
+	if !strings.Contains(m.statusMessage, "cancelled") {
+		t.Errorf("statusMessage = %q, want cancelled hint", m.statusMessage)
+	}
+}
+
+// TestModelReload_EnterTriggersReload verifies that Enter from the
+// confirmation modal returns an async reload command. Running the
+// command invokes the reloader with the real path and the loaded
+// (on-disk) bytes.
+func TestModelReload_EnterTriggersReload(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if !m.showReloadConfirm {
+		t.Fatal("confirm modal not open")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter must return a tea.Cmd")
+	}
+	if !m.reloading {
+		t.Error("reloading = false after Enter, want true")
+	}
+	msg := cmd()
+	if _, ok := msg.(reloadResultMsg); !ok {
+		t.Fatalf("got %T, want reloadResultMsg", msg)
+	}
+	if reloader.capturedPath != "config/Caddyfile" {
+		t.Errorf("capturedPath = %q, want config/Caddyfile", reloader.capturedPath)
+	}
+	if string(reloader.capturedSaved) != src {
+		t.Errorf("capturedSaved = %q, want %q", reloader.capturedSaved, src)
+	}
+}
+
+// TestModelReload_SuccessSetsLoaded verifies that a successful reload
+// marks the configuration as loaded and records the confirmation time.
+func TestModelReload_SuccessSetsLoaded(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{result: app.ReloadResult{Endpoint: "http://localhost:2019", LoadedAt: time.Now()}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	m.Update(cmd()) // deliver the successful reload result
+	if m.loaded != loadedMatches {
+		t.Errorf("loaded = %v, want loadedMatches", m.loaded)
+	}
+	if m.loadedAt.IsZero() {
+		t.Error("loadedAt is zero, want the reload timestamp")
+	}
+	if !strings.HasPrefix(m.statusMessage, "✓") {
+		t.Errorf("statusMessage = %q, want success glyph", m.statusMessage)
+	}
+	if m.reloading {
+		t.Error("reloading = true after result, want false")
+	}
+}
+
+// TestModelReload_FailureUnreachable verifies that an unreachable Admin
+// API maps to the loadedUnreachable state.
+func TestModelReload_FailureUnreachable(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	updated, _ := m.Update(reloadResultMsg{Err: &app.ReloadError{
+		Endpoint: "http://localhost:2019",
+		Err:      fmt.Errorf("%w", app.ErrAdminUnreachable),
+	}})
+	m = updated.(*Model)
+	if m.loaded != loadedUnreachable {
+		t.Errorf("loaded = %v, want loadedUnreachable", m.loaded)
+	}
+	if !strings.HasPrefix(m.statusMessage, "✗") {
+		t.Errorf("statusMessage = %q, want error glyph", m.statusMessage)
+	}
+}
+
+// TestModelReload_FailureRejected verifies that a rejected reload
+// (adapt or Admin API rejection) maps to the loadedStale state.
+func TestModelReload_FailureRejected(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	updated, _ := m.Update(reloadResultMsg{Err: &app.ReloadError{
+		Endpoint: "http://localhost:2019",
+		Err:      fmt.Errorf("%w", app.ErrAdminRejected),
+	}})
+	m = updated.(*Model)
+	if m.loaded != loadedStale {
+		t.Errorf("loaded = %v, want loadedStale", m.loaded)
+	}
+	if !strings.HasPrefix(m.statusMessage, "✗") {
+		t.Errorf("statusMessage = %q, want error glyph", m.statusMessage)
+	}
+}
+
+// TestModelReload_BusyIgnored verifies that a second r press while a
+// reload is in flight is ignored.
+func TestModelReload_BusyIgnored(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 80, 24)
+	m.reloading = true
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if cmd != nil {
+		t.Error("r while reloading must return nil cmd")
+	}
+	if m.showReloadConfirm {
+		t.Error("showReloadConfirm = true, want false while reloading")
+	}
+	if reloader.calls != 0 {
+		t.Errorf("reloader.calls = %d, want 0", reloader.calls)
+	}
+}
+
+// TestModelReload_SaveTransitionsToStale verifies that a successful
+// save marks the running configuration stale: the file on disk changed,
+// so until a reload proves otherwise the running config no longer
+// matches it.
+func TestModelReload_SaveTransitionsToStale(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	m.Update(cmd()) // deliver the successful save result
+	if m.loaded != loadedStale {
+		t.Errorf("loaded = %v, want loadedStale after save", m.loaded)
+	}
+	if !m.loadedAt.IsZero() {
+		t.Error("loadedAt must be zero after save (running config no longer matches)")
+	}
+}
+
+// TestModelReload_FooterShowsKey verifies that the bottom footer shows
+// the r reload key only when a reloader is configured.
+func TestModelReload_FooterShowsKey(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	// With a reloader the key is listed.
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, reloader)
+	m = resize(m, 120, 30)
+	if !strings.Contains(m.View(), "r reload") {
+		t.Errorf("View missing 'r reload' with reloader configured:\n%s", m.View())
+	}
+	// Without a reloader the key must be absent.
+	m2 := newLoadedModel(t, fakeLoader{state: state})
+	m2 = resize(m2, 120, 30)
+	if strings.Contains(m2.View(), "r reload") {
+		t.Errorf("View should not contain 'r reload' without a reloader:\n%s", m2.View())
+	}
+}
+
+// TestModelReload_HeaderBadgeLoaded verifies that the header shows the
+// LOADED badge after a successful reload.
+func TestModelReload_HeaderBadgeLoaded(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{result: app.ReloadResult{Endpoint: "http://localhost:2019", LoadedAt: time.Now()}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 120, 30)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	m.Update(cmd())
+	view := m.View()
+	if !strings.Contains(view, "LOADED") {
+		t.Errorf("View missing LOADED badge:\n%s", view)
+	}
+}
+
+// TestModelReload_HeaderBadgeStale verifies that the header shows the
+// STALE badge after a save that has not been reloaded.
+func TestModelReload_HeaderBadgeStale(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	m.Update(cmd())
+	view := m.View()
+	if !strings.Contains(view, "STALE") {
+		t.Errorf("View missing STALE badge:\n%s", view)
+	}
+}
+
+// TestModelReload_HeaderBadgeUnknown verifies that the initial loaded
+// state is shown as UNKNOWN when reloading is possible, and stays hidden
+// in read-only sessions without a reloader (where the state has no
+// meaning).
+func TestModelReload_HeaderBadgeUnknown(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	reloader := &fakeReloader{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
+	m = resize(m, 120, 30)
+	if !strings.Contains(m.View(), "UNKNOWN") {
+		t.Errorf("View missing UNKNOWN badge in the initial state:\n%s", m.View())
+	}
+	// Without a reloader the badge must not appear at all.
+	m = newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	if strings.Contains(m.View(), "UNKNOWN") {
+		t.Errorf("View shows UNKNOWN badge without a reloader:\n%s", m.View())
 	}
 }

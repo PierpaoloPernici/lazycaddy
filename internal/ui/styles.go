@@ -24,6 +24,45 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color("15")).
 			Background(lipgloss.Color("28"))
+	// loadedBadge marks the state where the running Caddy configuration
+	// provably matches the saved file. The dark-blue background keeps it
+	// distinct from the neutral read-only grey.
+	loadedBadge = lipgloss.NewStyle().
+			Bold(true).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("24"))
+	// staleBadge marks a saved-but-not-reloaded configuration: the file
+	// on disk is newer than the running config. The amber background
+	// signals "action pending".
+	staleBadge = lipgloss.NewStyle().
+			Bold(true).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("214"))
+	// unreachableBadge marks a reload that failed because the Admin API
+	// could not be reached. The dark-red background signals a degraded
+	// operational state.
+	unreachableBadge = lipgloss.NewStyle().
+				Bold(true).
+				Padding(0, 1).
+				Foreground(lipgloss.Color("15")).
+				Background(lipgloss.Color("52"))
+	// reloadingBadge marks an in-flight reload. The teal background is
+	// distinct from both the loaded and stale states.
+	reloadingBadge = lipgloss.NewStyle().
+			Bold(true).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("30"))
+	// unknownBadge signals that nothing has been proven yet. The neutral
+	// grey matches the dim status style so it reads as quiet rather than
+	// alarming.
+	unknownBadge = lipgloss.NewStyle().
+			Bold(true).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("244"))
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203")).
 			Padding(0, 1)
