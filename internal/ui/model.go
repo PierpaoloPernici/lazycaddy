@@ -47,7 +47,7 @@ type Model struct {
 	loader    app.Loader
 	formatter app.Formatter // nil disables the v keybinding
 	state     *app.State
-	err       error         // load error (e.g. missing file)
+	err       error // load error (e.g. missing file)
 
 	items     []item
 	cursor    int
@@ -234,8 +234,16 @@ func (m *Model) formatAndValidateCmd(src []byte) tea.Cmd {
 	timeout := m.validatorTimeout
 	formatter := m.formatter
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
+		// Only apply a context timeout when the operator asked for one.
+		// context.WithTimeout(parent, 0) returns a context that is
+		// already past its deadline, which would cancel the validator
+		// immediately and let its own 5s default never fire.
+		ctx := context.Background()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
 		formatted, diags, err := formatter.FormatAndValidate(ctx, src)
 		return formatAndValidateResultMsg{
 			Formatted:   formatted,

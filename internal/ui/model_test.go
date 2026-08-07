@@ -32,10 +32,16 @@ type fakeFormatter struct {
 	diagnostics []validator.Diagnostic
 	err         error
 	calls       int
+	// capturedCtx records the context passed to the last
+	// FormatAndValidate call, so tests can verify the outer timeout
+	// wiring (e.g. that a zero ValidatorTimeout does not cancel the
+	// context before the validator sees it).
+	capturedCtx context.Context
 }
 
 func (f *fakeFormatter) FormatAndValidate(ctx context.Context, src []byte) ([]byte, []validator.Diagnostic, error) {
 	f.calls++
+	f.capturedCtx = ctx
 	return f.formatted, f.diagnostics, f.err
 }
 
@@ -721,5 +727,38 @@ func TestModelFormatAndValidate_NoExtraReads(t *testing.T) {
 	m.View()
 	if got := calls["config/Caddyfile"] - beforeReads; got != 0 {
 		t.Errorf("file reads triggered by v = %d, want 0 (no-write contract violated)", got)
+	}
+}
+
+// TestModelFormatAndValidate_ZeroTimeoutDoesNotCancelContext verifies
+// that the cmd wraps the formatter call in context.Background() when
+// the operator did not pass --validator-timeout. Passing a zero
+// duration to context.WithTimeout returns a context that is already
+// past its deadline and would cancel the validator immediately,
+// preventing its own 5s default from ever firing.
+func TestModelFormatAndValidate_ZeroTimeoutDoesNotCancelContext(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("x")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	// m.validatorTimeout is the zero value because
+	// Settings.ValidatorTimeout was not set.
+	if m.validatorTimeout != 0 {
+		t.Fatalf("precondition: m.validatorTimeout = %s, want 0", m.validatorTimeout)
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd == nil {
+		t.Fatal("expected tea.Cmd from v keypress")
+	}
+	msg := cmd()
+	if msg == nil {
+		t.Fatal("expected message from cmd execution")
+	}
+	if formatter.capturedCtx == nil {
+		t.Fatal("formatter did not capture context")
+	}
+	if err := formatter.capturedCtx.Err(); err != nil {
+		t.Errorf("captured ctx is canceled (%v); zero ValidatorTimeout must leave the context un-canceled so the validator package can apply its own 5s default", err)
 	}
 }

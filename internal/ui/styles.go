@@ -34,9 +34,9 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color("245"))
 	statusSuccessStyle = lipgloss.NewStyle().
-			Bold(true).
-			Padding(0, 1).
-			Foreground(lipgloss.Color("42"))
+				Bold(true).
+				Padding(0, 1).
+				Foreground(lipgloss.Color("42"))
 	statusInfoStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(lipgloss.Color("244"))
