@@ -10,4 +10,10 @@ func TestDefaultSettings(t *testing.T) {
 	if !s.ReadOnly {
 		t.Errorf("ReadOnly = false, want true for the inspector milestone")
 	}
+	if s.BinaryPath != "" {
+		t.Errorf("BinaryPath = %q, want empty (must be opted in via --caddy-path)", s.BinaryPath)
+	}
+	if s.ValidatorTimeout != 0 {
+		t.Errorf("ValidatorTimeout = %s, want 0 (validator uses its own 5s default)", s.ValidatorTimeout)
+	}
 }
