@@ -104,4 +104,32 @@ var (
 	diffFileStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("15"))
+
+	// Syntax highlighting styles are presentation-only: they never carry
+	// state, so every decision is made from the parsed source alone.
+	// syntaxCommentStyle renders "# ..." comments dimmed and italic so they
+	// recede behind the directives.
+	syntaxCommentStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				Italic(true)
+	// syntaxStringStyle renders quoted string tokens in the soft green used
+	// elsewhere for "success" content.
+	syntaxStringStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("114"))
+	// syntaxHeredocStyle shares the string color: a heredoc body is the same
+	// kind of literal content as a quoted string.
+	syntaxHeredocStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("114"))
+	// syntaxPlaceholderStyle reuses the cursor accent so {…} sub-tokens read
+	// as active/editable regions.
+	syntaxPlaceholderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("212"))
+	// syntaxBraceStyle renders structural braces in soft yellow so block
+	// boundaries are easy to scan.
+	syntaxBraceStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("221"))
+	// syntaxWordStyle is intentionally empty: barewords keep the default
+	// foreground so the source reads like a plain file.
+	syntaxWordStyle = lipgloss.NewStyle()
 )
