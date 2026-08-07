@@ -827,3 +827,32 @@ func TestModelFormatAndValidate_AllInfoShowsStatusNotModal(t *testing.T) {
 		t.Errorf("statusMessage = %q, want it to include the underlying error", m.statusMessage)
 	}
 }
+
+// TestModelDiagnosticsView_LongMessageTruncated verifies that an
+// over-long diagnostic message is truncated to fit the modal
+// width. Without truncation the body line would push past the
+// right border, breaking the layout.
+func TestModelDiagnosticsView_LongMessageTruncated(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	longMsg := strings.Repeat("a", 200)
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 60, 20) // narrow window
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	view := m.View()
+	if !strings.Contains(view, "…") {
+		t.Errorf("expected the long message to be truncated with '…', view:\n%s", view)
+	}
+	ansi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 60 {
+			t.Errorf("rendered line %d is %d columns wide, exceeds the 60-column window:\n%s", i+1, w, line)
+		}
+	}
+}

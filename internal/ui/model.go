@@ -550,6 +550,24 @@ func (m *Model) diagnosticsView(width, height int) string {
 	if bodyH < 1 {
 		bodyH = 1
 	}
+	// paneStyle has Border(RoundedBorder()) and Padding(0, 1):
+	// Width(N) sets the *content* width to N, and the rendered total
+	// is N + 2 (borders). To make the modal fit the window exactly
+	// (matching the tree+source pane math elsewhere), pass
+	// width - 2 here so the total comes out to width.
+	//
+	// Within the pane, the cursor prefix ("▸ " or "  ") eats 2 more
+	// cells, so the available text width is width - 6. Truncate
+	// each diagnostic string to that width to keep long messages
+	// from pushing the pane past its right border.
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	textW := paneContentW - 2 - 2 // border (2) + padding (2) + cursor prefix (2)
+	if textW < 1 {
+		textW = 1
+	}
 	var body strings.Builder
 	if len(m.diagnostics) == 0 {
 		body.WriteString(dimStyle.Render("no diagnostics — close with Esc"))
@@ -564,7 +582,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 		}
 		for i := start; i < end; i++ {
 			d := m.diagnostics[i]
-			line := d.String()
+			line := truncateToWidth(d.String(), textW)
 			if i == m.diagCursor {
 				line = cursorStyle.Render("▸ " + line)
 			} else {
@@ -574,7 +592,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 		}
 	}
 	hint := "↑/↓ navigate"
-	return paneStyle.Width(width).Height(height).Render(title + "\n" + body.String() + "\n" + dimStyle.Render(hint))
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String() + "\n" + dimStyle.Render(hint))
 }
 
 // buildItems flattens the graph into the visible tree: one row per
