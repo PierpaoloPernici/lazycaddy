@@ -42,10 +42,17 @@ Completed:
   document/site navigation, raw source viewing and parse-error fallback;
 - CLI configuration loading with an explicit read-only mode and no file writes
   or Caddy daemon dependency.
+- `caddy fmt` and `caddy validate` engine (`internal/validator`):
+  temporary-file execution, command-runner abstraction, secret redactor,
+  structured diagnostic parser and timeout/cancellation handling.
+  28 tests, no real caddy required.
 
 Next milestone:
 
-- add formatting, validation and diff workflows around a temporary working
+- integrate the validator engine in the application layer
+  (`config.Settings.BinaryPath`, app initialization, format+validate
+  keybinding, diagnostic rendering);
+- add the unified diff workflow around the formatted/validated working
   copy.
 
 The resolver intentionally records snippet arguments and `{block}` data without
@@ -289,9 +296,10 @@ tests and CI.
   resolver engine is complete; application integration is pending.
 - [ ] Parse site blocks/common directives with source ranges and opaque nodes.
   The parser engine is complete; application integration is pending.
+- [ ] Support `$EDITOR`, temporary-file formatting and validation. The
+  validator engine is complete; application integration is pending.
 - Show sites, raw source, search, basic runtime/version information and diagnostics.
 - Detect capabilities and fall back to read-only mode without blocking inspection.
-- Support `$EDITOR`, temporary-file formatting and validation.
 - Implement diff, timestamped backup, explicit save and explicit Admin API reload.
 - Add a basic log view when a configured source is available.
 
