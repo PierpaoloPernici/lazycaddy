@@ -33,7 +33,10 @@ Completed:
 - lossless lexer with comments, quotes, backticks, heredocs, escaped newlines,
   CRLF, BOM and exact token offsets;
 - token-driven parser and source ranges for global options, sites, snippets,
-  named routes, nested directives and brace-less single-site files;
+  named routes, nested directives and brace-less single-site files; a block
+  opener on its own line after a top-level site/snippet/named-route header is
+  attached to that header (Caddy-compatible), while a header token ending in
+  `{` remains an error;
 - byte-preserving range patching with invalid-range guards;
 - import resolver with separate documents, relative paths, sorted globs,
   snippet precedence, warnings, duplicate detection and cycle detection;

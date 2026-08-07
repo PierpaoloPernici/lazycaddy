@@ -29,7 +29,9 @@ type Document struct {
 // top-level `<addresses> { ... }` site blocks, and directive lines (with or
 // without a nested `{ ... }` block) inside any block. A single brace-less
 // site (its address line followed by the rest of the file) is grouped into
-// one site block, as Caddy does. A top-level line starting with the unquoted
+// one site block, as Caddy does. A block opener on its own line immediately
+// after a top-level site/snippet/named-route header is attached to that
+// header, as Caddy accepts. A top-level line starting with the unquoted
 // word `import` is kept as an opaque top-level directive. Resolution into
 // snippet references or imported file documents lives in Resolve (import.go)
 // and operates on the resulting node tree, not the parser.
@@ -129,6 +131,49 @@ func classifyTop(header []Token) (Kind, string) {
 		return KindDirective, "import"
 	}
 	return KindSite, joinNames(header)
+}
+
+// mergeSeparatedBraces attaches a lone "{" group to the preceding top-level
+// header group, mirroring Caddy's parser, which accepts the block opener on
+// the line after a site/snippet/named-route header. Nested directives are
+// untouched: Caddy rejects "{" on a new line inside a block.
+func mergeSeparatedBraces(groups [][]Token) [][]Token {
+	merged := make([][]Token, 0, len(groups))
+	depth := 0
+	for i := 0; i < len(groups); i++ {
+		g := groups[i]
+		var next []Token
+		if i+1 < len(groups) {
+			next = groups[i+1]
+		}
+		if depth == 0 && len(g) > 0 && !hasBraceToken(g) &&
+			len(next) == 1 && next[0].Kind == tokenOpenBrace &&
+			!(g[0].Kind == tokenWord && g[0].Text == "import") &&
+			!(g[0].Kind == tokenWord && strings.HasSuffix(g[0].Text, "{")) {
+			// block opener sits on the following line
+			g = append(g, next[0])
+			i++
+		}
+		merged = append(merged, g)
+		for _, t := range g {
+			switch t.Kind {
+			case tokenOpenBrace:
+				depth++
+			case tokenCloseBrace:
+				depth--
+			}
+		}
+	}
+	return merged
+}
+
+func hasBraceToken(g []Token) bool {
+	for _, t := range g {
+		if t.Kind == tokenOpenBrace || t.Kind == tokenCloseBrace {
+			return true
+		}
+	}
+	return false
 }
 
 func parseTokens(d *Document, tokens []Token) {
@@ -265,7 +310,7 @@ func parseTokens(d *Document, tokens []Token) {
 		}
 	}
 
-	for _, g := range groupLines(tokens) {
+	for _, g := range mergeSeparatedBraces(groupLines(tokens)) {
 		processGroup(g)
 	}
 
