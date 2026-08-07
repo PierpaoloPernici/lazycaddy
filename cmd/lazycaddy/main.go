@@ -3,18 +3,23 @@
 // document/site tree with a raw source view. An opt-in format and
 // validate workflow (--caddy-path) runs caddy fmt and caddy validate
 // against a temporary working copy and surfaces structured diagnostics.
-// No file writes and no Caddy daemon interaction are performed: the
-// operator is always in control of when format and validate run.
+// The tool is read-only by default: --write enables writable mode, in
+// which saving creates a backup in --backup-dir and atomically replaces
+// the file. No reload is performed and no Caddy daemon interaction
+// happens: the operator is always in control of when format, validate
+// and save run.
 package main
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
@@ -22,14 +27,22 @@ import (
 
 func main() {
 	settings := config.DefaultSettings()
+	var write bool
 
 	rootCmd := &cobra.Command{
 		Use:   "lazycaddy",
 		Short: "A keyboard-first terminal UI for inspecting and managing Caddy",
 		Long: "lazycaddy inspects a Caddyfile and its imports in the terminal.\n" +
-			"The inspector is read-only; format and validate are opt-in via --caddy-path.",
+			"The inspector is read-only by default; --write enables backups and atomic saves, and format/validate are opt-in via --caddy-path.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if write {
+				settings.ReadOnly = false
+			}
+			if settings.BackupDir == "" {
+				settings.BackupDir = filepath.Join(filepath.Dir(settings.ConfigPath), ".lazycaddy", "backups")
+			}
+
 			loader := app.NewLoader(settings, os.ReadFile)
 			var formatter app.Formatter
 			if settings.BinaryPath != "" {
@@ -42,7 +55,15 @@ func main() {
 				}
 				formatter = app.NewFormatter(v)
 			}
-			model := ui.New(loader, formatter)
+			var saver app.Saver
+			if !settings.ReadOnly {
+				creator, err := backup.New(backup.Options{Dir: settings.BackupDir})
+				if err != nil {
+					return fmt.Errorf("new backup creator: %w", err)
+				}
+				saver = app.NewSaver(creator, os.ReadFile)
+			}
+			model := ui.New(loader, formatter, saver)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
@@ -61,6 +82,10 @@ func main() {
 		"path to the caddy binary (default: empty; format and validate are disabled)")
 	rootCmd.Flags().DurationVar(&settings.ValidatorTimeout, "validator-timeout", 0,
 		"per-invocation timeout for caddy fmt and caddy validate (default: 5s, the validator package default)")
+	rootCmd.Flags().BoolVar(&write, "write", false,
+		"enable writable mode (save creates backups and writes the file); default is read-only")
+	rootCmd.Flags().StringVar(&settings.BackupDir, "backup-dir", "",
+		"directory for pre-save backups (default: <config-dir>/.lazycaddy/backups)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

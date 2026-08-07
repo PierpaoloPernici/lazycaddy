@@ -56,20 +56,34 @@ Completed:
 - a unified diff workflow (`internal/diff` backed by gotextdiff): the
   `D` keybinding compares the original root document with the
   formatted/validated working copy and renders a scrollable, colored
-  unified diff modal with context-aware keys. The diff is purely
-  presentational; no write path is enabled until backup and atomic
-  save land.
-- A test suite of 164 test functions covering the lossless-editing
+  unified diff modal with context-aware keys.
+- backup and atomic single-file save: `internal/caddyfile` atomic
+  write primitives (preflight that rejects symlinks and non-regular
+  targets and probes directory writability, then a temp file in the
+  same directory with fsync and atomic rename, preserving permission
+  bits) and `internal/backup` (timestamped, collision-safe backups in
+  `<config-dir>/.lazycaddy/backups/` with a rebuildable index and an
+  injected clock). The `app.Saver` boundary orchestrates preflight →
+  external-change conflict check → backup → atomic write, returning
+  `ErrConflict` when the file changed on disk since load and
+  `*SaveError` with the recovery backup path when a write fails after
+  the backup. The TUI gates saving on a validated working copy, a
+  confirmation modal that names the target and backup directory, and
+  the opt-in `--write` mode (read-only by default).
+- A test suite of 204 test functions covering the lossless-editing
   contract, import resolution, validation, diagnostics, unified
-  diffs and the TUI. Tests use fakes and require no installed caddy
-  or network access.
+  diffs, atomic writes, backups, the save workflow and the TUI.
+  Tests use fakes and require no installed caddy or network access.
 
 Next milestone:
 
-- backup and atomic single-file save: a timestamped backup beside the
-  configuration, then the validated working copy written through a
-  temporary file in the same directory with fsync and atomic rename.
-  File writes remain disabled until both are proven.
+- explicit Admin API reload and loaded-state verification: a runtime
+  adapter that reloads through the local Admin API after a confirmed
+  save and reports whether the loaded configuration matches the
+  saved file, clearly distinguishing saved, validated and loaded
+  states. Reload must be gated behind a confirmation that names the
+  target, and a failed reload must leave the saved file and backup
+  intact.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -321,8 +335,13 @@ Completed within the vertical slice:
 - [x] Unified diff review. The `D` keybinding compares the original
   root document with the formatted/validated working copy through
   `internal/diff` (backed by gotextdiff) and renders a scrollable,
-  colored unified diff modal. It is purely presentational: no write
-  path is enabled yet.
+  colored unified diff modal.
+- [x] Timestamped backup and explicit atomic save. `--write` opts into
+  writable mode; `s` opens a confirmation that names the target and
+  the backup directory, then creates a timestamped backup and
+  atomically replaces the file. Writes are gated on a validated
+  working copy and on an external-change conflict check; failed
+  writes surface the recovery backup path.
 
 Remaining for v0.1:
 
@@ -331,7 +350,7 @@ Remaining for v0.1:
 - Basic runtime/version information and capability detection with a
   read-only fallback (browsing already works without caddy or write
   permissions).
-- Timestamped backup, explicit save and explicit Admin API reload.
+- Explicit Admin API reload with loaded-state verification.
 - Basic log view when a configured source is available.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.

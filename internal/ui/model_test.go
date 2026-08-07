@@ -51,6 +51,26 @@ func (f *fakeFormatter) FormatAndValidate(ctx context.Context, displayPath strin
 	return f.formatted, f.diagnostics, f.err
 }
 
+// fakeSaver is a programmable app.Saver for tests. It records the
+// path, original bytes and working bytes passed to Save and returns
+// the configured result / error.
+type fakeSaver struct {
+	result           app.SaveResult
+	err              error
+	calls            int
+	capturedPath     string
+	capturedOriginal []byte
+	capturedWorking  []byte
+}
+
+func (f *fakeSaver) Save(ctx context.Context, path string, original, working []byte) (app.SaveResult, error) {
+	f.calls++
+	f.capturedPath = path
+	f.capturedOriginal = original
+	f.capturedWorking = working
+	return f.result, f.err
+}
+
 type noSuchFile struct{ path string }
 
 func (e *noSuchFile) Error() string { return "no such file: " + e.path }
@@ -65,13 +85,35 @@ func stateFor(t *testing.T, path string, readFile app.FileReader) *app.State {
 	return state
 }
 
-func newLoadedModel(t *testing.T, loader app.Loader, formatter ...app.Formatter) *Model {
+// writableStateFor is like stateFor but marks the settings writable
+// and sets a backup directory, so save-related tests can exercise
+// write mode and verify the backup path is surfaced.
+func writableStateFor(t *testing.T, path, backupDir string, readFile app.FileReader) *app.State {
+	t.Helper()
+	loader := app.NewLoader(config.Settings{ConfigPath: path, ReadOnly: false, BackupDir: backupDir}, readFile)
+	state, err := loader.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	return state
+}
+
+// newLoadedModel builds a Model from loader with an optional
+// formatter and saver. The variadic options accept either an
+// app.Formatter, an app.Saver, both, or neither.
+func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	t.Helper()
 	var f app.Formatter
-	if len(formatter) > 0 {
-		f = formatter[0]
+	var s app.Saver
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case app.Formatter:
+			f = v
+		case app.Saver:
+			s = v
+		}
 	}
-	m := New(loader, f)
+	m := New(loader, f, s)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -244,7 +286,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -500,7 +542,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -1440,5 +1482,389 @@ func TestModelDiff_LongLineTruncated(t *testing.T) {
 		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 60 {
 			t.Errorf("rendered line %d is %d columns wide, exceeds the 60-column window:\n%s", i+1, w, line)
 		}
+	}
+}
+
+// TestModelSave_NoSaverShowsWriteHint verifies that pressing s without
+// a configured saver (read-only mode) surfaces a status hint about
+// --write and does not open the confirmation modal.
+func TestModelSave_NoSaverShowsWriteHint(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("example.test {\n\trespond ok\n}\n")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.showSaveConfirm {
+		t.Error("showSaveConfirm = true, want false without saver")
+	}
+	if !strings.Contains(m.statusMessage, "--write") {
+		t.Errorf("statusMessage = %q, want --write hint", m.statusMessage)
+	}
+}
+
+// TestModelSave_NoWorkingCopyShowsHint verifies that pressing s before
+// a working copy exists surfaces a status hint instead of opening the
+// confirmation modal.
+func TestModelSave_NoWorkingCopyShowsHint(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver)
+	m = resize(m, 80, 24)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.showSaveConfirm {
+		t.Error("showSaveConfirm = true, want false before validation")
+	}
+	if !strings.Contains(m.statusMessage, "working copy") {
+		t.Errorf("statusMessage = %q, want working copy hint", m.statusMessage)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestModelSave_FailedValidationBlocksSave verifies that a failed
+// validation marks the working copy as invalid and prevents the save
+// confirmation from opening.
+func TestModelSave_FailedValidationBlocksSave(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{formatted: []byte("formatted working copy"), diagnostics: diags, err: errors.New("caddy exit 1")}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.showSaveConfirm {
+		t.Error("showSaveConfirm = true, want false after failed validation")
+	}
+	if m.workingValidated {
+		t.Error("workingValidated = true, want false after failed validation")
+	}
+	if !strings.Contains(m.statusMessage, "validation failed") {
+		t.Errorf("statusMessage = %q, want validation failure", m.statusMessage)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestModelSave_NoChangesShowsHint verifies that pressing s when the
+// working copy matches the loaded source surfaces a "no changes"
+// status instead of opening the confirmation modal.
+func TestModelSave_NoChangesShowsHint(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(src)}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.showSaveConfirm {
+		t.Error("showSaveConfirm = true, want false")
+	}
+	if !strings.Contains(m.statusMessage, "no changes") {
+		t.Errorf("statusMessage = %q, want no changes hint", m.statusMessage)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestModelSave_OpensConfirmation verifies the happy path: a
+// successful validation that changes the working copy opens the save
+// confirmation modal, which names the target path and backup dir.
+func TestModelSave_OpensConfirmation(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("example.test {\n\trespond ok\n}\n")}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if !m.showSaveConfirm {
+		t.Fatal("showSaveConfirm = false, want true")
+	}
+	view := m.View()
+	if !strings.Contains(view, "config/Caddyfile") {
+		t.Errorf("View missing config path:\n%s", view)
+	}
+	if !strings.Contains(view, "Backup dir") {
+		t.Errorf("View missing backup dir label:\n%s", view)
+	}
+	if !strings.Contains(view, "config/backups") {
+		t.Errorf("View missing backup dir:\n%s", view)
+	}
+	if !strings.Contains(view, "Enter save") {
+		t.Errorf("View missing Enter save hint:\n%s", view)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0 before confirm", saver.calls)
+	}
+}
+
+// TestModelSave_EscCancels verifies that Esc closes the save
+// confirmation modal without calling the saver.
+func TestModelSave_EscCancels(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("example.test {\n\trespond ok\n}\n")}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if !m.showSaveConfirm {
+		t.Fatal("confirm modal not open")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showSaveConfirm {
+		t.Error("showSaveConfirm = true after Esc, want false")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0 after cancel", saver.calls)
+	}
+	if !strings.Contains(m.statusMessage, "cancelled") {
+		t.Errorf("statusMessage = %q, want cancelled hint", m.statusMessage)
+	}
+}
+
+// TestModelSave_EnterTriggersSave verifies that Enter from the
+// confirmation modal returns an async save command. Running the
+// command invokes the saver with the real path, original bytes and
+// working bytes, and delivering the result refreshes the loaded
+// snapshot and root source.
+func TestModelSave_EnterTriggersSave(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if !m.showSaveConfirm {
+		t.Fatal("confirm modal not open")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter must return a tea.Cmd")
+	}
+	if !m.saving {
+		t.Error("saving = false after Enter, want true")
+	}
+	msg := cmd()
+	result, ok := msg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", msg)
+	}
+	if saver.capturedPath != "config/Caddyfile" {
+		t.Errorf("capturedPath = %q, want config/Caddyfile", saver.capturedPath)
+	}
+	if string(saver.capturedOriginal) != src {
+		t.Errorf("capturedOriginal = %q, want %q", saver.capturedOriginal, src)
+	}
+	if string(saver.capturedWorking) != formatted {
+		t.Errorf("capturedWorking = %q, want %q", saver.capturedWorking, formatted)
+	}
+	updated, _ = m.Update(result)
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "saved") {
+		t.Errorf("statusMessage = %q, want saved", m.statusMessage)
+	}
+	if !strings.Contains(m.statusMessage, "config/backups/Caddyfile.bak") {
+		t.Errorf("statusMessage = %q, want backup path", m.statusMessage)
+	}
+	if string(m.loadedBytes) != formatted {
+		t.Errorf("loadedBytes = %q, want %q", m.loadedBytes, formatted)
+	}
+	if string(m.state.Graph.Root.Source) != formatted {
+		t.Errorf("Root.Source = %q, want %q", m.state.Graph.Root.Source, formatted)
+	}
+	if m.saving {
+		t.Error("saving = true after result, want false")
+	}
+}
+
+// TestModelSave_ConflictStatus verifies that the saver reporting
+// app.ErrConflict surfaces a "changed on disk" status.
+func TestModelSave_ConflictStatus(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{err: app.ErrConflict}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "changed on disk") {
+		t.Errorf("statusMessage = %q, want conflict message", m.statusMessage)
+	}
+}
+
+// TestModelSave_SaveErrorShowsBackup verifies that a structured
+// app.SaveError surfaces both the backup path and the underlying
+// error in the status line.
+func TestModelSave_SaveErrorShowsBackup(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{err: &app.SaveError{BackupPath: "config/backups/Caddyfile.bak", Err: errors.New("boom")}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "backup: config/backups/Caddyfile.bak") {
+		t.Errorf("statusMessage = %q, want backup path", m.statusMessage)
+	}
+	if !strings.Contains(m.statusMessage, "boom") {
+		t.Errorf("statusMessage = %q, want boom", m.statusMessage)
+	}
+}
+
+// TestModelSave_GenericErrorStatus verifies that an unclassified save
+// error surfaces a generic "save failed" status.
+func TestModelSave_GenericErrorStatus(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{err: errors.New("boom")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(*Model)
+	if !strings.HasPrefix(m.statusMessage, "✗ save failed") {
+		t.Errorf("statusMessage = %q, want save failed prefix", m.statusMessage)
+	}
+	if !strings.Contains(m.statusMessage, "boom") {
+		t.Errorf("statusMessage = %q, want boom", m.statusMessage)
+	}
+}
+
+// TestModelSave_BusyIgnored verifies that a second s press while a
+// save is in flight is ignored.
+func TestModelSave_BusyIgnored(t *testing.T) {
+	src := "example.test {\n}\n"
+	formatted := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{formatted: []byte(formatted)}
+	saver := &fakeSaver{result: app.SaveResult{BackupPath: "x"}}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	updated, cmd1 := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if !m.saving {
+		t.Error("saving = false, want true")
+	}
+	if cmd1 == nil {
+		t.Fatal("Enter must return cmd")
+	}
+	_, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd2 != nil {
+		t.Error("s while saving must return nil cmd")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d before cmd1 executes, want 0", saver.calls)
+	}
+	cmd1()
+	if saver.calls != 1 {
+		t.Errorf("saver.calls = %d, want 1 (second s must not trigger)", saver.calls)
+	}
+}
+
+// TestModelFooter_SaveConfirmContext verifies that the bottom footer
+// shows the save-confirmation keys (not the global keymap) while the
+// save modal is open.
+func TestModelFooter_SaveConfirmContext(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("example.test {\n\trespond ok\n}\n")}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	view := m.View()
+	if !strings.Contains(view, "Enter save") {
+		t.Errorf("footer should show Enter save, got:\n%s", view)
+	}
+	if strings.Contains(view, "v format & validate") {
+		t.Errorf("footer must not show v format & validate, got:\n%s", view)
+	}
+}
+
+// TestModelHeader_WriteModeBadge verifies that a writable state shows
+// the WRITE badge instead of READ-ONLY. The default read-only state
+// is covered by TestModelRendersDocumentTree.
+func TestModelHeader_WriteModeBadge(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 80, 24)
+	view := m.View()
+	if strings.Contains(view, "READ-ONLY") {
+		t.Errorf("View should not show READ-ONLY in write mode:\n%s", view)
+	}
+	if !strings.Contains(view, "WRITE") {
+		t.Errorf("View should show WRITE badge in write mode:\n%s", view)
 	}
 }

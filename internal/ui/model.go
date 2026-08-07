@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -40,14 +42,22 @@ type formatAndValidateResultMsg struct {
 	Err         error
 }
 
+// saveResultMsg is delivered to the model after an asynchronous save
+// through the injected app.Saver completes.
+type saveResultMsg struct {
+	Result app.SaveResult
+	Err    error
+}
+
 // Model is the inspector screen: a document tree on the left, the raw
 // source of the selected document on the right (scrollable with
-// PgUp/PgDown) and an optional diagnostics modal on top. It performs
-// no file writes; data flows from the injected app.Loader and
-// app.Formatter.
+// PgUp/PgDown) and optional diagnostics / diff / save-confirmation
+// modals on top. File writes are delegated to the injected
+// app.Saver; the model itself never touches the filesystem.
 type Model struct {
 	loader    app.Loader
 	formatter app.Formatter // nil disables the v keybinding
+	saver     app.Saver     // nil disables the s keybinding (read-only mode)
 	state     *app.State
 	err       error // load error (e.g. missing file)
 
@@ -76,14 +86,27 @@ type Model struct {
 	// the list view; another Esc closes the modal.
 	showDetail bool
 
-	// workingBytes holds the last successful format output. The source
-	// pane currently shows the original source; the working copy is
-	// stored for the upcoming diff / save workflow. The status line
-	// reflects whether a working copy is pending.
+	// loadedBytes is a snapshot of the root document source taken when
+	// the configuration is loaded. It is the conflict-detection
+	// reference: if the on-disk file has changed since load, the saver
+	// reports app.ErrConflict.
+	loadedBytes []byte
+	// workingBytes holds the last format output. The source pane shows
+	// the original source; the working copy is stored for the diff /
+	// save workflow. The status line reflects whether a working copy is
+	// pending.
 	workingBytes []byte
+	// workingValidated is true only when the working copy in
+	// workingBytes has passed format+validate. A failed validation must
+	// never be savable, even though the working copy is retained for
+	// inspection.
+	workingValidated bool
 	// busy is true while a format+validate invocation is in flight; a
 	// second v press is ignored until the result is delivered.
 	busy bool
+	// saving is true while an asynchronous save is in flight; a second
+	// s press is ignored until the result is delivered.
+	saving bool
 	// statusMessage is a single line shown below the header. Cleared on
 	// the next v press or on quit.
 	statusMessage string
@@ -102,20 +125,27 @@ type Model struct {
 	diffLines    []diff.Line
 	diffTitle    string
 
+	// Save-confirmation modal state. The modal is shown when
+	// showSaveConfirm is true; it names the target path and backup
+	// directory before the operator confirms the write.
+	showSaveConfirm bool
+
 	// validatorTimeout is read from settings on Load and is the timeout
 	// applied to each format+validate invocation. Zero means "no extra
 	// timeout on top of the validator package default (5s)".
 	validatorTimeout time.Duration
 }
 
-// New returns a Model that will load its state through loader and run
-// format+validate through formatter. formatter may be nil; the v
-// keybinding is disabled in that case and pressing v shows a hint in
-// the status line. Call Load before starting the program.
-func New(loader app.Loader, formatter app.Formatter) *Model {
+// New returns a Model that will load its state through loader, run
+// format+validate through formatter and write changes through saver.
+// formatter may be nil; the v keybinding is disabled in that case.
+// saver may be nil; the s keybinding is disabled in that case
+// (read-only mode). Call Load before starting the program.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver) *Model {
 	return &Model{
 		loader:         loader,
 		formatter:      formatter,
+		saver:          saver,
 		collapsed:      map[string]bool{},
 		viewport:       viewport.New(1, 1),
 		detailViewport: viewport.New(1, 1),
@@ -135,6 +165,9 @@ func (m *Model) Load() error {
 		m.validatorTimeout = state.Settings.ValidatorTimeout
 	}
 	if state != nil && state.Graph != nil {
+		// Copy the root source so later disk changes can be detected
+		// by comparing against this snapshot.
+		m.loadedBytes = append([]byte(nil), state.Graph.Root.Source...)
 		m.items = buildItems(state.Graph, m.collapsed)
 		m.cursor = 0
 	}
@@ -152,6 +185,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 	case formatAndValidateResultMsg:
 		return m.handleFormatAndValidateResult(msg)
+	case saveResultMsg:
+		return m.handleSaveResult(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -162,6 +197,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The diff modal takes precedence over the main keymap.
 	if m.showDiff {
 		return m.updateDiffKey(msg)
+	}
+	// The save-confirmation modal takes precedence over the
+	// diagnostics modal and the main keymap.
+	if m.showSaveConfirm {
+		return m.updateSaveConfirmKey(msg)
 	}
 	// The diagnostics modal takes precedence over every other key.
 	if m.showDiagnostics {
@@ -189,6 +229,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startFormatAndValidate()
 	case "D":
 		return m.startDiff()
+	case "s":
+		return m.startSave()
 	}
 	return m, nil
 }
@@ -413,6 +455,8 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 		m.workingBytes = msg.Formatted
 	}
 	if msg.Err != nil {
+		// A failed validation must never be savable.
+		m.workingValidated = false
 		// Caddy emits info-level log lines alongside parse errors
 		// (e.g. "INFO  using config from file"). The modal is for
 		// actionable findings, so filter to error-level diagnostics
@@ -440,6 +484,7 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 	}
 	m.diagnostics = nil
 	m.showDiagnostics = false
+	m.workingValidated = true
 	m.statusMessage = "✓ validated (working copy updated, not saved)"
 	return m, nil
 }
@@ -509,6 +554,123 @@ func (m *Model) closeDiff() {
 	m.diffLines = nil
 	m.diffTitle = ""
 	m.diffViewport.SetContent("")
+}
+
+// startSave begins the save workflow. It is gated by the presence of
+// a loaded graph, a configured saver, an in-flight save guard, a
+// validated working copy and actual changes. When all guards pass it
+// opens the save-confirmation modal so the operator can review the
+// target path and backup directory before confirming the write.
+func (m *Model) startSave() (tea.Model, tea.Cmd) {
+	if m.state == nil || m.state.Graph == nil {
+		return m, nil
+	}
+	if m.saver == nil {
+		m.statusMessage = "read-only mode — start with --write to enable saving"
+		return m, nil
+	}
+	if m.saving {
+		return m, nil
+	}
+	if m.workingBytes == nil {
+		m.statusMessage = "no working copy — press v to format & validate first"
+		return m, nil
+	}
+	if !m.workingValidated {
+		m.statusMessage = "✗ validation failed — fix errors before saving"
+		return m, nil
+	}
+	if bytes.Equal(m.workingBytes, m.loadedBytes) {
+		m.statusMessage = "no changes to save"
+		return m, nil
+	}
+	m.showSaveConfirm = true
+	return m, nil
+}
+
+// updateSaveConfirmKey handles keys when the save-confirmation modal
+// is open. Enter confirms (closes the modal and starts the async
+// save); Esc and q cancel.
+func (m *Model) updateSaveConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.closeSaveConfirm()
+		m.statusMessage = "save cancelled"
+	case "enter":
+		m.closeSaveConfirm()
+		m.saving = true
+		m.statusMessage = "saving…"
+		return m, m.saveCmd()
+	}
+	return m, nil
+}
+
+// closeSaveConfirm dismisses the save-confirmation modal.
+func (m *Model) closeSaveConfirm() {
+	m.showSaveConfirm = false
+}
+
+// saveCmd returns a tea.Cmd that calls the injected saver in a
+// goroutine and reports the result as a saveResultMsg.
+func (m *Model) saveCmd() tea.Cmd {
+	saver := m.saver
+	path := m.state.Settings.ConfigPath
+	original := m.loadedBytes
+	working := m.workingBytes
+	return func() tea.Msg {
+		result, err := saver.Save(context.Background(), path, original, working)
+		return saveResultMsg{Result: result, Err: err}
+	}
+}
+
+// handleSaveResult is invoked on the main goroutine when the saver
+// returns. On success it refreshes the loaded snapshot and the root
+// source so the source viewport and the diff command reflect the new
+// state. On failure it surfaces the specific error in the status
+// line, including the backup path when one was created.
+func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
+	m.saving = false
+	if msg.Err == nil {
+		m.loadedBytes = append([]byte(nil), m.workingBytes...)
+		m.state.Graph.Root.Source = append([]byte(nil), m.workingBytes...)
+		// Force the source viewport to reload on next render.
+		m.sourceDoc = nil
+		m.statusMessage = "✓ saved (backup: " + msg.Result.BackupPath + ")"
+		return m, nil
+	}
+	if errors.Is(msg.Err, app.ErrConflict) {
+		m.statusMessage = "✗ file changed on disk — reload before saving"
+		return m, nil
+	}
+	var saveErr *app.SaveError
+	if errors.As(msg.Err, &saveErr) {
+		m.statusMessage = "✗ save failed (backup: " + saveErr.BackupPath + "): " + saveErr.Err.Error()
+		return m, nil
+	}
+	m.statusMessage = "✗ save failed: " + msg.Err.Error()
+	return m, nil
+}
+
+// saveConfirmView renders the save-confirmation modal. It names the
+// target path and the backup directory (safety requirement for any
+// replacing action) and offers Enter to confirm or Esc to cancel.
+func (m *Model) saveConfirmView(width, height int) string {
+	title := "Save config · Enter save · Esc cancel"
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	var body strings.Builder
+	body.WriteString(dimStyle.Render("Path       ") + m.state.Settings.ConfigPath + "\n")
+	body.WriteString(dimStyle.Render("Backup dir ") + m.state.Settings.BackupDir + "\n")
+	body.WriteString("\n")
+	body.WriteString(dimStyle.Render("a backup is created before the file is replaced") + "\n")
+	body.WriteString(dimStyle.Render("review the diff with D before confirming"))
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
 }
 
 // syncDiffContent sets the diff viewport size and content from the
@@ -604,6 +766,9 @@ func (m *Model) View() string {
 	if m.showDiff {
 		b.WriteString(m.diffView(width, paneH))
 		b.WriteString("\n")
+	} else if m.showSaveConfirm {
+		b.WriteString(m.saveConfirmView(width, paneH))
+		b.WriteString("\n")
 	} else if m.showDiagnostics {
 		if m.showDetail {
 			b.WriteString(m.diagnosticDetailView(width, paneH))
@@ -638,7 +803,12 @@ func (m *Model) header(width int) string {
 		path = "unknown"
 	}
 	left := headerStyle.Render(" lazycaddy ")
+	// Important state is conveyed by an explicit text label, not
+	// color alone, matching the existing READ-ONLY pattern.
 	right := readOnlyBadge.Render(" READ-ONLY ")
+	if m.state != nil && !m.state.Settings.ReadOnly {
+		right = writableBadge.Render(" WRITE ")
+	}
 	if m.state != nil && m.state.Graph != nil && m.state.Graph.Err != nil {
 		right = errorStyle.Render(" PARSE ERROR ") + right
 	}
@@ -811,21 +981,23 @@ func (m *Model) statusLine(width int) string {
 }
 
 func (m *Model) footer(width int) string {
-	// The diagnostics modal (list and detail) replaces the global
-	// keymap with its own context-aware keys, so the bottom footer
-	// never shows keys that are not active in the current context.
+	// Modals replace the global keymap with context-aware keys, so the
+	// bottom footer never shows keys that are not active in the current
+	// context.
 	var keys string
 	switch {
 	case m.showDiff:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
+	case m.showSaveConfirm:
+		keys = "Enter save · Esc cancel"
 	case m.showDetail:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
 	case m.showDiagnostics:
 		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · q quit · %d items", len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · s save · q quit · %d items", len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · s save · q quit"
 	}
 	return statusLineStyle.Width(width).Render(keys)
 }

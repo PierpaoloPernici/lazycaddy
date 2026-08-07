@@ -7,9 +7,13 @@ import "time"
 type Settings struct {
 	// ConfigPath is the path of the Caddyfile to inspect.
 	ConfigPath string
-	// ReadOnly is always true in this milestone: the inspector never writes
-	// the Caddyfile. Future milestones add explicit writable modes.
+	// ReadOnly is true by default and set from the --write flag: the
+	// inspector never writes the Caddyfile unless the operator opts in.
 	ReadOnly bool
+	// BackupDir is where backups are written. Empty means "derive the
+	// default from ConfigPath" (the <config-dir>/.lazycaddy/backups/
+	// directory); cmd/lazycaddy resolves that default before wiring.
+	BackupDir string
 	// BinaryPath is the absolute or PATH-relative path to the caddy
 	// binary. Empty means "no binary configured": the TUI starts, but
 	// format and validate are disabled until the operator provides a
