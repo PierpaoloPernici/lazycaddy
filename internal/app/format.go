@@ -12,23 +12,25 @@ import (
 // is injected at construction time so tests can substitute a fake.
 type Formatter interface {
 	// FormatAndValidate formats src with `caddy fmt` and then validates
-	// the result with `caddy validate`. On success the returned
-	// formatted bytes are the new working copy and diagnostics is nil.
-	// On failure the returned diagnostics describe every parse error
-	// Caddy reported and err is a *validator.ExitError that carries
-	// the redacted stderr.
-	FormatAndValidate(ctx context.Context, src []byte) (formatted []byte, diagnostics []validator.Diagnostic, err error)
+	// the result with `caddy validate`. displayPath is the real
+	// Caddyfile path; the validator reports it in the diagnostics
+	// instead of the temporary working file it validated against. On
+	// success the returned formatted bytes are the new working copy and
+	// diagnostics is nil. On failure the returned diagnostics describe
+	// every parse error Caddy reported and err is a
+	// *validator.ExitError that carries the redacted stderr.
+	FormatAndValidate(ctx context.Context, displayPath string, src []byte) (formatted []byte, diagnostics []validator.Diagnostic, err error)
 }
 
 // FormatterFunc adapts a plain function to the Formatter interface. It
 // mirrors the LoaderFunc pattern: callers that want to bypass the
 // production constructor can wire a closure in one line, which is what
 // the UI tests do.
-type FormatterFunc func(ctx context.Context, src []byte) (formatted []byte, diagnostics []validator.Diagnostic, err error)
+type FormatterFunc func(ctx context.Context, displayPath string, src []byte) (formatted []byte, diagnostics []validator.Diagnostic, err error)
 
 // FormatAndValidate implements Formatter.
-func (f FormatterFunc) FormatAndValidate(ctx context.Context, src []byte) ([]byte, []validator.Diagnostic, error) {
-	return f(ctx, src)
+func (f FormatterFunc) FormatAndValidate(ctx context.Context, displayPath string, src []byte) ([]byte, []validator.Diagnostic, error) {
+	return f(ctx, displayPath, src)
 }
 
 // NewFormatter wraps a configured *validator.Validator in a Formatter.

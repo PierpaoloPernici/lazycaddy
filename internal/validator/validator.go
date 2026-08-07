@@ -130,12 +130,14 @@ func (v *Validator) Validate(ctx context.Context, path string) ([]Diagnostic, er
 	return diags, &ExitError{Stderr: []byte(redacted), ExitCode: exit}
 }
 
-// FormatAndValidate runs Format then Validate. The formatted bytes are
-// written to a fresh temporary file for validation, so the caller does
-// not have to manage the path. If Format fails, Validate is not invoked.
-// On Validate failure the formatted bytes are still returned alongside
-// the diagnostics so the UI can render the diff and the error at once.
-func (v *Validator) FormatAndValidate(ctx context.Context, src []byte) (formatted []byte, diags []Diagnostic, err error) {
+// FormatAndValidate runs Format then Validate against a temporary
+// working copy. displayPath is the real Caddyfile path to surface in
+// the diagnostics: the temporary file path is an internal detail and
+// is remapped away before the diagnostics leave the package. If Format
+// fails, Validate is not invoked. On Validate failure the formatted
+// bytes are still returned alongside the diagnostics so the UI can
+// render the diff and the error at once.
+func (v *Validator) FormatAndValidate(ctx context.Context, displayPath string, src []byte) (formatted []byte, diags []Diagnostic, err error) {
 	formatted, err = v.Format(ctx, src)
 	if err != nil {
 		return nil, nil, err
@@ -146,10 +148,28 @@ func (v *Validator) FormatAndValidate(ctx context.Context, src []byte) (formatte
 	}
 	defer cleanup()
 	diags, err = v.Validate(ctx, path)
+	remapTempPath(diags, path, displayPath)
 	if err != nil {
 		return formatted, diags, err
 	}
 	return formatted, diags, nil
+}
+
+// remapTempPath replaces the temporary validation file path in each
+// diagnostic with the display path (the real Caddyfile path), so the
+// UI never surfaces /var/folders/... temp paths. It is a no-op when
+// displayPath is empty or equals tempPath. Paths of other documents
+// (e.g. imported files, which caddy reports with their real path) are
+// left untouched.
+func remapTempPath(diags []Diagnostic, tempPath, displayPath string) {
+	if displayPath == "" || displayPath == tempPath {
+		return
+	}
+	for i := range diags {
+		if diags[i].Path == tempPath {
+			diags[i].Path = displayPath
+		}
+	}
 }
 
 // writeTemp writes data to a uniquely named file in the OS temp directory
