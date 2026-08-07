@@ -360,6 +360,11 @@ func (m *Model) startFormatAndValidate() (tea.Model, tea.Cmd) {
 func (m *Model) formatAndValidateCmd(src []byte) tea.Cmd {
 	timeout := m.validatorTimeout
 	formatter := m.formatter
+	// The diagnostics must surface the real Caddyfile path, not the
+	// temporary working file the validator runs against. m.state is
+	// guaranteed non-nil by the caller (startFormatAndValidate checks
+	// it), so ConfigPath is safe to capture here.
+	displayPath := m.state.Settings.ConfigPath
 	return func() tea.Msg {
 		// Only apply a context timeout when the operator asked for one.
 		// context.WithTimeout(parent, 0) returns a context that is
@@ -371,7 +376,7 @@ func (m *Model) formatAndValidateCmd(src []byte) tea.Cmd {
 			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
-		formatted, diags, err := formatter.FormatAndValidate(ctx, src)
+		formatted, diags, err := formatter.FormatAndValidate(ctx, displayPath, src)
 		return formatAndValidateResultMsg{
 			Formatted:   formatted,
 			Diagnostics: diags,

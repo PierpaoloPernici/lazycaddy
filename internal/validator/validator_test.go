@@ -402,7 +402,7 @@ func TestFormatAndValidate_HappyPath(t *testing.T) {
 		},
 	}
 	v := newValidator(t, runner)
-	out, diags, err := v.FormatAndValidate(context.Background(), []byte("raw"))
+	out, diags, err := v.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", []byte("raw"))
 	if err != nil {
 		t.Fatalf("FormatAndValidate: unexpected error: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestFormatAndValidate_FormatFailureSkipsValidate(t *testing.T) {
 		},
 	}
 	v := newValidator(t, runner)
-	_, _, err := v.FormatAndValidate(context.Background(), []byte("raw"))
+	_, _, err := v.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", []byte("raw"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -455,7 +455,7 @@ func TestFormatAndValidate_ReturnsDiagnosticsOnError(t *testing.T) {
 		},
 	}
 	v := newValidator(t, runner)
-	out, diags, err := v.FormatAndValidate(context.Background(), []byte("raw"))
+	out, diags, err := v.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", []byte("raw"))
 	if err == nil {
 		t.Fatal("expected error from failing validate, got nil")
 	}
@@ -464,6 +464,46 @@ func TestFormatAndValidate_ReturnsDiagnosticsOnError(t *testing.T) {
 	}
 	if len(diags) != 1 || diags[0].Line != 3 {
 		t.Fatalf("expected 1 diagnostic at line 3, got %+v", diags)
+	}
+}
+
+// TestFormatAndValidate_RemapsTempPathToDisplayPath verifies that the
+// temporary working file path is remapped to the real Caddyfile path
+// in the diagnostics. The UI must never surface /var/folders/... temp
+// paths; the temp file is an internal implementation detail.
+func TestFormatAndValidate_RemapsTempPathToDisplayPath(t *testing.T) {
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			switch args[0] {
+			case "fmt":
+				if args[1] != "--overwrite" {
+					t.Fatalf("expected fmt --overwrite, got %v", args)
+				}
+				_ = os.WriteFile(args[2], []byte("formatted"), 0o644)
+				return nil, nil, 0, nil
+			case "validate":
+				// The validate temp path is args[2]. Emit a parse
+				// error that embeds it, as caddy does.
+				return nil, []byte(args[2] + ":47:1: module not registered"), 1, nil
+			default:
+				t.Fatalf("unexpected command: %v", args)
+				return nil, nil, 1, errors.New("unexpected")
+			}
+		},
+	}
+	v := newValidator(t, runner)
+	_, diags, err := v.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", []byte("raw"))
+	if err == nil {
+		t.Fatal("expected error from failing validate, got nil")
+	}
+	if len(diags) != 1 {
+		t.Fatalf("len(diags) = %d, want 1", len(diags))
+	}
+	if diags[0].Path != "/etc/caddy/Caddyfile" {
+		t.Errorf("diag path = %q, want /etc/caddy/Caddyfile (temp path must be remapped)", diags[0].Path)
+	}
+	if diags[0].Line != 47 || diags[0].Column != 1 {
+		t.Errorf("diag line/col = %d/%d, want 47/1", diags[0].Line, diags[0].Column)
 	}
 }
 

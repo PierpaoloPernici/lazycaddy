@@ -10,15 +10,20 @@ import (
 
 func TestFormatterFunc_PassesThrough(t *testing.T) {
 	var gotSrc []byte
-	fn := FormatterFunc(func(ctx context.Context, src []byte) ([]byte, []validator.Diagnostic, error) {
+	var gotDisplayPath string
+	fn := FormatterFunc(func(ctx context.Context, displayPath string, src []byte) ([]byte, []validator.Diagnostic, error) {
 		gotSrc = src
+		gotDisplayPath = displayPath
 		return []byte("formatted"), []validator.Diagnostic{
 			{Path: "p", Line: 1, Column: 2, Message: "msg", Severity: validator.SeverityError},
 		}, nil
 	})
-	formatted, diags, err := fn.FormatAndValidate(context.Background(), []byte("raw"))
+	formatted, diags, err := fn.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", []byte("raw"))
 	if err != nil {
 		t.Fatalf("FormatAndValidate: unexpected error: %v", err)
+	}
+	if gotDisplayPath != "/etc/caddy/Caddyfile" {
+		t.Errorf("displayPath = %q, want /etc/caddy/Caddyfile", gotDisplayPath)
 	}
 	if string(gotSrc) != "raw" {
 		t.Errorf("src = %q, want raw", gotSrc)
@@ -36,10 +41,10 @@ func TestFormatterFunc_PassesThrough(t *testing.T) {
 
 func TestFormatterFunc_PropagatesError(t *testing.T) {
 	sentinel := errors.New("boom")
-	fn := FormatterFunc(func(ctx context.Context, src []byte) ([]byte, []validator.Diagnostic, error) {
+	fn := FormatterFunc(func(ctx context.Context, displayPath string, src []byte) ([]byte, []validator.Diagnostic, error) {
 		return nil, nil, sentinel
 	})
-	_, _, err := fn.FormatAndValidate(context.Background(), nil)
+	_, _, err := fn.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", nil)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want %v", err, sentinel)
 	}
@@ -54,7 +59,7 @@ func TestNewFormatter_WrapsValidator(t *testing.T) {
 		t.Fatalf("validator.New: %v", err)
 	}
 	formatter := NewFormatter(v)
-	_, _, err = formatter.FormatAndValidate(context.Background(), []byte("raw"))
+	_, _, err = formatter.FormatAndValidate(context.Background(), "/etc/caddy/Caddyfile", []byte("raw"))
 	if !errors.Is(err, validator.ErrBinaryMissing) {
 		t.Fatalf("expected ErrBinaryMissing, got %v", err)
 	}

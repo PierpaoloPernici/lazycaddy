@@ -37,11 +37,16 @@ type fakeFormatter struct {
 	// wiring (e.g. that a zero ValidatorTimeout does not cancel the
 	// context before the validator sees it).
 	capturedCtx context.Context
+	// capturedDisplayPath records the displayPath passed to the last
+	// FormatAndValidate call, so tests can verify the real Caddyfile
+	// path is surfaced instead of a temp path.
+	capturedDisplayPath string
 }
 
-func (f *fakeFormatter) FormatAndValidate(ctx context.Context, src []byte) ([]byte, []validator.Diagnostic, error) {
+func (f *fakeFormatter) FormatAndValidate(ctx context.Context, displayPath string, src []byte) ([]byte, []validator.Diagnostic, error) {
 	f.calls++
 	f.capturedCtx = ctx
+	f.capturedDisplayPath = displayPath
 	return f.formatted, f.diagnostics, f.err
 }
 
@@ -545,6 +550,9 @@ func TestModelFormatAndValidate_InvokesFormatter(t *testing.T) {
 	}
 	if formatter.calls != 1 {
 		t.Errorf("formatter.calls = %d, want 1", formatter.calls)
+	}
+	if formatter.capturedDisplayPath != "config/Caddyfile" {
+		t.Errorf("displayPath = %q, want config/Caddyfile (real path must be surfaced, not a temp path)", formatter.capturedDisplayPath)
 	}
 }
 
