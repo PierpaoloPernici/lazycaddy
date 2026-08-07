@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
 // fakeLoader serves a prebuilt state, optionally with an error.
@@ -20,6 +23,21 @@ type fakeLoader struct {
 }
 
 func (f fakeLoader) LoadState() (*app.State, error) { return f.state, f.err }
+
+// fakeFormatter is a programmable Formatter for tests. The default
+// behavior (no fields set) reports a successful call with an empty
+// formatted byte slice and no diagnostics.
+type fakeFormatter struct {
+	formatted   []byte
+	diagnostics []validator.Diagnostic
+	err         error
+	calls       int
+}
+
+func (f *fakeFormatter) FormatAndValidate(ctx context.Context, src []byte) ([]byte, []validator.Diagnostic, error) {
+	f.calls++
+	return f.formatted, f.diagnostics, f.err
+}
 
 type noSuchFile struct{ path string }
 
@@ -35,9 +53,13 @@ func stateFor(t *testing.T, path string, readFile app.FileReader) *app.State {
 	return state
 }
 
-func newLoadedModel(t *testing.T, loader app.Loader) *Model {
+func newLoadedModel(t *testing.T, loader app.Loader, formatter ...app.Formatter) *Model {
 	t.Helper()
-	m := New(loader)
+	var f app.Formatter
+	if len(formatter) > 0 {
+		f = formatter[0]
+	}
+	m := New(loader, f)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -210,7 +232,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}})
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -461,5 +483,243 @@ func TestModelNoWriteOperations(t *testing.T) {
 	m.View()
 	if len(calls) != 1 {
 		t.Errorf("file reads = %v, want only the config read", calls)
+	}
+}
+
+func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
+	formatter := &fakeFormatter{formatted: []byte("x")}
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter)
+	m.Load()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd != nil {
+		t.Errorf("expected nil cmd when no state, got %v", cmd)
+	}
+	if formatter.calls != 0 {
+		t.Errorf("formatter.calls = %d, want 0 when no state is loaded", formatter.calls)
+	}
+}
+
+func TestModelFormatAndValidate_NoFormatterShowsHint(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}) // no formatter
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd != nil {
+		t.Errorf("expected nil cmd when formatter is nil, got %v", cmd)
+	}
+	if !strings.Contains(m.statusMessage, "caddy binary not configured") {
+		t.Errorf("statusMessage = %q, want hint about caddy binary", m.statusMessage)
+	}
+	if m.busy {
+		t.Error("busy = true, want false when formatter is nil")
+	}
+}
+
+func TestModelFormatAndValidate_InvokesFormatter(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("formatted")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd == nil {
+		t.Fatal("expected tea.Cmd from v keypress")
+	}
+	if !m.busy {
+		t.Error("busy = false, want true while invocation is in flight")
+	}
+	msg := cmd()
+	result, ok := msg.(formatAndValidateResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want formatAndValidateResultMsg", msg)
+	}
+	if string(result.Formatted) != "formatted" {
+		t.Errorf("Formatted = %q, want formatted", result.Formatted)
+	}
+	if formatter.calls != 1 {
+		t.Errorf("formatter.calls = %d, want 1", formatter.calls)
+	}
+}
+
+func TestModelFormatAndValidate_SuccessStoresWorkingCopy(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("formatted")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	msg := cmd()
+	m.Update(msg) // process the result
+	if string(m.workingBytes) != "formatted" {
+		t.Errorf("workingBytes = %q, want formatted", m.workingBytes)
+	}
+	if !strings.Contains(m.statusMessage, "validated") {
+		t.Errorf("statusMessage = %q, want it to mention 'validated'", m.statusMessage)
+	}
+	if !strings.HasPrefix(m.statusMessage, "✓") {
+		t.Errorf("statusMessage = %q, want it to start with the success glyph", m.statusMessage)
+	}
+	if m.showDiagnostics {
+		t.Error("showDiagnostics = true, want false on success")
+	}
+	if m.busy {
+		t.Error("busy = true, want false after result delivery")
+	}
+}
+
+func TestModelFormatAndValidate_FailureShowsModal(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	msg := cmd()
+	m.Update(msg) // process the result
+	if !m.showDiagnostics {
+		t.Fatal("showDiagnostics = false, want true on validation failure with diagnostics")
+	}
+	if len(m.diagnostics) != 1 {
+		t.Fatalf("len(diagnostics) = %d, want 1", len(m.diagnostics))
+	}
+	if m.diagCursor != 0 {
+		t.Errorf("diagCursor = %d, want 0 on open", m.diagCursor)
+	}
+	view := m.View()
+	for _, want := range []string{"Validation", "boom", "config/Caddyfile:1:1"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestModelFormatAndValidate_FailureEmptyDiags(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	formatter := &fakeFormatter{err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	msg := cmd()
+	m.Update(msg)
+	if m.showDiagnostics {
+		t.Error("showDiagnostics = true, want false when no diagnostics were parsed")
+	}
+	if !strings.HasPrefix(m.statusMessage, "✗") {
+		t.Errorf("statusMessage = %q, want it to start with the error glyph", m.statusMessage)
+	}
+	if !strings.Contains(m.statusMessage, "caddy exit 1") {
+		t.Errorf("statusMessage = %q, want it to include 'caddy exit 1'", m.statusMessage)
+	}
+}
+
+func TestModelFormatAndValidate_DiagnosticsModalNavigation(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "p", Line: 1, Message: "first", Severity: validator.SeverityError},
+		{Path: "p", Line: 2, Message: "second", Severity: validator.SeverityError},
+		{Path: "p", Line: 3, Message: "third", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd()) // open the modal
+	if !m.showDiagnostics {
+		t.Fatal("modal not open after result delivery")
+	}
+	if m.diagCursor != 0 {
+		t.Fatalf("diagCursor = %d, want 0 on open", m.diagCursor)
+	}
+	// j moves down
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if m.diagCursor != 1 {
+		t.Errorf("diagCursor = %d, want 1 after j", m.diagCursor)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if m.diagCursor != 2 {
+		t.Errorf("diagCursor = %d, want 2 after second j", m.diagCursor)
+	}
+	// Clamp at the end
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if m.diagCursor != 2 {
+		t.Errorf("diagCursor = %d, want 2 (clamped at end)", m.diagCursor)
+	}
+	// k moves up
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if m.diagCursor != 1 {
+		t.Errorf("diagCursor = %d, want 1 after k", m.diagCursor)
+	}
+	// Arrow keys also work
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.diagCursor != 2 {
+		t.Errorf("diagCursor = %d, want 2 after KeyDown", m.diagCursor)
+	}
+	// Esc closes
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showDiagnostics {
+		t.Error("showDiagnostics = true, want false after Esc")
+	}
+	if len(m.diagnostics) != 0 {
+		t.Errorf("diagnostics not cleared after Esc: %v", m.diagnostics)
+	}
+}
+
+func TestModelFormatAndValidate_BusyIsIgnored(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	formatter := &fakeFormatter{formatted: []byte("formatted")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	// First v starts the invocation.
+	_, cmd1 := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if !m.busy {
+		t.Error("busy = false after first v, want true")
+	}
+	if cmd1 == nil {
+		t.Fatal("first v must return a tea.Cmd")
+	}
+	// Second v while busy is a no-op.
+	_, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd2 != nil {
+		t.Error("second v must return nil cmd while busy")
+	}
+	if formatter.calls != 0 {
+		t.Errorf("formatter.calls = %d before cmd1() executes, want 0", formatter.calls)
+	}
+	cmd1() // execute the first invocation
+	if formatter.calls != 1 {
+		t.Errorf("formatter.calls = %d, want exactly 1 (second v must not have triggered a call)", formatter.calls)
+	}
+}
+
+func TestModelFormatAndValidate_NoExtraReads(t *testing.T) {
+	// The v keypress must not touch the filesystem: format+validate is
+	// an in-process call against the Formatter, the loader is the only
+	// I/O path and it only reads.
+	calls := map[string]int{}
+	readFile := func(p string) ([]byte, error) {
+		calls[p]++
+		if p == "config/Caddyfile" {
+			return []byte("example.test {\n}\n"), nil
+		}
+		return nil, &noSuchFile{p}
+	}
+	state := stateFor(t, "config/Caddyfile", readFile)
+	formatter := &fakeFormatter{formatted: []byte("formatted")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m.View()
+	beforeReads := calls["config/Caddyfile"]
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.View()
+	m.Update(cmd())
+	m.View()
+	if got := calls["config/Caddyfile"] - beforeReads; got != 0 {
+		t.Errorf("file reads triggered by v = %d, want 0 (no-write contract violated)", got)
 	}
 }

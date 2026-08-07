@@ -1,7 +1,8 @@
 // Command lazycaddy is the terminal user interface for inspecting Caddy.
-// This milestone is strictly read-only: it loads a Caddyfile, resolves its
-// imports and renders a document/site tree with a raw source view. No write
-// operations and no Caddy daemon interaction exist yet.
+// This milestone adds a read-only inspector with an opt-in caddy fmt
+// and caddy validate workflow (--caddy-path). No file writes and no
+// Caddy daemon interaction are performed: the operator is always in
+// control of when format and validate run.
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
 func main() {
@@ -23,10 +25,22 @@ func main() {
 		Use:   "lazycaddy",
 		Short: "A keyboard-first terminal UI for inspecting and managing Caddy",
 		Long: "lazycaddy inspects a Caddyfile and its imports in the terminal.\n" +
-			"This milestone is read-only: the raw Caddyfile is never modified.",
+			"The inspector is read-only; format and validate are opt-in via --caddy-path.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			model := ui.New(app.NewLoader(settings, os.ReadFile))
+			loader := app.NewLoader(settings, os.ReadFile)
+			var formatter app.Formatter
+			if settings.BinaryPath != "" {
+				v, err := validator.New(validator.Options{
+					BinaryPath: settings.BinaryPath,
+					Timeout:    settings.ValidatorTimeout,
+				})
+				if err != nil {
+					return fmt.Errorf("new validator: %w", err)
+				}
+				formatter = app.NewFormatter(v)
+			}
+			model := ui.New(loader, formatter)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
@@ -41,6 +55,10 @@ func main() {
 
 	rootCmd.Flags().StringVar(&settings.ConfigPath, "config", config.DefaultConfigPath(),
 		"path to the Caddyfile to inspect (default: ./Caddyfile)")
+	rootCmd.Flags().StringVar(&settings.BinaryPath, "caddy-path", "",
+		"path to the caddy binary (default: empty; format and validate are disabled)")
+	rootCmd.Flags().DurationVar(&settings.ValidatorTimeout, "validator-timeout", 0,
+		"per-invocation timeout for caddy fmt and caddy validate (default: 5s, the validator package default)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
