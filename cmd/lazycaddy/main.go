@@ -1,8 +1,10 @@
-// Command lazycaddy is the terminal user interface for inspecting Caddy.
-// This milestone adds a read-only inspector with an opt-in caddy fmt
-// and caddy validate workflow (--caddy-path). No file writes and no
-// Caddy daemon interaction are performed: the operator is always in
-// control of when format and validate run.
+// Command lazycaddy is a keyboard-first terminal UI for inspecting and
+// managing Caddy. It loads a Caddyfile, resolves imports and renders a
+// document/site tree with a raw source view. An opt-in format and
+// validate workflow (--caddy-path) runs caddy fmt and caddy validate
+// against a temporary working copy and surfaces structured diagnostics.
+// No file writes and no Caddy daemon interaction are performed: the
+// operator is always in control of when format and validate run.
 package main
 
 import (

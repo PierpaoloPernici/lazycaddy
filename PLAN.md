@@ -21,8 +21,9 @@ The UI must never reload Caddy implicitly after an edit.
 
 ## Current implementation status
 
-The repository has completed the configuration-engine spike and the first
-read-only TUI vertical slice.
+The repository has completed the configuration-engine spike and a
+read-only TUI vertical slice with an opt-in format and validate
+workflow.
 
 Completed:
 
@@ -44,14 +45,20 @@ Completed:
   or Caddy daemon dependency.
 - `caddy fmt` and `caddy validate` engine (`internal/validator`):
   temporary-file execution, command-runner abstraction, secret redactor,
-  structured diagnostic parser and timeout/cancellation handling.
-  28 tests, no real caddy required.
+  structured diagnostic parser, timeout/cancellation handling, and
+  diagnostics that surface the real Caddyfile path instead of the
+  temporary working file.
+- validator integration in the TUI: `config.Settings.BinaryPath` and
+  `ValidatorTimeout`, an `app.Formatter` boundary, the `v` keybinding
+  that formats and validates the root document, a diagnostics modal
+  with a compact list and a full detail view, and context-aware
+  footers.
+- A test suite of 148 test functions covering the lossless-editing
+  contract, import resolution, validation, diagnostics and the TUI.
+  Tests use fakes and require no installed caddy or network access.
 
 Next milestone:
 
-- integrate the validator engine in the application layer
-  (`config.Settings.BinaryPath`, app initialization, format+validate
-  keybinding, diagnostic rendering);
 - add the unified diff workflow around the formatted/validated working
   copy.
 
@@ -292,16 +299,27 @@ tests and CI.
 
 ### v0.1 — read-only inspector with a safe vertical slice
 
-- [ ] Load a configured or default Caddyfile path and resolve imports. The
-  resolver engine is complete; application integration is pending.
-- [ ] Parse site blocks/common directives with source ranges and opaque nodes.
-  The parser engine is complete; application integration is pending.
-- [ ] Support `$EDITOR`, temporary-file formatting and validation. The
-  validator engine is complete; application integration is pending.
-- Show sites, raw source, search, basic runtime/version information and diagnostics.
-- Detect capabilities and fall back to read-only mode without blocking inspection.
-- Implement diff, timestamped backup, explicit save and explicit Admin API reload.
-- Add a basic log view when a configured source is available.
+Completed within the vertical slice:
+
+- [x] Load a configured or default Caddyfile path and resolve imports.
+  The resolver engine and the TUI integration are both in place.
+- [x] Parse site blocks/common directives with source ranges and opaque
+  nodes. The parser engine and the TUI document tree are both in place.
+- [x] Temporary-file formatting and validation. The `v` keybinding runs
+  `caddy fmt` and `caddy validate` against a temporary working copy and
+  surfaces structured diagnostics with the real Caddyfile path, a
+  compact list and a full detail view.
+
+Remaining for v0.1:
+
+- `$EDITOR` round-trip for a selected source range.
+- Search across sites, files and logs.
+- Basic runtime/version information and capability detection with a
+  read-only fallback (browsing already works without caddy or write
+  permissions).
+- Unified diff review, timestamped backup, explicit save and explicit
+  Admin API reload.
+- Basic log view when a configured source is available.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.
 
