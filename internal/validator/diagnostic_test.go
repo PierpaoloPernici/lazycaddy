@@ -1,6 +1,9 @@
 package validator
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDiagnostic_String(t *testing.T) {
 	cases := []struct {
@@ -41,6 +44,7 @@ func TestSeverity_String(t *testing.T) {
 		{SeverityError, "error"},
 		{SeverityWarning, "warning"},
 		{SeverityInfo, "info"},
+		{SeverityDebug, "debug"},
 		{Severity(99), "unknown"},
 	}
 	for _, c := range cases {
@@ -124,5 +128,113 @@ func TestParseDiagnostics(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseLogLevel_Text(t *testing.T) {
+	cases := []struct {
+		line string
+		want Severity
+	}{
+		{"ERROR /etc/caddy/Caddyfile:47:1: module not registered", SeverityError},
+		{"INFO  using config from file", SeverityInfo},
+		{"WARN  deprecated directive", SeverityWarning},
+		{"DEBUG verbose", SeverityDebug},
+		{"plain line with no level", SeverityError},
+	}
+	for _, c := range cases {
+		t.Run(c.line, func(t *testing.T) {
+			if got := parseLogLevel(c.line); got != c.want {
+				t.Errorf("parseLogLevel(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseLogLevel_Logfmt(t *testing.T) {
+	cases := []struct {
+		line string
+		want Severity
+	}{
+		{`level=error msg="module not registered"`, SeverityError},
+		{`level=info msg="using config from file"`, SeverityInfo},
+		{`level=warning msg="deprecated"`, SeverityWarning},
+		{`level=debug msg="trace"`, SeverityDebug},
+	}
+	for _, c := range cases {
+		t.Run(c.line, func(t *testing.T) {
+			if got := parseLogLevel(c.line); got != c.want {
+				t.Errorf("parseLogLevel(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseLogLevel_JSON(t *testing.T) {
+	cases := []struct {
+		line string
+		want Severity
+	}{
+		{`{"level":"error","msg":"module not registered"}`, SeverityError},
+		{`{"level":"info","msg":"using config from file"}`, SeverityInfo},
+		{`{"level": "warning", "msg":"deprecated"}`, SeverityWarning},
+		{`{"level":"debug","msg":"trace"}`, SeverityDebug},
+		{`{"msg":"no level field"}`, SeverityError},
+	}
+	for _, c := range cases {
+		t.Run(c.line, func(t *testing.T) {
+			if got := parseLogLevel(c.line); got != c.want {
+				t.Errorf("parseLogLevel(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseDiagnostics_MixedLevels(t *testing.T) {
+	// Caddy typically emits an info line before the error:
+	//   INFO  using config from file
+	//   ERROR /etc/caddy/Caddyfile:47:1: module not registered
+	in := "INFO  using config from file\n" +
+		"ERROR /etc/caddy/Caddyfile:47:1: module not registered"
+	got := ParseDiagnostics("/default/Caddyfile", in)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (got = %+v)", len(got), got)
+	}
+	// The info line falls back to the default path with the full
+	// text as the message and is tagged SeverityInfo.
+	if got[0].Severity != SeverityInfo {
+		t.Errorf("info diagnostic severity = %v, want SeverityInfo", got[0].Severity)
+	}
+	if !strings.Contains(got[0].Message, "using config from file") {
+		t.Errorf("info diagnostic message = %q, want to contain 'using config from file'", got[0].Message)
+	}
+	// The error line is matched against the path:line:col regex and
+	// is tagged SeverityError.
+	if got[1].Path != "/etc/caddy/Caddyfile" {
+		t.Errorf("error diagnostic path = %q, want /etc/caddy/Caddyfile", got[1].Path)
+	}
+	if got[1].Line != 47 {
+		t.Errorf("error diagnostic line = %d, want 47", got[1].Line)
+	}
+	if got[1].Column != 1 {
+		t.Errorf("error diagnostic column = %d, want 1", got[1].Column)
+	}
+	if got[1].Severity != SeverityError {
+		t.Errorf("error diagnostic severity = %v, want SeverityError", got[1].Severity)
+	}
+}
+
+func TestParseDiagnostics_JSONWithLevel(t *testing.T) {
+	in := `{"level":"info","msg":"using config from file"}` + "\n" +
+		`{"level":"error","msg":"module not registered","file":"/etc/caddy/Caddyfile","line":47}`
+	got := ParseDiagnostics("/default/Caddyfile", in)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Severity != SeverityInfo {
+		t.Errorf("got[0].Severity = %v, want SeverityInfo", got[0].Severity)
+	}
+	if got[1].Severity != SeverityError {
+		t.Errorf("got[1].Severity = %v, want SeverityError", got[1].Severity)
 	}
 }
