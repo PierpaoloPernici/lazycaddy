@@ -1171,3 +1171,71 @@ func TestWrapText_ZeroOrNegativeWidthReturnsInput(t *testing.T) {
 		t.Errorf("wrapText(hello world, -1) = %q, want %q", got, "hello world")
 	}
 }
+
+// TestModelFooter_GlobalWhenModalClosed verifies that the global
+// keymap is unchanged when no diagnostics modal is open.
+func TestModelFooter_GlobalWhenModalClosed(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	view := m.View()
+	for _, want := range []string{"v format & validate", "Enter toggle"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("global footer should show %q, got:\n%s", want, view)
+		}
+	}
+}
+
+// TestModelFooter_ListContext verifies that the bottom footer shows
+// the list keys (not the global keymap) while the diagnostics modal
+// is open in list mode.
+func TestModelFooter_ListContext(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	view := m.View()
+	if !strings.Contains(view, "Enter/+ detail") {
+		t.Errorf("list footer should show 'Enter/+ detail', got:\n%s", view)
+	}
+	if strings.Contains(view, "v format & validate") {
+		t.Errorf("list footer must not show the global 'v format & validate' key, got:\n%s", view)
+	}
+}
+
+// TestModelFooter_DetailContext verifies that the bottom footer shows
+// the detail keys (not the global keymap) while the diagnostic detail
+// view is open.
+func TestModelFooter_DetailContext(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open detail
+	view := m.View()
+	if !strings.Contains(view, "PgUp/PgDown") {
+		t.Errorf("detail footer should show PgUp/PgDown, got:\n%s", view)
+	}
+	if strings.Contains(view, "v format & validate") {
+		t.Errorf("detail footer must not show the global 'v format & validate' key, got:\n%s", view)
+	}
+	if strings.Contains(view, "Enter toggle") {
+		t.Errorf("detail footer must not show the global 'Enter toggle' key, got:\n%s", view)
+	}
+}

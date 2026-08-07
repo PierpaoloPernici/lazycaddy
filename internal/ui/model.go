@@ -250,7 +250,7 @@ func (m *Model) syncDetailContent() {
 	if bodyW < 1 {
 		bodyW = 1
 	}
-	bodyH := m.paneHeight() - 4 // border (2) + title (1) + hint (1)
+	bodyH := m.paneHeight() - 3 // border (2) + title (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -665,19 +665,30 @@ func (m *Model) statusLine(width int) string {
 }
 
 func (m *Model) footer(width int) string {
-	keys := "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · q quit"
-	if m.state != nil && m.state.Graph != nil {
+	// The diagnostics modal (list and detail) replaces the global
+	// keymap with its own context-aware keys, so the bottom footer
+	// never shows keys that are not active in the current context.
+	var keys string
+	switch {
+	case m.showDetail:
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
+	case m.showDiagnostics:
+		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
+	case m.state != nil && m.state.Graph != nil:
 		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · q quit · %d items", len(m.items))
+	default:
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · q quit"
 	}
 	return statusLineStyle.Width(width).Render(keys)
 }
 
 // diagnosticsView renders the validation results modal. It lists the
-// diagnostics with a movable cursor and a hint footer; the caller
-// is responsible for closing the modal through closeDiagnostics.
+// diagnostics with a movable cursor; the caller is responsible for
+// closing the modal through closeDiagnostics. The bottom footer shows
+// the context-aware keys, so the pane itself carries no hint line.
 func (m *Model) diagnosticsView(width, height int) string {
 	title := fmt.Sprintf("Validation · %d diagnostic(s) · Esc close", len(m.diagnostics))
-	bodyH := height - 4 // border (2) + title (1) + hint (1)
+	bodyH := height - 3 // border (2) + title (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -722,8 +733,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 			body.WriteString(line + "\n")
 		}
 	}
-	hint := "↑/↓ navigate"
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String() + "\n" + dimStyle.Render(hint))
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
 }
 
 // diagnosticDetailView renders the full diagnostic for the entry
@@ -736,7 +746,9 @@ func (m *Model) diagnosticsView(width, height int) string {
 // make PgUp / PgDown unusable.
 func (m *Model) diagnosticDetailView(width, height int) string {
 	title := "Diagnostic detail · Esc back"
-	hint := "↑/↓ scroll · PgUp/PgDown page · Esc back"
+	// The pane has no hint line of its own: the bottom footer shows
+	// the context-aware keys. The title keeps the "Esc back" hint so
+	// the escape affordance is always visible inside the pane.
 
 	// paneStyle has Border(RoundedBorder()) and Padding(0, 1):
 	// Width(N) sets the *content* width to N, and the rendered total
@@ -748,7 +760,7 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	if paneContentW < 1 {
 		paneContentW = 1
 	}
-	bodyH := height - 4 // border (2) + title (1) + hint (1)
+	bodyH := height - 3 // border (2) + title (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -762,7 +774,7 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	}
 
 	return paneStyle.Width(paneContentW).Height(height).Render(
-		title + "\n" + m.detailViewport.View() + "\n" + dimStyle.Render(hint),
+		title + "\n" + m.detailViewport.View(),
 	)
 }
 
