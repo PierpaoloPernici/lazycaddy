@@ -28,8 +28,6 @@ var (
 	cursorStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("212"))
-	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("212"))
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245"))
 	statusLineStyle = lipgloss.NewStyle().

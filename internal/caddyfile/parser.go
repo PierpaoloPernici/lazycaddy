@@ -30,8 +30,9 @@ type Document struct {
 // without a nested `{ ... }` block) inside any block. A single brace-less
 // site (its address line followed by the rest of the file) is grouped into
 // one site block, as Caddy does. A top-level line starting with the unquoted
-// word `import` is kept as an opaque top-level directive: import resolution
-// is a later milestone.
+// word `import` is kept as an opaque top-level directive. Resolution into
+// snippet references or imported file documents lives in Resolve (import.go)
+// and operates on the resulting node tree, not the parser.
 //
 // Structural limitations of this milestone, preserved verbatim but not yet
 // modeled: environment variable expansion ({$VAR}), the {block}/{blocks.*}
