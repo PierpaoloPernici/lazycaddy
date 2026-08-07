@@ -44,6 +44,10 @@ Completed:
 - formatter, test and vet commands plus GitHub Actions configuration.
 - testable application state and a read-only Bubble Tea inspector with
   document/site navigation, raw source viewing and parse-error fallback;
+- lexical syntax highlighting in the raw source view, including comments,
+  strings, heredocs, braces and placeholders. This is intentionally an
+  early, conservative presentation layer: semantic site-address and
+  directive roles remain future work;
 - CLI configuration loading with an explicit read-only mode and no file writes
   or Caddy daemon dependency.
 - `caddy fmt` and `caddy validate` engine (`internal/validator`):
@@ -73,7 +77,7 @@ Completed:
   the backup. The TUI gates saving on a validated working copy, a
   confirmation modal that names the target and backup directory, and
   the opt-in `--write` mode (read-only by default).
-- A test suite of 242 test functions covering the lossless-editing
+- A test suite of 271 test functions covering the lossless-editing
   contract, import resolution, validation, diagnostics, unified
   diffs, atomic writes, backups, the save workflow, the reload
   workflow and the TUI. Tests use fakes and require no installed
@@ -160,16 +164,16 @@ The interaction style should feel familiar to users of LazyGit, LazyDocker, k9s 
 +--------------------------------------------------------------+
 | Caddy status | version | config path | modified/valid state  |
 +-----------------------+--------------------------------------+
-| Navigation             | Details                              |
+| Navigation            | Details                              |
 |                       |                                      |
-| Sites                 | Structured summary                  |
+| Sites                 | Structured summary                   |
 | Snippets              | or source view                       |
 | Imports / Files       |                                      |
 | Runtime               |                                      |
 | Logs                  |                                      |
 | TLS                   |                                      |
 +-----------------------+--------------------------------------+
-| key hints | validation/error message | backup/reload status   |
+| key hints | validation/error message | backup/reload status  |
 +--------------------------------------------------------------+
 ```
 
@@ -356,6 +360,10 @@ Completed within the vertical slice:
   target and endpoint, and surfaces saved / validated / loaded states
   in the header. A failed reload leaves the saved file and backup
   intact.
+- [x] Initial lexical syntax highlighting in the raw source view. The v1
+  layer colors comments, strings, heredocs, braces and placeholders while
+  preserving the original bytes; semantic site-address and directive roles
+  are intentionally deferred.
 
 Remaining for v0.1:
 
@@ -380,7 +388,8 @@ Acceptance: external changes are never overwritten, every successful save is rec
 ### v0.3 — structured editing
 
 - Add source-range-preserving structured editing for `reverse_proxy` and common directives.
-- Add inline validation and syntax highlighting.
+- Add inline validation and richer semantic highlighting when the parse tree
+  can identify roles reliably.
 - Keep raw editing available for unsupported or plugin directives.
 
 Acceptance: a structured edit changes only the selected construct and preserves unrelated bytes, comments and unknown syntax.
