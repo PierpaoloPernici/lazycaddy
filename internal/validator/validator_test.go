@@ -78,11 +78,11 @@ func TestNew_AppliesDefaults(t *testing.T) {
 func TestFormat_RewritesTempFile(t *testing.T) {
 	runner := &fakeRunner{
 		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
-			if name != "/usr/bin/caddy" || len(args) != 2 || args[0] != "fmt" {
+			if name != "/usr/bin/caddy" || len(args) != 3 || args[0] != "fmt" || args[1] != "--overwrite" {
 				t.Fatalf("unexpected command: %s %v", name, args)
 			}
 			// Mimic caddy fmt: rewrite the temp file in place.
-			path := args[1]
+			path := args[2]
 			if err := os.WriteFile(path, []byte("formatted:"+path), 0o644); err != nil {
 				return nil, nil, 1, err
 			}
@@ -110,7 +110,7 @@ func TestFormat_RemovesTempOnExitError(t *testing.T) {
 	var leaked string
 	runner := &fakeRunner{
 		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
-			leaked = args[1]
+			leaked = args[2]
 			return []byte("oops"), []byte("parse error"), 1, nil
 		},
 	}
@@ -156,7 +156,7 @@ func TestFormat_TimeoutCleansUp(t *testing.T) {
 	var leaked string
 	runner := &fakeRunner{
 		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
-			leaked = args[1]
+			leaked = args[2]
 			<-ctx.Done()
 			// Mirror ExecRunner's behavior: wrap ErrTimeout so callers
 			// can detect the high-level failure with errors.Is.
@@ -181,7 +181,7 @@ func TestFormat_CancellationCleansUp(t *testing.T) {
 	var leaked string
 	runner := &fakeRunner{
 		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
-			leaked = args[1]
+			leaked = args[2]
 			return nil, nil, -1, context.Canceled
 		},
 	}
@@ -247,6 +247,9 @@ func TestValidate_OKReturnsNoDiagnostics(t *testing.T) {
 			}
 			if args[2] != "/tmp/Caddyfile" {
 				t.Fatalf("expected /tmp/Caddyfile as config path, got %q", args[2])
+			}
+			if len(args) != 5 || args[3] != "--adapter" || args[4] != "caddyfile" {
+				t.Fatalf("expected --adapter caddyfile, got %v", args)
 			}
 			return nil, nil, 0, nil
 		},
@@ -379,11 +382,17 @@ func TestFormatAndValidate_HappyPath(t *testing.T) {
 		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
 			switch args[0] {
 			case "fmt":
-				_ = os.WriteFile(args[1], []byte("formatted"), 0o644)
+				if args[1] != "--overwrite" {
+					t.Fatalf("expected fmt --overwrite, got %v", args)
+				}
+				_ = os.WriteFile(args[2], []byte("formatted"), 0o644)
 				return nil, nil, 0, nil
 			case "validate":
 				if args[1] != "--config" {
 					t.Fatalf("expected --config, got %v", args)
+				}
+				if args[3] != "--adapter" || args[4] != "caddyfile" {
+					t.Fatalf("expected --adapter caddyfile, got %v", args)
 				}
 				return nil, nil, 0, nil
 			default:
@@ -432,7 +441,10 @@ func TestFormatAndValidate_ReturnsDiagnosticsOnError(t *testing.T) {
 		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
 			switch args[0] {
 			case "fmt":
-				_ = os.WriteFile(args[1], []byte("formatted"), 0o644)
+				if args[1] != "--overwrite" {
+					t.Fatalf("expected fmt --overwrite, got %v", args)
+				}
+				_ = os.WriteFile(args[2], []byte("formatted"), 0o644)
 				return nil, nil, 0, nil
 			case "validate":
 				return nil, []byte("/etc/caddy/Caddyfile:3:1: parse error"), 1, nil
@@ -452,5 +464,67 @@ func TestFormatAndValidate_ReturnsDiagnosticsOnError(t *testing.T) {
 	}
 	if len(diags) != 1 || diags[0].Line != 3 {
 		t.Fatalf("expected 1 diagnostic at line 3, got %+v", diags)
+	}
+}
+
+// TestFormat_InvokesFmtWithOverwrite locks in the --overwrite flag
+// passed to caddy fmt. Without it, caddy prints the formatted output
+// to stdout and returns exit 1 when differences exist, breaking the
+// in-place workflow that the validator package relies on.
+func TestFormat_InvokesFmtWithOverwrite(t *testing.T) {
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			// Rewrite the file in place, mirroring caddy fmt --overwrite.
+			_ = os.WriteFile(args[2], []byte("formatted"), 0o644)
+			return nil, nil, 0, nil
+		},
+	}
+	v := newValidator(t, runner)
+
+	if _, err := v.Format(context.Background(), []byte("hello")); err != nil {
+		t.Fatalf("Format: unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner.calls = %d, want 1", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.name != "/usr/bin/caddy" {
+		t.Errorf("name = %q, want /usr/bin/caddy", call.name)
+	}
+	if len(call.args) != 3 || call.args[0] != "fmt" || call.args[1] != "--overwrite" {
+		t.Errorf("args = %v, want [\"fmt\", \"--overwrite\", <path>]", call.args)
+	}
+}
+
+// TestValidate_InvokesValidateWithAdapterCaddyfile locks in the
+// --adapter caddyfile flag passed to caddy validate. Without it, the
+// auto-detection might not pick the Caddyfile adapter for our .caddy
+// temp files and validation would fail with a confusing error.
+func TestValidate_InvokesValidateWithAdapterCaddyfile(t *testing.T) {
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			return nil, nil, 0, nil
+		},
+	}
+	v := newValidator(t, runner)
+
+	if _, err := v.Validate(context.Background(), "/tmp/lazycaddy-test.caddy"); err != nil {
+		t.Fatalf("Validate: unexpected error: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner.calls = %d, want 1", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.name != "/usr/bin/caddy" {
+		t.Errorf("name = %q, want /usr/bin/caddy", call.name)
+	}
+	want := []string{"validate", "--config", "/tmp/lazycaddy-test.caddy", "--adapter", "caddyfile"}
+	if len(call.args) != len(want) {
+		t.Fatalf("len(args) = %d, want %d (args = %v)", len(call.args), len(want), call.args)
+	}
+	for i, got := range call.args {
+		if got != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, got, want[i])
+		}
 	}
 }

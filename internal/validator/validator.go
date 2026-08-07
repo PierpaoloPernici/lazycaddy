@@ -82,7 +82,10 @@ func (v *Validator) Format(ctx context.Context, src []byte) ([]byte, error) {
 	runCtx, cancel := context.WithTimeout(ctx, v.opts.Timeout)
 	defer cancel()
 
-	_, stderr, exit, err := v.opts.Runner.Run(runCtx, v.opts.BinaryPath, "fmt", path)
+	// --overwrite rewrites the file in place; without it, caddy fmt
+	// would print the formatted output to stdout and return exit 1 when
+	// the source has differences, breaking the in-place workflow.
+	_, stderr, exit, err := v.opts.Runner.Run(runCtx, v.opts.BinaryPath, "fmt", "--overwrite", path)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +114,11 @@ func (v *Validator) Validate(ctx context.Context, path string) ([]Diagnostic, er
 	runCtx, cancel := context.WithTimeout(ctx, v.opts.Timeout)
 	defer cancel()
 
-	_, stderr, exit, err := v.opts.Runner.Run(runCtx, v.opts.BinaryPath, "validate", "--config", path)
+	// --adapter caddyfile forces the Caddyfile parser regardless of
+	// the file extension. Auto-detection is unreliable for our temp
+	// files, which use the .caddy suffix; without this flag caddy
+	// would pick a different (or no) adapter and fail to parse.
+	_, stderr, exit, err := v.opts.Runner.Run(runCtx, v.opts.BinaryPath, "validate", "--config", path, "--adapter", "caddyfile")
 	if err != nil {
 		return nil, err
 	}
