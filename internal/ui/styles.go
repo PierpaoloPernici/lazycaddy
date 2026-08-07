@@ -40,4 +40,24 @@ var (
 	statusInfoStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(lipgloss.Color("244"))
+
+	// diffAddStyle highlights lines added by the working copy (lines
+	// that start with '+') in the conventional unified-diff green.
+	diffAddStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("42"))
+	// diffRemoveStyle highlights lines removed from the original source
+	// (lines that start with '-') in the conventional unified-diff red,
+	// matching the error-style foreground for visual consistency.
+	diffRemoveStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("203"))
+	// diffHunkStyle highlights '@@ -l,c +l,c @@' hunk headers in bold
+	// cyan so the boundaries between change groups stand out.
+	diffHunkStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("81"))
+	// diffFileStyle highlights the ---/+++ file header pair in bold
+	// bright white so the compared filenames are immediately visible.
+	diffFileStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("15"))
 )
