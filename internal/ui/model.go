@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +66,15 @@ type Model struct {
 	// manual scroll (PgUp/PgDown) is not overridden on the next render.
 	lastSel selectionKey
 
+	// detailViewport shows the body of the diagnostic detail view.
+	// It is independent of the source viewport: the source is hidden
+	// while the diagnostics modal is open, so the two cannot collide.
+	detailViewport viewport.Model
+	// showDetail is true when the diagnostics modal is showing the
+	// detail view for the diagnostic under diagCursor. Esc returns to
+	// the list view; another Esc closes the modal.
+	showDetail bool
+
 	// workingBytes holds the last successful format output. The source
 	// pane currently shows the original source; the working copy is
 	// stored for the upcoming diff / save workflow. The status line
@@ -96,10 +106,11 @@ type Model struct {
 // the status line. Call Load before starting the program.
 func New(loader app.Loader, formatter app.Formatter) *Model {
 	return &Model{
-		loader:    loader,
-		formatter: formatter,
-		collapsed: map[string]bool{},
-		viewport:  viewport.New(1, 1),
+		loader:         loader,
+		formatter:      formatter,
+		collapsed:      map[string]bool{},
+		viewport:       viewport.New(1, 1),
+		detailViewport: viewport.New(1, 1),
 	}
 }
 
@@ -168,6 +179,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateDiagnosticsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The detail view takes precedence over the list view.
+	if m.showDetail {
+		return m.updateDetailKey(msg)
+	}
 	switch msg.String() {
 	case "esc", "q":
 		m.closeDiagnostics()
@@ -179,8 +194,120 @@ func (m *Model) updateDiagnosticsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.diagCursor < len(m.diagnostics)-1 {
 			m.diagCursor++
 		}
+	// Enter and '+' open the detail view for the diagnostic under the
+	// cursor. '+' is a Vim-style alias and is intentionally a no-op
+	// outside the diagnostics modal.
+	case "enter", "+":
+		m.openDetail()
 	}
 	return m, nil
+}
+
+// updateDetailKey handles keys when the diagnostics detail view is
+// open. Esc returns to the list (the modal stays open). PgUp /
+// PgDown and the arrow keys scroll the wrapped message.
+func (m *Model) updateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.closeDetail()
+	case "up", "k":
+		m.detailViewport.LineUp(1)
+	case "down", "j":
+		m.detailViewport.LineDown(1)
+	case "pgup":
+		m.detailViewport.PageUp()
+	case "pgdown":
+		m.detailViewport.PageDown()
+	}
+	return m, nil
+}
+
+// openDetail transitions from the diagnostics list to the detail
+// view for the diagnostic under the cursor. It is a no-op when the
+// cursor is out of range. The content is loaded into the viewport
+// immediately so the user can scroll (PgUp / PgDown / arrows) before
+// the next render; the view function refreshes the size when the
+// terminal is resized while the detail view is open.
+func (m *Model) openDetail() {
+	if m.diagCursor < 0 || m.diagCursor >= len(m.diagnostics) {
+		return
+	}
+	m.showDetail = true
+	m.syncDetailContent()
+	m.detailViewport.GotoTop()
+}
+
+// syncDetailContent sets the detail viewport size and content from
+// the current state. The body is rebuilt only when the size or the
+// cursor changes: rebuilding resets the viewport scroll, so calling
+// this on every render would make PgUp / PgDown unusable.
+func (m *Model) syncDetailContent() {
+	paneContentW := m.width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	bodyW := paneContentW - 2 // padding (1 each side)
+	if bodyW < 1 {
+		bodyW = 1
+	}
+	bodyH := m.paneHeight() - 4 // border (2) + title (1) + hint (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	m.detailViewport.Width = bodyW
+	m.detailViewport.Height = bodyH
+	m.detailViewport.SetContent(m.buildDetailBody(bodyW))
+}
+
+// buildDetailBody formats the diagnostic at the current cursor for
+// the detail view. The path / line / column / severity are listed on
+// fixed labels, then a blank line, then the message word-wrapped to
+// bodyW. Missing line or column is omitted so we do not print
+// "Line 0" or "Column 0" for diagnostics that did not report a
+// position.
+func (m *Model) buildDetailBody(bodyW int) string {
+	var body strings.Builder
+	if m.diagCursor < 0 || m.diagCursor >= len(m.diagnostics) {
+		body.WriteString(dimStyle.Render("no diagnostic selected"))
+		return body.String()
+	}
+	d := m.diagnostics[m.diagCursor]
+	body.WriteString(dimStyle.Render("Path     ") + d.Path + "\n")
+	if d.Line > 0 {
+		body.WriteString(dimStyle.Render("Line     ") + strconv.Itoa(d.Line) + "\n")
+	}
+	if d.Column > 0 {
+		body.WriteString(dimStyle.Render("Column   ") + strconv.Itoa(d.Column) + "\n")
+	}
+	body.WriteString(dimStyle.Render("Severity ") + d.Severity.String() + "\n")
+	body.WriteString("\n")
+	body.WriteString(wrapText(d.Message, bodyW))
+	return body.String()
+}
+
+// paneHeight returns the height of the main pane area (the modal or
+// the tree+source panes), matching the computation in View. It is
+// extracted so the detail view can size its viewport to match the
+// pane that will contain it, without re-deriving the layout.
+func (m *Model) paneHeight() int {
+	paneH := m.height - 3
+	if m.err != nil {
+		paneH--
+	}
+	if m.statusMessage != "" {
+		paneH--
+	}
+	if paneH < 1 {
+		paneH = 1
+	}
+	return paneH
+}
+
+// closeDetail returns from the detail view to the diagnostics list.
+// The list keeps the cursor at the same position; the modal stays
+// open until the user presses Esc again or another keybinding.
+func (m *Model) closeDetail() {
+	m.showDetail = false
 }
 
 // toggleCursor expands or collapses the document row under the cursor,
@@ -332,7 +459,11 @@ func (m *Model) View() string {
 		b.WriteString("\n")
 	}
 	if m.showDiagnostics {
-		b.WriteString(m.diagnosticsView(width, paneH))
+		if m.showDetail {
+			b.WriteString(m.diagnosticDetailView(width, paneH))
+		} else {
+			b.WriteString(m.diagnosticsView(width, paneH))
+		}
 		b.WriteString("\n")
 	} else {
 		treeW := width * 2 / 5
@@ -593,6 +724,96 @@ func (m *Model) diagnosticsView(width, height int) string {
 	}
 	hint := "↑/↓ navigate"
 	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String() + "\n" + dimStyle.Render(hint))
+}
+
+// diagnosticDetailView renders the full diagnostic for the entry
+// under the cursor. The path / line / column / severity are listed
+// on fixed labels, then a blank line, then the message word-wrapped
+// to the available body width via detailViewport. The viewport
+// scroll position is preserved across renders because the body is
+// only rebuilt when the cursor or the body size changes: SetContent
+// resets the viewport scroll, so calling it on every render would
+// make PgUp / PgDown unusable.
+func (m *Model) diagnosticDetailView(width, height int) string {
+	title := "Diagnostic detail · Esc back"
+	hint := "↑/↓ scroll · PgUp/PgDown page · Esc back"
+
+	// paneStyle has Border(RoundedBorder()) and Padding(0, 1):
+	// Width(N) sets the *content* width to N, and the rendered total
+	// is N + 2 (borders). To make the modal fit the window exactly
+	// (matching the tree+source pane math and the diagnosticsView
+	// fix from the previous milestone), pass width - 2 here so the
+	// total is width.
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	bodyH := height - 4 // border (2) + title (1) + hint (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+
+	// Re-sync only when the size has changed since the last set
+	// (e.g. the terminal was resized while the detail view was
+	// open). Re-syncing resets the scroll; doing it on every
+	// render would make PgUp / PgDown unusable.
+	if m.detailViewport.Height != bodyH {
+		m.syncDetailContent()
+	}
+
+	return paneStyle.Width(paneContentW).Height(height).Render(
+		title + "\n" + m.detailViewport.View() + "\n" + dimStyle.Render(hint),
+	)
+}
+
+// wrapText wraps text to fit within the given cell width, breaking on
+// word boundaries when possible. A single word longer than the
+// width is hard-broken on rune boundaries so multi-byte characters
+// are never split. Short lines are not padded to the width: the
+// result is suitable for a scrolling viewport where trailing
+// spaces would be visible on the right.
+func wrapText(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	var b strings.Builder
+	lineW := 0
+	for _, word := range strings.Fields(text) {
+		wW := lipgloss.Width(word)
+		if wW > width {
+			// Word longer than the width: hard-break on rune
+			// boundaries.
+			if lineW > 0 {
+				b.WriteString("\n")
+				lineW = 0
+			}
+			for _, r := range word {
+				if lineW >= width {
+					b.WriteString("\n")
+					lineW = 0
+				}
+				b.WriteRune(r)
+				lineW += lipgloss.Width(string(r))
+			}
+			continue
+		}
+		if lineW == 0 {
+			b.WriteString(word)
+			lineW = wW
+		} else if lineW+1+wW <= width {
+			b.WriteString(" ")
+			b.WriteString(word)
+			lineW += 1 + wW
+		} else {
+			b.WriteString("\n")
+			b.WriteString(word)
+			lineW = wW
+		}
+	}
+	return b.String()
 }
 
 // buildItems flattens the graph into the visible tree: one row per

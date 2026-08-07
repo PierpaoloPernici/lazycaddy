@@ -856,3 +856,318 @@ func TestModelDiagnosticsView_LongMessageTruncated(t *testing.T) {
 		}
 	}
 }
+
+// TestModelDiagnosticsDetail_EnterOpensDetail covers the primary
+// keybinding for the detail view: pressing Enter on a diagnostic
+// in the list opens its detail, which shows path, line, severity
+// and the full message (no truncation).
+func TestModelDiagnosticsDetail_EnterOpensDetail(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 47, Column: 1, Message: "module not registered: dns.providers.cloudflare", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	if !m.showDiagnostics {
+		t.Fatal("modal must be open before opening detail")
+	}
+	if m.showDetail {
+		t.Fatal("detail must not be open initially")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.showDetail {
+		t.Error("showDetail = false after Enter, want true")
+	}
+	view := m.View()
+	for _, want := range []string{
+		"config/Caddyfile",
+		"47",
+		"module not registered: dns.providers.cloudflare",
+		"error",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View missing %q, got:\n%s", want, view)
+		}
+	}
+}
+
+// TestModelDiagnosticsDetail_PlusOpensDetail covers the '+' alias
+// for Enter. It must open the detail view from the list and stay a
+// no-op outside the diagnostics modal.
+func TestModelDiagnosticsDetail_PlusOpensDetail(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	if !m.showDetail {
+		t.Error("showDetail = false after '+', want true ('+' is an alias for Enter)")
+	}
+}
+
+// TestModelDiagnosticsDetail_EscReturnsToList verifies the first
+// half of the Esc chain: from the detail view, Esc closes the
+// detail but keeps the diagnostics modal open.
+func TestModelDiagnosticsDetail_EscReturnsToList(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open detail
+	if !m.showDetail {
+		t.Fatal("detail should be open after Enter")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // back to list
+	if m.showDetail {
+		t.Error("showDetail = true after Esc from detail, want false")
+	}
+	if !m.showDiagnostics {
+		t.Error("showDiagnostics = false after Esc from detail, want true (modal stays open)")
+	}
+}
+
+// TestModelDiagnosticsDetail_EscClosesModal covers the second
+// half of the Esc chain: from the list, Esc closes the modal
+// entirely.
+func TestModelDiagnosticsDetail_EscClosesModal(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // Esc from list
+	if m.showDiagnostics {
+		t.Error("showDiagnostics = true after Esc from list, want false")
+	}
+	if m.showDetail {
+		t.Error("showDetail = true after Esc from list, want false")
+	}
+}
+
+// TestModelDiagnosticsDetail_LongMessageWraps verifies that a long
+// diagnostic message is wrapped to the available width in the
+// detail view. No rendered line may exceed the window width, and
+// the full message must remain visible (not truncated to '…').
+func TestModelDiagnosticsDetail_LongMessageWraps(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	longMsg := strings.TrimRight(strings.Repeat("word ", 40), " ")
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 60, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	view := m.View()
+	ansi := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(ansi.ReplaceAllString(line, "")); w > 60 {
+			t.Errorf("rendered line %d is %d columns wide, exceeds the 60-column window:\n%s", i+1, w, line)
+		}
+	}
+	if !strings.Contains(view, "word") {
+		t.Errorf("View missing the message content, got:\n%s", view)
+	}
+	// The detail must not truncate the message with '…': the full
+	// 200-char message should be visible in the body, even if it
+	// requires scrolling to read it.
+	if !strings.Contains(view, strings.Repeat("word ", 10)) {
+		t.Errorf("View should show a long stretch of the message, got:\n%s", view)
+	}
+}
+
+// TestModelDiagnosticsDetail_PgUpPgDownScroll verifies the page
+// keys advance and retreat the detail viewport scroll.
+func TestModelDiagnosticsDetail_PgUpPgDownScroll(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	longMsg := strings.TrimRight(strings.Repeat("lorem ipsum dolor sit amet ", 30), " ")
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 60, 12) // short window so the body overflows
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	initialY := m.detailViewport.YOffset
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.detailViewport.YOffset <= initialY {
+		t.Errorf("PgDown did not advance scroll: initial=%d, after=%d", initialY, m.detailViewport.YOffset)
+	}
+	afterPgDown := m.detailViewport.YOffset
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.detailViewport.YOffset >= afterPgDown {
+		t.Errorf("PgUp did not retreat scroll: afterPgDown=%d, after=%d", afterPgDown, m.detailViewport.YOffset)
+	}
+}
+
+// TestModelDiagnosticsDetail_ArrowKeysScroll verifies that the
+// arrow keys also scroll the detail viewport (line-by-line,
+// independent of PgUp/PgDown).
+func TestModelDiagnosticsDetail_ArrowKeysScroll(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	longMsg := strings.TrimRight(strings.Repeat("alpha beta gamma ", 30), " ")
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 60, 12)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	initialY := m.detailViewport.YOffset
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.detailViewport.YOffset <= initialY {
+		t.Errorf("Down arrow did not advance scroll: initial=%d, after=%d", initialY, m.detailViewport.YOffset)
+	}
+	afterDown := m.detailViewport.YOffset
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.detailViewport.YOffset >= afterDown {
+		t.Errorf("Up arrow did not retreat scroll: afterDown=%d, after=%d", afterDown, m.detailViewport.YOffset)
+	}
+}
+
+// TestModelDiagnosticsDetail_ListStillTruncates is a regression
+// test for the compact list view: the detail view is additive
+// only. The list must still show the truncated message with '…'
+// and the detail must show strictly more of the same message.
+func TestModelDiagnosticsDetail_ListStillTruncates(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	longMsg := strings.Repeat("a", 200)
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 60, 24)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	listView := m.View()
+	if !strings.Contains(listView, "…") {
+		t.Errorf("list view should still truncate with '…', got:\n%s", listView)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	detailView := m.View()
+	for _, want := range []string{"Path", "Line", "Severity"} {
+		if !strings.Contains(detailView, want) {
+			t.Errorf("detail view should show structured field %q, got:\n%s", want, detailView)
+		}
+	}
+	// The detail body must contain strictly more 'a' characters
+	// than the list body, since the list truncates the message
+	// and the detail does not.
+	listAs := strings.Count(listView, "a")
+	detailAs := strings.Count(detailView, "a")
+	if detailAs <= listAs {
+		t.Errorf("detail view should show more of the message than the list: list=%d 'a's, detail=%d 'a's", listAs, detailAs)
+	}
+}
+
+// TestWrapText_ShortReturnsUnchanged locks in the no-op behaviour
+// for inputs that already fit the width.
+func TestWrapText_ShortReturnsUnchanged(t *testing.T) {
+	if got := wrapText("hello world", 20); got != "hello world" {
+		t.Errorf("wrapText(%q, 20) = %q, want %q", "hello world", got, "hello world")
+	}
+}
+
+// TestWrapText_WrapsOnWordBoundary verifies that long inputs are
+// split at word boundaries and every line fits within the width.
+func TestWrapText_WrapsOnWordBoundary(t *testing.T) {
+	in := "the quick brown fox jumps over the lazy dog"
+	got := wrapText(in, 15)
+	for i, line := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(line); w > 15 {
+			t.Errorf("line %d %q is %d cells, exceeds 15", i, line, w)
+		}
+	}
+}
+
+// TestWrapText_HardBreaksLongWord verifies that a single word
+// longer than the width is broken on rune boundaries so no line
+// exceeds the width.
+func TestWrapText_HardBreaksLongWord(t *testing.T) {
+	in := "supercalifragilisticexpialidocious"
+	got := wrapText(in, 10)
+	for i, line := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(line); w > 10 {
+			t.Errorf("line %d %q is %d cells, exceeds 10", i, line, w)
+		}
+	}
+	// All non-newline runes must be preserved across the hard
+	// break (newlines are inserted by the wrap, so they are not
+	// counted).
+	gotStripped := strings.ReplaceAll(got, "\n", "")
+	if gotRunes := len([]rune(gotStripped)); gotRunes != len([]rune(in)) {
+		t.Errorf("hard break lost runes: got %d, want %d", gotRunes, len([]rune(in)))
+	}
+}
+
+// TestWrapText_MultiByteSafe verifies that multi-byte runes are
+// never split mid-codepoint. A single 30-rune word of 2-byte
+// runes forces the hard-break path; if wrapText sliced a rune
+// mid-codepoint, the rune count would drop.
+func TestWrapText_MultiByteSafe(t *testing.T) {
+	const total = 30
+	in := strings.Repeat("é", total)
+	got := wrapText(in, 10)
+	for i, line := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(line); w > 10 {
+			t.Errorf("line %d %q is %d cells, exceeds 10", i, line, w)
+		}
+	}
+	// All non-newline runes must be preserved (newlines are inserted
+	// by the wrap, so they are not counted).
+	gotStripped := strings.ReplaceAll(got, "\n", "")
+	if gotRunes := len([]rune(gotStripped)); gotRunes != total {
+		t.Errorf("multi-byte wrap lost runes: got %d, want %d", gotRunes, total)
+	}
+}
+
+// TestWrapText_ZeroOrNegativeWidthReturnsInput verifies that
+// wrapText is a no-op for non-positive widths.
+func TestWrapText_ZeroOrNegativeWidthReturnsInput(t *testing.T) {
+	if got := wrapText("hello world", 0); got != "hello world" {
+		t.Errorf("wrapText(hello world, 0) = %q, want %q", got, "hello world")
+	}
+	if got := wrapText("hello world", -1); got != "hello world" {
+		t.Errorf("wrapText(hello world, -1) = %q, want %q", got, "hello world")
+	}
+}
