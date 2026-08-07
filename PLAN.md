@@ -135,6 +135,25 @@ change the original source documents.
 
 Use Go with the current stable toolchain. Build the TUI with Bubble Tea, Bubbles and Lip Gloss; use Cobra for CLI flags and commands, Viper only where application configuration benefits from it, and `fsnotify` for external-change detection. Use a focused diff library rather than implementing a diff algorithm in the UI. Keep dependencies minimal and document any deviation from this stack.
 
+## External Caddyfile tooling research
+
+The repository maintains a comparison of existing Caddyfile editor and parser
+projects in [docs/research/caddyfile-tooling.md](docs/research/caddyfile-tooling.md).
+That document records external evidence, URLs, reviewed revisions, useful
+patterns and explicit non-adoptions. This section records only the resulting
+product decisions:
+
+- derive semantic highlighting from the existing lossless lexer and parse tree;
+- use source ranges for source-view folding;
+- treat named matchers, snippets and named routes as future definition/reference
+  navigation candidates;
+- expand parser and highlighting fixtures using the Tree-sitter corpus;
+- keep directive metadata advisory and separate from parser validity;
+- defer Tree-sitter integration until structured editing or incremental parsing
+  demonstrates a concrete need;
+- keep formatting and validation delegated to Caddy through the existing
+  cancellable application boundary.
+
 Initial local platform support targets Linux and macOS. Windows is deferred until its file replacement, permissions, process and terminal semantics are designed and tested explicitly. Distribution should use versioned single-binary release artifacts with checksums; package-manager support such as Homebrew may follow after the release process is stable.
 
 ## UX and safety rules
