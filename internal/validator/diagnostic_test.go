@@ -81,6 +81,13 @@ func TestParseDiagnostics(t *testing.T) {
 			},
 		},
 		{
+			name: "caddy top-level error prefix",
+			in:   "Error: adapting config using caddyfile: invalid server block",
+			want: []Diagnostic{
+				{Path: "/default/Caddyfile", Message: "adapting config using caddyfile: invalid server block", Severity: SeverityError},
+			},
+		},
+		{
 			name: "multiple lines",
 			in:   "/etc/caddy/Caddyfile:1:1: first\n/etc/caddy/Caddyfile:2:2: second",
 			want: []Diagnostic{

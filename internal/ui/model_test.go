@@ -589,7 +589,11 @@ func TestModelFormatAndValidate_FailureShowsModal(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	formatter := &fakeFormatter{
+		formatted:   []byte("formatted working copy"),
+		diagnostics: diags,
+		err:         errors.New("caddy exit 1"),
+	}
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	msg := cmd()
@@ -602,6 +606,15 @@ func TestModelFormatAndValidate_FailureShowsModal(t *testing.T) {
 	}
 	if m.diagCursor != 0 {
 		t.Errorf("diagCursor = %d, want 0 on open", m.diagCursor)
+	}
+	if string(m.workingBytes) != "formatted working copy" {
+		t.Errorf("workingBytes = %q, want formatted working copy", m.workingBytes)
+	}
+	if !strings.Contains(m.statusMessage, "validation failed") {
+		t.Errorf("statusMessage = %q, want validation failure state", m.statusMessage)
+	}
+	if !strings.Contains(m.statusMessage, "working copy retained") {
+		t.Errorf("statusMessage = %q, want retained working copy state", m.statusMessage)
 	}
 	view := m.View()
 	for _, want := range []string{"Validation", "boom", "config/Caddyfile:1:1"} {
@@ -681,6 +694,9 @@ func TestModelFormatAndValidate_DiagnosticsModalNavigation(t *testing.T) {
 	}
 	if len(m.diagnostics) != 0 {
 		t.Errorf("diagnostics not cleared after Esc: %v", m.diagnostics)
+	}
+	if !strings.Contains(m.statusMessage, "validation failed") {
+		t.Errorf("statusMessage = %q, want validation failure state after closing modal", m.statusMessage)
 	}
 }
 

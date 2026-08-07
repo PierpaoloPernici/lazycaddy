@@ -391,6 +391,12 @@ func (m *Model) formatAndValidateCmd(src []byte) tea.Cmd {
 // modal or surfaces a status line on failure.
 func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (tea.Model, tea.Cmd) {
 	m.busy = false
+	// FormatAndValidate returns the formatted working copy even when
+	// validation fails. Retain it so the next diff/edit workflow can show
+	// the candidate that produced the diagnostic without touching disk.
+	if msg.Formatted != nil {
+		m.workingBytes = msg.Formatted
+	}
 	if msg.Err != nil {
 		// Caddy emits info-level log lines alongside parse errors
 		// (e.g. "INFO  using config from file"). The modal is for
@@ -408,13 +414,15 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 			m.diagnostics = errors
 			m.diagCursor = 0
 			m.showDiagnostics = true
-			m.statusMessage = ""
+			m.statusMessage = "✗ validation failed (working copy not saved)"
+			if msg.Formatted != nil {
+				m.statusMessage = "✗ validation failed (working copy retained, not saved)"
+			}
 			return m, nil
 		}
-		m.statusMessage = "✗ " + msg.Err.Error()
+		m.statusMessage = "✗ validation failed (working copy not saved): " + msg.Err.Error()
 		return m, nil
 	}
-	m.workingBytes = msg.Formatted
 	m.diagnostics = nil
 	m.showDiagnostics = false
 	m.statusMessage = "✓ validated (working copy updated, not saved)"

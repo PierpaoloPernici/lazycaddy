@@ -89,6 +89,7 @@ var (
 	levelLogfmtRe = regexp.MustCompile(`\blevel=(error|info|warn|warning|debug|trace)\b`)
 	levelJSONRe   = regexp.MustCompile(`"level"\s*:\s*"(error|info|warn|warning|debug|trace)"`)
 	levelTextRe   = regexp.MustCompile(`^(ERROR|INFO|WARN|WARNING|DEBUG|TRACE)\b`)
+	errorPrefixRe = regexp.MustCompile(`(?i)^error:\s*`)
 	// levelTextStripRe matches a leading level prefix and the
 	// following whitespace, so the path:line:col regex can match
 	// the rest of a "ERROR /etc/caddy/Caddyfile:47:1: msg" line.
@@ -142,6 +143,14 @@ func stripTextLevelPrefix(line string) string {
 	return levelTextStripRe.ReplaceAllString(line, "")
 }
 
+// stripErrorPrefix removes the top-level "Error: " prefix emitted by caddy
+// for adaptation failures. The Diagnostic.String method supplies the
+// structured severity label, so retaining this prefix would render as
+// "error: Error: ...".
+func stripErrorPrefix(line string) string {
+	return errorPrefixRe.ReplaceAllString(line, "")
+}
+
 // ParseDiagnostics converts the text output of `caddy validate` into
 // a slice of Diagnostic values. The parser is intentionally lenient:
 // it extracts path:line:col or path:line prefixes when present, and
@@ -165,7 +174,7 @@ func ParseDiagnostics(defaultPath, output string) []Diagnostic {
 		// Strip a text-style level prefix so the path:line:col regex
 		// can match "ERROR /etc/caddy/Caddyfile:47:1: msg" as a real
 		// finding instead of falling back to the unparseable branch.
-		matchLine := stripTextLevelPrefix(line)
+		matchLine := stripErrorPrefix(stripTextLevelPrefix(line))
 		if m := diagLineColRe.FindStringSubmatch(matchLine); m != nil {
 			l, _ := strconv.Atoi(m[2])
 			c, _ := strconv.Atoi(m[3])
@@ -190,7 +199,7 @@ func ParseDiagnostics(defaultPath, output string) []Diagnostic {
 		}
 		out = append(out, Diagnostic{
 			Path:     defaultPath,
-			Message:  line,
+			Message:  matchLine,
 			Severity: severity,
 		})
 	}
