@@ -75,8 +75,9 @@ go run ./cmd/lazycaddy --config ./Caddyfile --caddy-path /usr/bin/caddy
 
 To enable saving, add `--write`. The default backup directory is
 `<config-dir>/.lazycaddy/backups`; it can be overridden with `--backup-dir`.
-Validation and saving use temporary or atomic file operations and do not
-require a running Caddy daemon.
+Formatting, validation and saving use temporary or atomic file operations and
+do not require a running Caddy daemon. Reloading does require Caddy to be
+running with its Admin API enabled and reachable at the configured endpoint.
 
 Reloads use the local Admin API at `http://localhost:2019` by default;
 override the endpoint with `--admin-endpoint` and the per-request timeout
