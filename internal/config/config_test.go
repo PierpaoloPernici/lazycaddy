@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDefaultSettings(t *testing.T) {
 	s := DefaultSettings()
@@ -15,5 +18,11 @@ func TestDefaultSettings(t *testing.T) {
 	}
 	if s.ValidatorTimeout != 0 {
 		t.Errorf("ValidatorTimeout = %s, want 0 (validator uses its own 5s default)", s.ValidatorTimeout)
+	}
+	if s.AdminEndpoint != "http://localhost:2019" {
+		t.Errorf("AdminEndpoint = %q, want http://localhost:2019", s.AdminEndpoint)
+	}
+	if s.AdminTimeout != 30*time.Second {
+		t.Errorf("AdminTimeout = %s, want 30s (runtime client default)", s.AdminTimeout)
 	}
 }

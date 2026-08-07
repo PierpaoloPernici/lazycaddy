@@ -31,6 +31,25 @@ type item struct {
 	collapsed bool
 }
 
+// loadedState is the relationship between the running Caddy
+// configuration and the saved file on disk.
+type loadedState int
+
+const (
+	// loadedUnknown is the initial state: lazycaddy never claims the
+	// running config matches the file unless it proved it by reloading.
+	loadedUnknown loadedState = iota
+	// loadedMatches means a reload of the exact saved bytes succeeded,
+	// so the running config provably matches the file.
+	loadedMatches
+	// loadedStale means the file on disk is newer than the running
+	// config (saved but not reloaded).
+	loadedStale
+	// loadedUnreachable means the last reload attempt could not reach
+	// the Admin API.
+	loadedUnreachable
+)
+
 // formatAndValidateResultMsg is delivered to the model after a caddy
 // fmt + caddy validate invocation completes. Exactly one of Formatted
 // and Err is meaningful on a given message; Diagnostics is populated
@@ -46,6 +65,13 @@ type formatAndValidateResultMsg struct {
 // through the injected app.Saver completes.
 type saveResultMsg struct {
 	Result app.SaveResult
+	Err    error
+}
+
+// reloadResultMsg is delivered to the model after an asynchronous
+// reload through the injected app.Reloader completes.
+type reloadResultMsg struct {
+	Result app.ReloadResult
 	Err    error
 }
 
@@ -130,6 +156,23 @@ type Model struct {
 	// directory before the operator confirms the write.
 	showSaveConfirm bool
 
+	// reloader is nil in read-only or binary-less mode and disables the
+	// r keybinding, mirroring how a nil saver disables s.
+	reloader app.Reloader
+	// reloading is true while a reload is in flight; a second r press is
+	// ignored until the result is delivered.
+	reloading bool
+	// showReloadConfirm is true when the reload-confirmation modal is
+	// open.
+	showReloadConfirm bool
+	// loaded tracks the proven relationship between the running Caddy
+	// configuration and the file on disk. It is distinct from
+	// workingValidated, which is about the in-memory working copy.
+	loaded loadedState
+	// loadedAt is when the last successful reload was confirmed; zero
+	// unless loaded == loadedMatches.
+	loadedAt time.Time
+
 	// validatorTimeout is read from settings on Load and is the timeout
 	// applied to each format+validate invocation. Zero means "no extra
 	// timeout on top of the validator package default (5s)".
@@ -137,15 +180,18 @@ type Model struct {
 }
 
 // New returns a Model that will load its state through loader, run
-// format+validate through formatter and write changes through saver.
-// formatter may be nil; the v keybinding is disabled in that case.
-// saver may be nil; the s keybinding is disabled in that case
-// (read-only mode). Call Load before starting the program.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver) *Model {
+// format+validate through formatter, write changes through saver and
+// reload the running configuration through reloader. formatter may be
+// nil; the v keybinding is disabled in that case. saver may be nil; the
+// s keybinding is disabled in that case (read-only mode). reloader may
+// be nil; the r keybinding is disabled in that case. Call Load before
+// starting the program.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader) *Model {
 	return &Model{
 		loader:         loader,
 		formatter:      formatter,
 		saver:          saver,
+		reloader:       reloader,
 		collapsed:      map[string]bool{},
 		viewport:       viewport.New(1, 1),
 		detailViewport: viewport.New(1, 1),
@@ -170,6 +216,11 @@ func (m *Model) Load() error {
 		m.loadedBytes = append([]byte(nil), state.Graph.Root.Source...)
 		m.items = buildItems(state.Graph, m.collapsed)
 		m.cursor = 0
+		// A fresh load never inherits a stale loaded claim: whether the
+		// running config matches this file is unknown until a reload
+		// proves it.
+		m.loaded = loadedUnknown
+		m.loadedAt = time.Time{}
 	}
 	return err
 }
@@ -187,6 +238,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleFormatAndValidateResult(msg)
 	case saveResultMsg:
 		return m.handleSaveResult(msg)
+	case reloadResultMsg:
+		return m.handleReloadResult(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -202,6 +255,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// diagnostics modal and the main keymap.
 	if m.showSaveConfirm {
 		return m.updateSaveConfirmKey(msg)
+	}
+	// The reload-confirmation modal takes precedence over the
+	// diagnostics modal and the main keymap.
+	if m.showReloadConfirm {
+		return m.updateReloadConfirmKey(msg)
 	}
 	// The diagnostics modal takes precedence over every other key.
 	if m.showDiagnostics {
@@ -231,6 +289,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startDiff()
 	case "s":
 		return m.startSave()
+	case "r":
+		return m.startReload()
 	}
 	return m, nil
 }
@@ -572,6 +632,9 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 	if m.saving {
 		return m, nil
 	}
+	if m.reloading {
+		return m, nil
+	}
 	if m.workingBytes == nil {
 		m.statusMessage = "no working copy — press v to format & validate first"
 		return m, nil
@@ -635,6 +698,10 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 		m.state.Graph.Root.Source = append([]byte(nil), m.workingBytes...)
 		// Force the source viewport to reload on next render.
 		m.sourceDoc = nil
+		// The file on disk changed: until a reload proves otherwise,
+		// the running config no longer matches it.
+		m.loaded = loadedStale
+		m.loadedAt = time.Time{}
 		m.statusMessage = "✓ saved (backup: " + msg.Result.BackupPath + ")"
 		return m, nil
 	}
@@ -648,6 +715,112 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.statusMessage = "✗ save failed: " + msg.Err.Error()
+	return m, nil
+}
+
+// startReload begins the reload workflow. It is gated by a loaded
+// graph, a configured reloader, an in-flight guard (reload and save
+// share the one shot at the file on disk), a working copy that
+// validated, no unsaved changes and a reload that is actually needed.
+// When all guards pass it opens the reload-confirmation modal so the
+// operator can review the Admin API target before confirming.
+func (m *Model) startReload() (tea.Model, tea.Cmd) {
+	if m.state == nil || m.state.Graph == nil {
+		return m, nil
+	}
+	if m.reloader == nil {
+		m.statusMessage = "reload unavailable — needs --caddy-path and a running Admin API"
+		return m, nil
+	}
+	if m.reloading || m.saving {
+		return m, nil
+	}
+	if m.workingBytes == nil {
+		m.statusMessage = "no working copy — press v to format & validate first"
+		return m, nil
+	}
+	if !m.workingValidated {
+		m.statusMessage = "✗ validation failed — fix errors before reloading"
+		return m, nil
+	}
+	if !bytes.Equal(m.workingBytes, m.loadedBytes) {
+		m.statusMessage = "save changes before reloading"
+		return m, nil
+	}
+	if m.loaded == loadedMatches {
+		m.statusMessage = "configuration already loaded — no reload needed"
+		return m, nil
+	}
+	m.showReloadConfirm = true
+	return m, nil
+}
+
+// updateReloadConfirmKey handles keys when the reload-confirmation
+// modal is open. Enter confirms (closes the modal and starts the async
+// reload); Esc and q cancel.
+func (m *Model) updateReloadConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.closeReloadConfirm()
+		m.statusMessage = "reload cancelled"
+	case "enter":
+		m.closeReloadConfirm()
+		m.reloading = true
+		m.statusMessage = "reloading…"
+		return m, m.reloadCmd()
+	}
+	return m, nil
+}
+
+// closeReloadConfirm dismisses the reload-confirmation modal.
+func (m *Model) closeReloadConfirm() {
+	m.showReloadConfirm = false
+}
+
+// reloadCmd returns a tea.Cmd that calls the injected reloader in a
+// goroutine and reports the result as a reloadResultMsg.
+func (m *Model) reloadCmd() tea.Cmd {
+	reloader := m.reloader
+	path := m.state.Settings.ConfigPath
+	// loadedBytes is what is on disk now: after a successful save it is
+	// the working copy, and the r guard already ensured workingBytes ==
+	// loadedBytes.
+	saved := m.loadedBytes
+	return func() tea.Msg {
+		result, err := reloader.Reload(context.Background(), path, saved)
+		return reloadResultMsg{Result: result, Err: err}
+	}
+}
+
+// handleReloadResult is invoked on the main goroutine when the reloader
+// returns. On success the loaded state provably matches the file on
+// disk. On failure the specific failure mode is mapped to a loaded
+// state so the header badge and the status line agree about what
+// happened.
+func (m *Model) handleReloadResult(msg reloadResultMsg) (tea.Model, tea.Cmd) {
+	m.reloading = false
+	if msg.Err == nil {
+		m.loaded = loadedMatches
+		m.loadedAt = msg.Result.LoadedAt
+		m.statusMessage = "✓ reloaded via " + msg.Result.Endpoint
+		return m, nil
+	}
+	var reloadErr *app.ReloadError
+	if !errors.As(msg.Err, &reloadErr) {
+		m.statusMessage = "✗ reload failed: " + msg.Err.Error()
+		return m, nil
+	}
+	switch {
+	case errors.Is(msg.Err, app.ErrConflict):
+		m.loaded = loadedUnknown
+		m.statusMessage = "✗ file changed on disk since save — reload aborted"
+	case errors.Is(msg.Err, app.ErrAdminUnreachable), errors.Is(msg.Err, app.ErrAdminTimeout):
+		m.loaded = loadedUnreachable
+		m.statusMessage = "✗ reload failed (file saved, backup intact): " + msg.Err.Error()
+	default:
+		m.loaded = loadedStale
+		m.statusMessage = "✗ reload failed (file saved, backup intact): " + msg.Err.Error()
+	}
 	return m, nil
 }
 
@@ -670,6 +843,29 @@ func (m *Model) saveConfirmView(width, height int) string {
 	body.WriteString("\n")
 	body.WriteString(dimStyle.Render("a backup is created before the file is replaced") + "\n")
 	body.WriteString(dimStyle.Render("review the diff with D before confirming"))
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
+}
+
+// reloadConfirmView renders the reload-confirmation modal. It names the
+// target path and the Admin API endpoint (the action is network-visible
+// and irreversible once accepted) and offers Enter to confirm or Esc to
+// cancel.
+func (m *Model) reloadConfirmView(width, height int) string {
+	title := "Reload config · Enter reload · Esc cancel"
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	var body strings.Builder
+	body.WriteString(dimStyle.Render("Path      ") + m.state.Settings.ConfigPath + "\n")
+	body.WriteString(dimStyle.Render("Admin API ") + m.state.Settings.AdminEndpoint + "\n")
+	body.WriteString("\n")
+	body.WriteString(dimStyle.Render("the saved file and its backup stay intact if the reload fails") + "\n")
+	body.WriteString(dimStyle.Render("reloads through the local Admin API after a confirmed save"))
 	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
 }
 
@@ -769,6 +965,9 @@ func (m *Model) View() string {
 	} else if m.showSaveConfirm {
 		b.WriteString(m.saveConfirmView(width, paneH))
 		b.WriteString("\n")
+	} else if m.showReloadConfirm {
+		b.WriteString(m.reloadConfirmView(width, paneH))
+		b.WriteString("\n")
 	} else if m.showDiagnostics {
 		if m.showDetail {
 			b.WriteString(m.diagnosticDetailView(width, paneH))
@@ -811,6 +1010,22 @@ func (m *Model) header(width int) string {
 	}
 	if m.state != nil && m.state.Graph != nil && m.state.Graph.Err != nil {
 		right = errorStyle.Render(" PARSE ERROR ") + right
+	}
+	// The loaded-state badge sits between the PARSE ERROR marker and the
+	// read/write badge. Explicit text labels carry the state, never color
+	// alone, matching the READ-ONLY convention. The initial state is shown
+	// as UNKNOWN (nothing proven yet) only when reloading is possible, so
+	// a read-only session without a caddy binary stays quiet.
+	if m.reloading {
+		right = reloadingBadge.Render(" RELOADING ") + right
+	} else if m.loaded == loadedMatches {
+		right = loadedBadge.Render(" LOADED ") + right
+	} else if m.loaded == loadedStale {
+		right = staleBadge.Render(" STALE ") + right
+	} else if m.loaded == loadedUnreachable {
+		right = unreachableBadge.Render(" UNREACHABLE ") + right
+	} else if m.reloader != nil {
+		right = unknownBadge.Render(" UNKNOWN ") + right
 	}
 	pad := width - lipgloss.Width(left) - lipgloss.Width(right) - len(path) - 3
 	if pad < 1 {
@@ -984,20 +1199,28 @@ func (m *Model) footer(width int) string {
 	// Modals replace the global keymap with context-aware keys, so the
 	// bottom footer never shows keys that are not active in the current
 	// context.
+	// The r key is only shown when a reloader is configured, mirroring
+	// how the s key presence depends on the saver.
+	reloadSuffix := ""
+	if m.reloader != nil {
+		reloadSuffix = " · r reload"
+	}
 	var keys string
 	switch {
 	case m.showDiff:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.showSaveConfirm:
 		keys = "Enter save · Esc cancel"
+	case m.showReloadConfirm:
+		keys = "Enter reload · Esc cancel"
 	case m.showDetail:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
 	case m.showDiagnostics:
 		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · s save · q quit · %d items", len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s · s save · q quit · %d items", reloadSuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff · s save · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save · q quit"
 	}
 	return statusLineStyle.Width(width).Render(keys)
 }

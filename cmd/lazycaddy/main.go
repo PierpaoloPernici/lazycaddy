@@ -5,9 +5,12 @@
 // against a temporary working copy and surfaces structured diagnostics.
 // The tool is read-only by default: --write enables writable mode, in
 // which saving creates a backup in --backup-dir and atomically replaces
-// the file. No reload is performed and no Caddy daemon interaction
-// happens: the operator is always in control of when format, validate
-// and save run.
+// the file. With a caddy binary and a running local Admin API
+// (--caddy-path; http://localhost:2019 by default), the r keybinding
+// reloads the configuration through the Admin API — never implicitly,
+// always after a validated, saved configuration and a confirmation
+// prompt. The operator is always in control of when format, validate,
+// save and reload run.
 package main
 
 import (
@@ -21,6 +24,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
+	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
@@ -45,6 +49,7 @@ func main() {
 
 			loader := app.NewLoader(settings, os.ReadFile)
 			var formatter app.Formatter
+			var reloader app.Reloader
 			if settings.BinaryPath != "" {
 				v, err := validator.New(validator.Options{
 					BinaryPath: settings.BinaryPath,
@@ -54,6 +59,13 @@ func main() {
 					return fmt.Errorf("new validator: %w", err)
 				}
 				formatter = app.NewFormatter(v)
+				// The reloader adapts the configuration locally with the
+				// same caddy binary (so relative imports resolve from the
+				// real config path) and posts the JSON to the Admin API.
+				// Without a binary it stays nil and the r keybinding is
+				// disabled.
+				client := runtime.NewAdminClient(settings.AdminEndpoint, settings.AdminTimeout)
+				reloader = app.NewReloader(settings.AdminEndpoint, client, v, os.ReadFile)
 			}
 			var saver app.Saver
 			if !settings.ReadOnly {
@@ -63,7 +75,7 @@ func main() {
 				}
 				saver = app.NewSaver(creator, os.ReadFile)
 			}
-			model := ui.New(loader, formatter, saver)
+			model := ui.New(loader, formatter, saver, reloader)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
@@ -86,6 +98,10 @@ func main() {
 		"enable writable mode (save creates backups and writes the file); default is read-only")
 	rootCmd.Flags().StringVar(&settings.BackupDir, "backup-dir", "",
 		"directory for pre-save backups (default: <config-dir>/.lazycaddy/backups)")
+	rootCmd.Flags().StringVar(&settings.AdminEndpoint, "admin-endpoint", settings.AdminEndpoint,
+		"base URL of the local Caddy Admin API used for reloads (default: http://localhost:2019)")
+	rootCmd.Flags().DurationVar(&settings.AdminTimeout, "admin-timeout", settings.AdminTimeout,
+		"per-request timeout for Admin API calls such as reload (default: 30s)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

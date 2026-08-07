@@ -70,20 +70,25 @@ Completed:
   the backup. The TUI gates saving on a validated working copy, a
   confirmation modal that names the target and backup directory, and
   the opt-in `--write` mode (read-only by default).
-- A test suite of 204 test functions covering the lossless-editing
+- A test suite of 242 test functions covering the lossless-editing
   contract, import resolution, validation, diagnostics, unified
-  diffs, atomic writes, backups, the save workflow and the TUI.
-  Tests use fakes and require no installed caddy or network access.
+  diffs, atomic writes, backups, the save workflow, the reload
+  workflow and the TUI. Tests use fakes and require no installed
+  caddy or network access.
+- explicit Admin API reload and loaded-state verification: the `r`
+  keybinding adapts the saved configuration locally with the caddy
+  binary and posts it to the Admin API `/load` endpoint after a
+  validated, saved configuration and a confirmation that names the
+  target and endpoint. The header distinguishes saved, validated and
+  loaded states (LOADED, STALE, UNREACHABLE); a failed reload leaves
+  the saved file and backup intact and no reload ever happens
+  implicitly.
 
 Next milestone:
 
-- explicit Admin API reload and loaded-state verification: a runtime
-  adapter that reloads through the local Admin API after a confirmed
-  save and reports whether the loaded configuration matches the
-  saved file, clearly distinguishing saved, validated and loaded
-  states. Reload must be gated behind a confirmation that names the
-  target, and a failed reload must leave the saved file and backup
-  intact.
+- `$EDITOR` round-trip for a selected source range: open the range in
+  the configured editor and safely re-import the result, keeping the
+  Caddyfile as the source of truth.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -342,6 +347,12 @@ Completed within the vertical slice:
   atomically replaces the file. Writes are gated on a validated
   working copy and on an external-change conflict check; failed
   writes surface the recovery backup path.
+- [x] Explicit Admin API reload with loaded-state verification. The
+  `r` keybinding adapts the saved configuration locally, posts it to
+  the Admin API `/load` endpoint after a confirmation that names the
+  target and endpoint, and surfaces saved / validated / loaded states
+  in the header. A failed reload leaves the saved file and backup
+  intact.
 
 Remaining for v0.1:
 
@@ -350,7 +361,6 @@ Remaining for v0.1:
 - Basic runtime/version information and capability detection with a
   read-only fallback (browsing already works without caddy or write
   permissions).
-- Explicit Admin API reload with loaded-state verification.
 - Basic log view when a configured source is available.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.

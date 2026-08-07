@@ -25,6 +25,13 @@ type Settings struct {
 	// (5s)". Set this from the CLI when a slower host or a remote
 	// filesystem makes the default too tight.
 	ValidatorTimeout time.Duration
+	// AdminEndpoint is the base URL of the local Caddy Admin API used for
+	// reloads. Defaults to Caddy's localhost:2019.
+	AdminEndpoint string
+	// AdminTimeout bounds a single Admin API request (e.g. a reload, which
+	// can block until active connections drain). A non-positive value means
+	// "use the runtime client default (30s)".
+	AdminTimeout time.Duration
 }
 
 // DefaultConfigPath is the Caddyfile path used when --config is not given.
@@ -35,12 +42,15 @@ func DefaultConfigPath() string {
 }
 
 // DefaultSettings returns the default application settings: the default
-// config path, an explicit read-only mode and empty BinaryPath / zero
-// ValidatorTimeout. The operator opts in to format and validate by
-// supplying a caddy binary path.
+// config path, an explicit read-only mode, empty BinaryPath / zero
+// ValidatorTimeout, and the standard local Admin API endpoint and request
+// timeout. The operator opts in to format and validate by supplying a caddy
+// binary path.
 func DefaultSettings() Settings {
 	return Settings{
-		ConfigPath: DefaultConfigPath(),
-		ReadOnly:   true,
+		ConfigPath:    DefaultConfigPath(),
+		ReadOnly:      true,
+		AdminEndpoint: "http://localhost:2019",
+		AdminTimeout:  30 * time.Second,
 	}
 }
