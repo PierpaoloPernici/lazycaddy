@@ -762,3 +762,68 @@ func TestModelFormatAndValidate_ZeroTimeoutDoesNotCancelContext(t *testing.T) {
 		t.Errorf("captured ctx is canceled (%v); zero ValidatorTimeout must leave the context un-canceled so the validator package can apply its own 5s default", err)
 	}
 }
+
+// TestModelFormatAndValidate_InfoDiagnosticsFilteredOut verifies that
+// the modal only surfaces error-level diagnostics. Caddy's validate
+// output includes info-level log lines (e.g. "using config from
+// file") that are not actionable and would otherwise clutter the
+// modal. The handler filters to SeverityError before opening it.
+func TestModelFormatAndValidate_InfoDiagnosticsFilteredOut(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "info noise", Severity: validator.SeverityInfo},
+		{Path: "config/Caddyfile", Line: 47, Message: "module not registered", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	if !m.showDiagnostics {
+		t.Fatal("expected modal open (error diagnostic present)")
+	}
+	if len(m.diagnostics) != 1 {
+		t.Fatalf("len(m.diagnostics) = %d, want 1 (info must be filtered out)", len(m.diagnostics))
+	}
+	if m.diagnostics[0].Severity != validator.SeverityError {
+		t.Errorf("filtered diagnostic severity = %v, want error", m.diagnostics[0].Severity)
+	}
+	if m.diagnostics[0].Line != 47 {
+		t.Errorf("filtered diagnostic line = %d, want 47", m.diagnostics[0].Line)
+	}
+	view := m.View()
+	if strings.Contains(view, "info noise") {
+		t.Errorf("View should not contain info diagnostic, but does:\n%s", view)
+	}
+	if !strings.Contains(view, "module not registered") {
+		t.Errorf("View missing error diagnostic:\n%s", view)
+	}
+}
+
+// TestModelFormatAndValidate_AllInfoShowsStatusNotModal verifies the
+// edge case where every diagnostic is info-level: the modal must not
+// open (it would be empty) and the underlying error must surface in
+// the status line instead.
+func TestModelFormatAndValidate_AllInfoShowsStatusNotModal(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "garbage\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Message: "noise 1", Severity: validator.SeverityInfo},
+		{Path: "config/Caddyfile", Line: 2, Message: "noise 2", Severity: validator.SeverityInfo},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m.Update(cmd())
+	if m.showDiagnostics {
+		t.Error("showDiagnostics = true, want false when no errors after filtering")
+	}
+	if !strings.Contains(m.statusMessage, "✗") {
+		t.Errorf("statusMessage = %q, want error status when all diags are info", m.statusMessage)
+	}
+	if !strings.Contains(m.statusMessage, "caddy exit 1") {
+		t.Errorf("statusMessage = %q, want it to include the underlying error", m.statusMessage)
+	}
+}

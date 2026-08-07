@@ -260,8 +260,20 @@ func (m *Model) formatAndValidateCmd(src []byte) tea.Cmd {
 func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (tea.Model, tea.Cmd) {
 	m.busy = false
 	if msg.Err != nil {
-		if len(msg.Diagnostics) > 0 {
-			m.diagnostics = msg.Diagnostics
+		// Caddy emits info-level log lines alongside parse errors
+		// (e.g. "INFO  using config from file"). The modal is for
+		// actionable findings, so filter to error-level diagnostics
+		// before opening it. If no errors remain after the filter,
+		// fall back to the status line so the underlying error is
+		// still visible.
+		var errors []validator.Diagnostic
+		for _, d := range msg.Diagnostics {
+			if d.Severity == validator.SeverityError {
+				errors = append(errors, d)
+			}
+		}
+		if len(errors) > 0 {
+			m.diagnostics = errors
 			m.diagCursor = 0
 			m.showDiagnostics = true
 			m.statusMessage = ""
