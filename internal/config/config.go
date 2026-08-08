@@ -32,6 +32,10 @@ type Settings struct {
 	// can block until active connections drain). A non-positive value means
 	// "use the runtime client default (30s)".
 	AdminTimeout time.Duration
+	// LogPath is the path of a Caddy log file to follow in the log view.
+	// Empty means "no log source configured": the l keybinding is disabled
+	// and the TUI stays fully browsable.
+	LogPath string
 }
 
 // DefaultConfigPath is the Caddyfile path used when --config is not given.

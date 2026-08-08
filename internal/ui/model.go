@@ -17,9 +17,17 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
+	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
+
+// logMaxLines bounds the log view's in-memory scrollback.
+const logMaxLines = 1000
+
+// logPollInterval is the period between log source polls while the log
+// view is open and following.
+const logPollInterval = 500 * time.Millisecond
 
 // item is one row of the document tree: a document row (depth 0) or one of
 // its site blocks, snippets or named routes (depth 1).
@@ -80,6 +88,13 @@ type reloadResultMsg struct {
 // runtime probe completes.
 type runtimeProbeResultMsg struct {
 	Report runtime.Report
+}
+
+// logTailMsg is delivered by the log polling tick when new entries
+// arrive or the poll fails.
+type logTailMsg struct {
+	Entries []logs.Entry
+	Err     error
 }
 
 // Model is the inspector screen: a document tree on the left, the raw
@@ -195,6 +210,22 @@ type Model struct {
 	// runtimeProbed is true once the startup probe has delivered its
 	// report.
 	runtimeProbed bool
+
+	// logSource supplies structured log entries for the log view; nil
+	// disables the l keybinding.
+	logSource app.LogSource
+	// showLogs is true when the log view screen is open.
+	showLogs bool
+	// logViewport renders the bounded log scrollback.
+	logViewport viewport.Model
+	// logLines is the UI-side bounded scrollback (capped at logMaxLines).
+	logLines []logs.Entry
+	// logFollow is true when new entries auto-scroll to the bottom.
+	logFollow bool
+	// logPaused is true when polling is suspended (the p keybinding).
+	logPaused bool
+	// logErr is the last polling error, shown in the log view header.
+	logErr error
 }
 
 // New returns a Model that will load its state through loader, run
@@ -203,19 +234,23 @@ type Model struct {
 // nil; the v keybinding is disabled in that case. saver may be nil; the
 // s keybinding is disabled in that case (read-only mode). reloader may
 // be nil; the r keybinding is disabled in that case. runtimeStatus may
-// be nil; the startup runtime probe is disabled in that case. Call Load
-// before starting the program.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus) *Model {
+// be nil; the startup runtime probe is disabled in that case. logSource
+// may be nil; the l log-view keybinding is disabled in that case. Call
+// Load before starting the program.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource) *Model {
 	return &Model{
 		loader:         loader,
 		formatter:      formatter,
 		saver:          saver,
 		reloader:       reloader,
 		runtime:        runtimeStatus,
+		logSource:      logSource,
 		collapsed:      map[string]bool{},
 		viewport:       viewport.New(1, 1),
 		detailViewport: viewport.New(1, 1),
 		diffViewport:   viewport.New(1, 1),
+		logViewport:    viewport.New(1, 1),
+		logFollow:      true,
 	}
 }
 
@@ -316,10 +351,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleReloadResult(msg)
 	case runtimeProbeResultMsg:
 		return m.handleRuntimeProbeResult(msg)
+	case logTailMsg:
+		return m.handleLogTail(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
 	return m, nil
+}
+
+// logPollCmd returns a one-shot tea.Tick that polls the log source and
+// delivers logTailMsg. Returning this command again from the message
+// handler keeps the poll alive; returning nil stops it.
+func (m *Model) logPollCmd() tea.Cmd {
+	src := m.logSource
+	return tea.Tick(logPollInterval, func(time.Time) tea.Msg {
+		entries, err := src.Next(context.Background())
+		return logTailMsg{Entries: entries, Err: err}
+	})
+}
+
+// handleLogTail is invoked on the main goroutine when a poll completes.
+// It appends the new entries (bounded at logMaxLines) and reschedules the
+// next poll unless the view is closed or paused.
+func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.logErr = msg.Err
+		m.statusMessage = "✗ log poll failed: " + msg.Err.Error()
+	} else {
+		m.logErr = nil
+	}
+	if len(msg.Entries) > 0 {
+		m.logLines = append(m.logLines, msg.Entries...)
+		if len(m.logLines) > logMaxLines {
+			m.logLines = m.logLines[len(m.logLines)-logMaxLines:]
+		}
+	}
+	if !m.showLogs || m.logPaused {
+		return m, nil // view closed or paused: stop rescheduling
+	}
+	return m, m.logPollCmd()
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -340,6 +410,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The diagnostics modal takes precedence over every other key.
 	if m.showDiagnostics {
 		return m.updateDiagnosticsKey(msg)
+	}
+	// The log view is a full screen, not a modal: its keys take precedence
+	// over the main keymap once it is open.
+	if m.showLogs {
+		return m.updateLogKey(msg)
 	}
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -367,6 +442,78 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startSave()
 	case "r":
 		return m.startReload()
+	case "l":
+		return m.toggleLogView()
+	}
+	return m, nil
+}
+
+// toggleLogView opens or closes the log view screen. With no configured
+// log source it surfaces a status hint instead of opening. Opening seeds
+// the scrollback from the source history and starts the polling tick;
+// closing stops the poll (no tick is rescheduled).
+func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
+	if m.logSource == nil {
+		m.statusMessage = "✗ log view unavailable: no log source configured (use --log-file)"
+		return m, nil
+	}
+	if m.showLogs {
+		m.showLogs = false
+		m.statusMessage = ""
+		return m, nil // stops the poll: no reschedule
+	}
+	// Open: seed from the bounded history, reset follow state.
+	m.logLines = append([]logs.Entry(nil), m.logSource.History()...)
+	m.logFollow = true
+	m.logPaused = false
+	m.logErr = nil
+	m.showLogs = true
+	return m, m.logPollCmd()
+}
+
+// updateLogKey handles keys while the log view is open. The arrow keys
+// scroll the viewport and up/pgup turn follow off (the operator takes
+// control); f toggles follow, p pauses/resumes polling, Esc closes the
+// view and q/ctrl+c quits the program.
+func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.showLogs = false
+		m.statusMessage = ""
+		return m, nil // stops the poll: no reschedule
+	case "q", "ctrl+c":
+		m.quit = true
+		return m, tea.Quit
+	case "up", "k":
+		m.logFollow = false
+		m.statusMessage = "log follow off"
+		m.logViewport.LineUp(1)
+	case "down", "j":
+		m.logViewport.LineDown(1)
+	case "pgup":
+		m.logFollow = false
+		m.statusMessage = "log follow off"
+		m.logViewport.PageUp()
+	case "pgdown":
+		m.logViewport.PageDown()
+	case "f":
+		if m.logFollow {
+			m.logFollow = false
+			m.statusMessage = "log follow off"
+		} else {
+			m.logFollow = true
+			m.logViewport.GotoBottom()
+			m.statusMessage = "log follow on"
+		}
+	case "p":
+		if m.logPaused {
+			m.logPaused = false
+			m.statusMessage = "log poll resumed"
+			return m, m.logPollCmd()
+		}
+		m.logPaused = true
+		m.statusMessage = "log poll paused"
+		return m, nil // stops the poll: no reschedule
 	}
 	return m, nil
 }
@@ -1051,6 +1198,11 @@ func (m *Model) View() string {
 			b.WriteString(m.diagnosticsView(width, paneH))
 		}
 		b.WriteString("\n")
+	} else if m.showLogs {
+		// The log view is a full screen, not a modal: it replaces the
+		// tree/source panes but stays below the modal layering above.
+		b.WriteString(m.logView(width, paneH))
+		b.WriteString("\n")
 	} else {
 		treeW := width * 2 / 5
 		// Both panes carry a left and right border; subtract the full
@@ -1295,15 +1447,87 @@ func (m *Model) statusLine(width int) string {
 	}
 }
 
+// logView renders the full-screen log scrollback inside a bordered pane.
+// The title names the followed log file and the current follow/pause
+// state, so those modes never rely on color alone.
+func (m *Model) logView(width, height int) string {
+	title := "Logs"
+	if m.state != nil && m.state.Settings.LogPath != "" {
+		title += " · " + m.state.Settings.LogPath
+	}
+	if m.logFollow {
+		title += " · FOLLOW"
+	}
+	if m.logPaused {
+		title += " · PAUSED"
+	}
+	if m.logErr != nil {
+		title += " · poll error"
+	}
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	m.syncLogViewport(paneContentW, bodyH)
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.logViewport.View())
+}
+
+// syncLogViewport sizes the log viewport to the pane and refreshes its
+// content. The scroll is bottom-anchored in follow mode: new entries keep
+// the newest line visible. When follow is off the manual scroll position
+// is preserved (clamped to the new content), matching the "don't clobber
+// manual scroll" rule from syncSource, inverted for follow mode.
+func (m *Model) syncLogViewport(width, height int) {
+	contentW := width - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
+	contentH := height - 3 // border (2) + title (1)
+	if contentH < 1 {
+		contentH = 1
+	}
+	m.logViewport.Width = contentW
+	m.logViewport.Height = contentH
+
+	var content strings.Builder
+	if len(m.logLines) == 0 {
+		content.WriteString(dimStyle.Render("no log entries yet — waiting for the first poll"))
+	} else {
+		for _, entry := range m.logLines {
+			content.WriteString(truncateToWidth(renderLogLine(entry), contentW))
+			content.WriteString("\n")
+		}
+	}
+
+	wasAtBottom := m.logViewport.AtBottom()
+	offset := m.logViewport.YOffset
+	m.logViewport.SetContent(content.String())
+	if m.logFollow && (wasAtBottom || len(m.logLines) > 0) {
+		m.logViewport.GotoBottom()
+	} else if !m.logFollow {
+		// Restore the manual position, clamped to the new content.
+		m.logViewport.SetYOffset(offset)
+	}
+}
+
 func (m *Model) footer(width int) string {
 	// Modals replace the global keymap with context-aware keys, so the
 	// bottom footer never shows keys that are not active in the current
 	// context.
 	// The r key is only shown when a reloader is configured, mirroring
-	// how the s key presence depends on the saver.
+	// how the s key presence depends on the saver. The l key is only
+	// shown when a log source is configured.
 	reloadSuffix := ""
 	if m.reloader != nil {
 		reloadSuffix = " · r reload"
+	}
+	logSuffix := ""
+	if m.logSource != nil {
+		logSuffix = " · l logs"
 	}
 	var keys string
 	switch {
@@ -1317,10 +1541,12 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
 	case m.showDiagnostics:
 		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
+	case m.showLogs:
+		keys = "↑/↓ scroll · PgUp/PgDown page · f follow (on/off) · p pause/resume · Esc close · q quit"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s · s save · q quit · %d items", reloadSuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s · s save%s · q quit · %d items", reloadSuffix, logSuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + " · q quit"
 	}
 	return statusLineStyle.Width(width).Render(keys)
 }

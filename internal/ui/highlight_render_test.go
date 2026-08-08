@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 )
 
 // renderWithANSI renders through highlightSource with ANSI output forced on,
@@ -161,5 +163,72 @@ func TestHighlightSourceANSIChunksSelfClose(t *testing.T) {
 		if n := len(re.FindAllString(line, -1)); n%2 != 0 {
 			t.Errorf("line %d has %d ANSI sequences, want an even number (balanced chunks):\n%s", i+1, n, line)
 		}
+	}
+}
+
+// renderLogLineANSI renders one log line with ANSI output forced on, then
+// restores the terminal-agnostic profile, mirroring renderWithANSI.
+func renderLogLineANSI(entry logs.Entry) string {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	return renderLogLine(entry)
+}
+
+// TestRenderLogLine_HighlightsJSON renders a realistic Caddy access log
+// line (the official docs example) and verifies it is both lossless
+// (every byte of the original survives the styling) and styled (the
+// rendered output differs from the stripped text and carries the level
+// and status colors).
+func TestRenderLogLine_HighlightsJSON(t *testing.T) {
+	line := `{"level":"info","ts":1592833155.86084,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","remote_port":"50786","proto":"HTTP/2.0","method":"GET","host":"localhost","uri":"/"},"bytes_read":0,"user_id":"","duration":0.000571055,"size":1259,"status":200}`
+	got := renderLogLineANSI(logs.Entry{Raw: []byte(line)})
+	stripped := stripANSI(got)
+	if stripped != line {
+		t.Errorf("rendered line is not lossless:\n got %q\nwant %q", stripped, line)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("expected ANSI styling for a JSON line, got none:\n%s", got)
+	}
+	// info level (blue 33) and 2xx status (green 42) must be styled.
+	if !strings.Contains(got, "38;5;33") {
+		t.Errorf("info level must use the blue style (38;5;33):\n%s", got)
+	}
+	if !strings.Contains(got, "38;5;42") {
+		t.Errorf("2xx status must use the green style (38;5;42):\n%s", got)
+	}
+}
+
+// TestRenderLogLine_NonJSONVerbatim verifies a console-encoded line is
+// rendered byte-for-byte with no ANSI codes.
+func TestRenderLogLine_NonJSONVerbatim(t *testing.T) {
+	line := "2026/08/08 12:00:00 INFO something happened"
+	got := renderLogLineANSI(logs.Entry{Raw: []byte(line), Status: -1})
+	if got != line {
+		t.Errorf("non-JSON line = %q, want verbatim %q", got, line)
+	}
+	if strings.Contains(got, "\x1b[") {
+		t.Errorf("non-JSON line must not be styled, got:\n%s", got)
+	}
+}
+
+// TestRenderLogLine_LevelAndStatusColors verifies the error level and 5xx
+// status tokens are rendered in the error-red style.
+func TestRenderLogLine_LevelAndStatusColors(t *testing.T) {
+	errorLine := logs.Entry{Raw: []byte(`{"level":"error","msg":"boom"}`)}
+	got := renderLogLineANSI(errorLine)
+	if !strings.Contains(got, "38;5;203") {
+		t.Errorf("error level must use the red style (38;5;203):\n%s", got)
+	}
+	fivexxLine := logs.Entry{Raw: []byte(`{"level":"info","status":503}`)}
+	got = renderLogLineANSI(fivexxLine)
+	if !strings.Contains(got, "38;5;203") {
+		t.Errorf("5xx status must use the red style (38;5;203):\n%s", got)
+	}
+}
+
+// TestRenderLogLine_Empty verifies an empty raw line renders empty.
+func TestRenderLogLine_Empty(t *testing.T) {
+	if got := renderLogLineANSI(logs.Entry{Raw: nil}); got != "" {
+		t.Errorf("empty line rendered %q, want empty", got)
 	}
 }

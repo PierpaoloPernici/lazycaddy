@@ -155,4 +155,82 @@ var (
 	// syntaxWordStyle is intentionally empty: barewords keep the default
 	// foreground so the source reads like a plain file.
 	syntaxWordStyle = lipgloss.NewStyle()
+
+	// Log token styles follow the zap CapitalColorLevelEncoder palette:
+	// the token text itself carries the level/status label, so color is a
+	// consistent reinforcement rather than the only signal.
+	// logKeyStyle renders JSON object keys in bold cyan.
+	logKeyStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("81"))
+	// logStringStyle renders JSON string values in the soft green shared
+	// with the Caddyfile string style.
+	logStringStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("114"))
+	// logNumberStyle renders JSON numbers in soft yellow.
+	logNumberStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("221"))
+	// logBoolStyle renders true/false literals in the cursor accent.
+	logBoolStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("212"))
+	// logNullStyle renders null literals dimmed.
+	logNullStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245"))
+	// logDelimiterStyle renders braces, brackets, colons and commas
+	// dimmed so the structural tokens recede.
+	logDelimiterStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+	// logTimestampStyle renders the ts value in blue.
+	logTimestampStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("33"))
+	// logMsgStyle renders the msg value bold white.
+	logMsgStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("15"))
+	// logLoggerStyle renders the logger value dimmed and italic.
+	logLoggerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Italic(true)
+	// logLevelDebugStyle renders the debug level in bright magenta.
+	logLevelDebugStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("201"))
+	// logLevelInfoStyle renders the info level in blue.
+	logLevelInfoStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("33"))
+	// logLevelWarnStyle renders the warn level in amber.
+	logLevelWarnStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214"))
+	// logLevelErrorStyle renders the error level in red.
+	logLevelErrorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("203"))
+	// logLevelOtherStyle renders unrecognized levels dimmed.
+	logLevelOtherStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+	// logStatus1xxStyle renders 1xx status values dimmed (rare
+	// informational responses).
+	logStatus1xxStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+	// logStatus2xxStyle renders 2xx status values in green.
+	logStatus2xxStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("42"))
+	// logStatus3xxStyle renders 3xx status values in amber.
+	logStatus3xxStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214"))
+	// logStatus4xxStyle renders 4xx status values in amber.
+	logStatus4xxStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214"))
+	// logStatus5xxStyle renders 5xx status values in red.
+	logStatus5xxStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("203"))
+	// logStatusOtherStyle renders unrecognized status values dimmed.
+	logStatusOtherStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+	// logMethodStyle renders the request method in bold cyan.
+	logMethodStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("81"))
+	// logURIStyle renders the request URI underlined in cyan.
+	logURIStyle = lipgloss.NewStyle().
+			Underline(true).
+			Foreground(lipgloss.Color("81"))
 )
