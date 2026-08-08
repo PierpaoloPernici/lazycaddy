@@ -536,6 +536,84 @@ func TestModelManualScrollNotOverriddenByReveal(t *testing.T) {
 	}
 }
 
+// TestModelShowsGlobalOptions verifies the top-level global options block
+// (`{ ... }`) appears in the document tree as a selectable depth-1 row with
+// a fixed label, alongside the site blocks.
+func TestModelShowsGlobalOptions(t *testing.T) {
+	src := "{\n\temail admin@example.test\n}\n\nexample.test {\n\trespond ok\n}\n"
+	readFile := func(p string) ([]byte, error) { return []byte(src), nil }
+	state := stateFor(t, "config/Caddyfile", readFile)
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+
+	// Items: root doc, global options, example.test.
+	if len(m.items) != 3 {
+		t.Fatalf("items = %d, want 3 (root + global options + site)", len(m.items))
+	}
+	var globalItem, siteItem *item
+	for i := range m.items {
+		it := &m.items[i]
+		if it.label == "global options" && it.depth == 1 && it.hasNode {
+			globalItem = it
+		}
+		if it.label == "example.test" && it.depth == 1 && it.hasNode {
+			siteItem = it
+		}
+	}
+	if globalItem == nil {
+		t.Error("tree missing the 'global options' depth-1 row")
+	}
+	if siteItem == nil {
+		t.Error("tree missing the example.test site row")
+	}
+
+	// Selecting the global-options row reveals its block in the source pane.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // global options
+	view := m.View()
+	visible := stripANSI(view)
+	if !strings.Contains(visible, "global options") {
+		t.Errorf("view missing the global options label:\n%s", visible)
+	}
+	if !strings.Contains(visible, "email admin@example.test") {
+		t.Errorf("source pane missing the global options content:\n%s", visible)
+	}
+}
+
+// TestModelReturnToDocumentRowScrollsHome verifies that moving the cursor
+// back up to a document row (depth 0) resets the source viewport to the
+// top, instead of keeping the stale reveal of the previously selected node.
+func TestModelReturnToDocumentRowScrollsHome(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("example.test {\n\trespond ok\n}\n")
+	for i := 0; i < 70; i++ {
+		src.WriteString("# padding\n")
+	}
+	src.WriteString("pbs.example.test {\n\trespond pbs\n}\n")
+	readFile := func(p string) ([]byte, error) { return []byte(src.String()), nil }
+	state := stateFor(t, "config/Caddyfile", readFile)
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 12)
+
+	// Items: root doc, example.test (line 1), pbs.example.test (line 74).
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // pbs.example.test
+	m.View()
+	if m.viewport.YOffset == 0 {
+		t.Fatalf("precondition: reveal must scroll to pbs.example.test")
+	}
+
+	// Move back up to the root document row: the source must reset home.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp}) // example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp}) // root doc
+	m.View()
+	if m.viewport.YOffset != 0 {
+		t.Errorf("YOffset = %d after returning to the document row, want 0 (home)", m.viewport.YOffset)
+	}
+	if !strings.Contains(stripANSI(m.View()), "respond ok") {
+		t.Errorf("top of source not visible after returning home:\n%s", m.View())
+	}
+}
+
 func TestModelPageKeysScrollFullPage(t *testing.T) {
 	src := "example.test {\n\trespond ok\n}\n"
 	for i := 0; i < 70; i++ {
