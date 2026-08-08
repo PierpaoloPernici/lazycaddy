@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -112,15 +113,17 @@ func (f *fakeReloader) Reload(ctx context.Context, path string, saved []byte) (a
 // imported files), or the configured session / error. Complete records
 // the exit code and returns the configured result / error.
 type fakeEditor struct {
-	session       *app.EditSession
-	prepareErr    error
-	result        app.EditResult
-	completeErr   error
-	prepareCalls  int
-	completeCalls int
-	capturedDoc   *caddyfile.Document
-	capturedRange caddyfile.SourceRange
-	capturedExit  int
+	session          *app.EditSession
+	prepareErr       error
+	result           app.EditResult
+	completeErr      error
+	prepareCalls     int
+	prepareFullCalls int
+	completeCalls    int
+	capturedDoc      *caddyfile.Document
+	capturedRange    caddyfile.SourceRange
+	capturedFullDoc  *caddyfile.Document
+	capturedExit     int
 }
 
 func (f *fakeEditor) Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange) (*app.EditSession, error) {
@@ -134,10 +137,34 @@ func (f *fakeEditor) Prepare(ctx context.Context, doc *caddyfile.Document, r cad
 		return f.session, nil
 	}
 	return &app.EditSession{
+		Mode:         app.EditNode,
 		DocPath:      doc.Path,
 		Range:        r,
 		Original:     append([]byte(nil), doc.Source...),
 		RangeBytes:   append([]byte(nil), doc.Source[r.Start:r.End]...),
+		TempFile:     "editor-temp",
+		SnapshotPath: "editor-snapshot",
+		Cmd:          []string{"vim", "editor-temp"},
+	}, nil
+}
+
+// PrepareFull implements app.Editor for full-document edits: the editor
+// receives the whole source and the session carries EditFull.
+func (f *fakeEditor) PrepareFull(ctx context.Context, doc *caddyfile.Document) (*app.EditSession, error) {
+	f.prepareFullCalls++
+	f.capturedFullDoc = doc
+	if f.prepareErr != nil {
+		return nil, f.prepareErr
+	}
+	if f.session != nil {
+		return f.session, nil
+	}
+	return &app.EditSession{
+		Mode:         app.EditFull,
+		DocPath:      doc.Path,
+		Range:        caddyfile.SourceRange{Start: 0, End: len(doc.Source)},
+		Original:     append([]byte(nil), doc.Source...),
+		RangeBytes:   append([]byte(nil), doc.Source...),
 		TempFile:     "editor-temp",
 		SnapshotPath: "editor-snapshot",
 		Cmd:          []string{"vim", "editor-temp"},
@@ -4691,5 +4718,858 @@ func TestEditorSave_TreeAndSourceUpdated(t *testing.T) {
 	visible := stripANSI(m.viewport.View())
 	if !strings.Contains(visible, "one.example.test") || !strings.Contains(visible, "two.example.test") {
 		t.Errorf("source pane does not show the full new structure:\n%s", visible)
+	}
+}
+
+// pressFullEditorKey drives the full-document editor round-trip from the E
+// keypress through the delivered editorDoneMsg, assuming a clean editor
+// exit with code 0. It mutates m in place.
+func pressFullEditorKey(t *testing.T, m *Model) editorDoneMsg {
+	t.Helper()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("E")})
+	if cmd == nil {
+		t.Fatal("E must return a command")
+	}
+	msg := cmd()
+	ready, ok := msg.(editorReadyMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorReadyMsg", msg)
+	}
+	m.Update(ready)
+	updated, cmd := m.Update(editorExecMsg{Err: nil})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("editorExecMsg must return the complete command")
+	}
+	doneMsg := cmd()
+	done, ok := doneMsg.(editorDoneMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorDoneMsg", doneMsg)
+	}
+	return done
+}
+
+// runFullEditorSave drives the full-document editor round-trip to a
+// delivered saveResultMsg against the model under test and returns it for
+// the caller to deliver.
+func runFullEditorSave(t *testing.T, m *Model) saveResultMsg {
+	t.Helper()
+	done := pressFullEditorKey(t, m)
+	m.Update(done) // the edit diff opens
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	return res
+}
+
+// TestEditorFullKey_EditsRoot verifies that E on the root document row
+// prepares a full-document edit and saves it through the normal pipeline.
+func TestEditorFullKey_EditsRoot(t *testing.T) {
+	src := "example.test {\n\trespond ok\n}\n"
+	edited := "example.test {\n\trespond ok\n\tencode gzip\n}\n"
+	fs := map[string]string{"config/Caddyfile": src}
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(src),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+
+	done := pressFullEditorKey(t, m)
+	m.Update(done) // the edit diff opens
+	if editor.prepareFullCalls != 1 {
+		t.Errorf("PrepareFull calls = %d, want 1", editor.prepareFullCalls)
+	}
+	if editor.capturedFullDoc == nil || editor.capturedFullDoc.Path != "config/Caddyfile" {
+		t.Errorf("PrepareFull doc = %v, want the root document", editor.capturedFullDoc)
+	}
+	if !m.showDiff {
+		t.Fatal("showDiff = false after a valid full edit, want true")
+	}
+	if m.pendingEdit == nil || m.pendingEdit.path != "config/Caddyfile" {
+		t.Fatalf("pendingEdit = %+v, want the root path", m.pendingEdit)
+	}
+
+	// Enter saves directly to the root document.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	if saver.capturedPath != "config/Caddyfile" {
+		t.Errorf("saver path = %q, want the root", saver.capturedPath)
+	}
+	if string(saver.capturedOriginal) != src {
+		t.Errorf("saver original = %q, want %q", saver.capturedOriginal, src)
+	}
+	if string(saver.capturedWorking) != edited {
+		t.Errorf("saver working = %q, want %q", saver.capturedWorking, edited)
+	}
+	updated, _ = m.Update(res)
+	m = updated.(*Model)
+	if string(m.state.Graph.Root.Source) != edited {
+		t.Errorf("root Source = %q, want %q", m.state.Graph.Root.Source, edited)
+	}
+}
+
+// TestEditorFullKey_EditsImportedFile verifies that E on an imported
+// document row edits that file, leaving the root untouched.
+func TestEditorFullKey_EditsImportedFile(t *testing.T) {
+	importedSrc := "a.example.test {\n\trespond ok\n}\n"
+	edited := "a.example.test {\n\trespond ok\n\tencode gzip\n}\n"
+	fs := map[string]string{
+		"config/Caddyfile":     "import sites/a.caddy\n",
+		"config/sites/a.caddy": importedSrc,
+	}
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(importedSrc),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+
+	// items: root doc, a.caddy doc, a.example.test node. Select the
+	// imported document row.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	sel := m.selectedItem()
+	if sel == nil || sel.hasNode || sel.doc == nil || sel.doc.Path != "config/sites/a.caddy" {
+		t.Fatalf("selection = %+v, want the imported document row", sel)
+	}
+
+	done := pressFullEditorKey(t, m)
+	m.Update(done)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	if saver.capturedPath != "config/sites/a.caddy" {
+		t.Errorf("saver path = %q, want the imported file", saver.capturedPath)
+	}
+	updated, _ = m.Update(res)
+	m = updated.(*Model)
+	var importedDoc *caddyfile.Document
+	for _, d := range m.state.Graph.Documents {
+		if d.Path == "config/sites/a.caddy" {
+			importedDoc = d
+		}
+	}
+	if importedDoc == nil || string(importedDoc.Source) != edited {
+		t.Errorf("imported doc Source = %q, want %q", importedDoc.Source, edited)
+	}
+	if string(m.state.Graph.Root.Source) != "import sites/a.caddy\n" {
+		t.Errorf("root Source = %q, want it untouched", m.state.Graph.Root.Source)
+	}
+}
+
+// TestEditorFull_EditsCommentsOutsideBlocks verifies that a full-document
+// edit can change comments that live outside any block.
+func TestEditorFull_EditsCommentsOutsideBlocks(t *testing.T) {
+	src := "# header comment\n\nexample.test {\n\trespond ok\n}\n\n# footer comment\n"
+	edited := "# edited header comment\n\nexample.test {\n\trespond ok\n}\n\n# footer comment\n"
+	fs := map[string]string{"config/Caddyfile": src}
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(src),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+
+	res := runFullEditorSave(t, m)
+	updated, _ := m.Update(res)
+	m = updated.(*Model)
+	if string(m.state.Graph.Root.Source) != edited {
+		t.Errorf("root Source = %q, want the edited comment content %q", m.state.Graph.Root.Source, edited)
+	}
+}
+
+// TestEditorFull_EmptyResultGoesThrough verifies that an empty full-file
+// edit is NOT a cancellation: it reaches the diff and is savable.
+func TestEditorFull_EmptyResultGoesThrough(t *testing.T) {
+	src := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(src),
+		Content:      []byte{},
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+
+	done := pressFullEditorKey(t, m)
+	m.Update(done)
+	if m.showDiff == false {
+		t.Fatal("empty full edit must reach the diff, not be cancelled")
+	}
+	if m.pendingEdit == nil {
+		t.Fatal("pendingEdit not set for an empty full edit")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter must return the save command")
+	}
+	cmd()
+	if len(saver.capturedWorking) != 0 {
+		t.Errorf("saver working = %q, want the empty document", saver.capturedWorking)
+	}
+}
+
+// TestEditorFull_InvalidShowsDiagnostics verifies that an invalid full
+// edit opens the diagnostics modal and is never savable.
+func TestEditorFull_InvalidShowsDiagnostics(t *testing.T) {
+	src := "example.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	editor := &fakeEditor{result: app.EditResult{
+		Original:    []byte(src),
+		Diagnostics: diags,
+		Changed:     true,
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+
+	done := pressFullEditorKey(t, m)
+	m.Update(done)
+	if !m.showDiagnostics {
+		t.Fatal("showDiagnostics = false, want true for an invalid full edit")
+	}
+	if m.showDiff {
+		t.Error("showDiff = true for an invalid full edit, want false")
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit set for an invalid full edit, want nil")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestEditorFull_AfterSaveRebuildsTree verifies that after a structural
+// full-document save the tree is rebuilt with the new site and the source
+// pane shows it.
+func TestEditorFull_AfterSaveRebuildsTree(t *testing.T) {
+	fs := map[string]string{"config/Caddyfile": "a.example.test {\n\trespond a\n}\n"}
+	edited := "a.example.test {\n\trespond a\n}\nnew.example.test {\n\trespond new\n}\n"
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(fs["config/Caddyfile"]),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+
+	res := runFullEditorSave(t, m)
+	updated, _ := m.Update(res)
+	m = updated.(*Model)
+
+	if len(m.items) != 3 {
+		t.Errorf("items = %d after save, want 3 (root + a + new); items = %v", len(m.items), itemLabels(m.items))
+	}
+	foundNew := false
+	for _, it := range m.items {
+		if it.hasNode && it.node.Name == "new.example.test" {
+			foundNew = true
+		}
+	}
+	if !foundNew {
+		t.Errorf("tree missing the new site; items = %v", itemLabels(m.items))
+	}
+	m.View()
+	if !strings.Contains(stripANSI(m.viewport.View()), "new.example.test") {
+		t.Errorf("source pane does not show the new site:\n%s", m.viewport.View())
+	}
+}
+
+// TestDeleteKey_DisabledOnDocumentRow verifies that d on a document row is
+// a no-op: delete is a node operation only.
+func TestDeleteKey_DisabledOnDocumentRow(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "a.example.test {\n\trespond a\n}\n",
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	if m.selectedItem().hasNode {
+		t.Fatal("precondition: the document row must be selected")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd != nil {
+		t.Errorf("d on a document row returned a command, want none")
+	}
+	if m.pendingDelete != nil || m.showDiff {
+		t.Error("delete state set on a document row, want untouched")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestDelete_ImportDirectiveRejected verifies the defensive guard: an
+// import directive can never be deleted. The tree never renders import
+// rows, so the selection is set directly to exercise the guard.
+func TestDelete_ImportDirectiveRejected(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "import sites/a.caddy\n",
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	importNode := caddyfile.Node{
+		Kind:  caddyfile.KindDirective,
+		Name:  "import",
+		Range: caddyfile.SourceRange{Start: 0, End: 18, StartLine: 1, EndLine: 1},
+	}
+	m.items = []item{
+		{depth: 0, doc: m.state.Graph.Root},
+		{depth: 1, doc: m.state.Graph.Root, node: importNode, hasNode: true},
+	}
+	m.cursor = 1
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd != nil {
+		t.Errorf("d on an import directive returned a command, want none")
+	}
+	if !strings.Contains(m.statusMessage, "import directives cannot be deleted") {
+		t.Errorf("statusMessage = %q, want the import guard hint", m.statusMessage)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestDelete_ValidShowsDiffAndSaves verifies the happy path: d removes the
+// node range, the delete diff opens with an explicit title, and Enter
+// saves the exact Patch(original, range, empty) result.
+func TestDelete_ValidShowsDiffAndSaves(t *testing.T) {
+	src := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+	if !m.selectedItem().hasNode || m.selectedItem().node.Name != "b.example.test" {
+		t.Fatalf("precondition: b.example.test node must be selected")
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd == nil {
+		t.Fatal("d must return a command")
+	}
+	msg := cmd()
+	vmsg, ok := msg.(deleteValidatedMsg)
+	if !ok {
+		t.Fatalf("got %T, want deleteValidatedMsg", msg)
+	}
+	if vmsg.Err != nil {
+		t.Fatalf("delete validation error: %v", vmsg.Err)
+	}
+	m.Update(vmsg)
+	if !m.showDiff {
+		t.Fatal("diff not open after a valid delete")
+	}
+	if m.diffTitle != "Delete · config/Caddyfile" {
+		t.Errorf("diffTitle = %q, want the explicit delete title", m.diffTitle)
+	}
+	if m.pendingDelete == nil {
+		t.Fatal("pendingDelete not set")
+	}
+	// The diff footer advertises the delete confirmation.
+	if !strings.Contains(m.View(), "Enter delete") {
+		t.Errorf("delete diff footer missing 'Enter delete':\n%s", m.View())
+	}
+	expected, err := caddyfile.Patch([]byte(src), state.Graph.Root.Nodes[1].Range, []byte{})
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	// Enter saves the deletion through the normal pipeline.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the delete diff must return a command")
+	}
+	resMsg := cmd()
+	if _, ok := resMsg.(saveResultMsg); !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	if saver.capturedPath != "config/Caddyfile" {
+		t.Errorf("saver path = %q, want the root", saver.capturedPath)
+	}
+	if string(saver.capturedOriginal) != src {
+		t.Errorf("saver original = %q, want %q", saver.capturedOriginal, src)
+	}
+	if !bytes.Equal(saver.capturedWorking, expected) {
+		t.Errorf("saver working = %q, want the node removed: %q", saver.capturedWorking, expected)
+	}
+}
+
+// TestDelete_PreservesCommentsOutsideNode verifies that deleting a node
+// preserves every byte outside its range, including surrounding comments.
+func TestDelete_PreservesCommentsOutsideNode(t *testing.T) {
+	src := "# header comment\n\nexample.test {\n\trespond ok\n}\n\n# footer comment\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test node
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg := cmd()
+	vmsg := msg.(deleteValidatedMsg)
+	m.Update(vmsg)
+	if !m.showDiff {
+		t.Fatal("diff not open")
+	}
+	expected, err := caddyfile.Patch([]byte(src), state.Graph.Root.Nodes[0].Range, []byte{})
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter must return the save command")
+	}
+	cmd()
+	if !bytes.Equal(saver.capturedWorking, expected) {
+		t.Errorf("saver working = %q, want comments preserved byte-for-byte: %q", saver.capturedWorking, expected)
+	}
+	if !strings.Contains(string(saver.capturedWorking), "# header comment") ||
+		!strings.Contains(string(saver.capturedWorking), "# footer comment") {
+		t.Errorf("saved content lost a surrounding comment: %q", saver.capturedWorking)
+	}
+}
+
+// TestDelete_InvalidShowsDiagnostics verifies that a delete candidate that
+// fails validation opens the diagnostics modal and never reaches the saver.
+func TestDelete_InvalidShowsDiagnostics(t *testing.T) {
+	src := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg := cmd()
+	vmsg := msg.(deleteValidatedMsg)
+	m.Update(vmsg)
+	if !m.showDiagnostics {
+		t.Fatal("showDiagnostics = false, want true for an invalid delete")
+	}
+	if m.showDiff {
+		t.Error("showDiff = true for an invalid delete, want false")
+	}
+	if m.pendingDelete != nil {
+		t.Error("pendingDelete set for an invalid delete, want nil")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestDelete_EscCancels verifies that Esc from the delete diff cancels the
+// deletion without touching the saver.
+func TestDelete_EscCancels(t *testing.T) {
+	src := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg := cmd()
+	m.Update(msg.(deleteValidatedMsg))
+	if !m.showDiff {
+		t.Fatal("delete diff not open")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showDiff {
+		t.Error("showDiff = true after Esc, want false")
+	}
+	if m.pendingDelete != nil {
+		t.Error("pendingDelete not discarded after Esc, want nil")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+	if !strings.Contains(m.statusMessage, "delete cancelled") {
+		t.Errorf("statusMessage = %q, want a delete-cancelled hint", m.statusMessage)
+	}
+}
+
+// TestDelete_ImportedNode verifies that deleting a node of an imported
+// file saves to that file and leaves the root intact.
+func TestDelete_ImportedNode(t *testing.T) {
+	importedSrc := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	fs := map[string]string{
+		"config/Caddyfile":     "import sites/a.caddy\n",
+		"config/sites/a.caddy": importedSrc,
+	}
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	formatter := &fakeFormatter{}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}}
+	m := newLoadedModel(t, loader, formatter, saver)
+	m = resize(m, 120, 30)
+	// items: root doc, a.caddy doc, a.example.test, b.example.test.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy doc
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+	if !m.selectedItem().hasNode || m.selectedItem().node.Name != "b.example.test" {
+		t.Fatalf("precondition: b.example.test of the imported file must be selected")
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg := cmd()
+	m.Update(msg.(deleteValidatedMsg))
+	if !m.showDiff {
+		t.Fatal("delete diff not open")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter must return the save command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	if saver.capturedPath != "config/sites/a.caddy" {
+		t.Errorf("saver path = %q, want the imported file", saver.capturedPath)
+	}
+	updated, _ = m.Update(res)
+	m = updated.(*Model)
+	var importedDoc *caddyfile.Document
+	for _, d := range m.state.Graph.Documents {
+		if d.Path == "config/sites/a.caddy" {
+			importedDoc = d
+		}
+	}
+	if importedDoc == nil || strings.Contains(string(importedDoc.Source), "b.example.test") {
+		t.Errorf("imported doc Source = %q, want b.example.test removed", importedDoc.Source)
+	}
+	if string(m.state.Graph.Root.Source) != "import sites/a.caddy\n" {
+		t.Errorf("root Source = %q, want it untouched", m.state.Graph.Root.Source)
+	}
+}
+
+// TestDelete_AfterSaveTreeRebuilt verifies that a successful delete
+// rebuilds the tree (one fewer node row), re-anchors the selection on the
+// stable document row and updates the source pane.
+func TestDelete_AfterSaveTreeRebuilt(t *testing.T) {
+	fs := map[string]string{"config/Caddyfile": "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"}
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	formatter := &fakeFormatter{}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, formatter, saver)
+	m = resize(m, 120, 30)
+	before := len(m.items)
+	if before != 3 {
+		t.Fatalf("items = %d before delete, want 3", before)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg := cmd()
+	m.Update(msg.(deleteValidatedMsg))
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	updated, _ = m.Update(res)
+	m = updated.(*Model)
+
+	if len(m.items) != before-1 {
+		t.Errorf("items = %d after delete, want %d; items = %v", len(m.items), before-1, itemLabels(m.items))
+	}
+	sel := m.selectedItem()
+	if sel == nil || sel.hasNode || sel.doc == nil || sel.doc.Path != "config/Caddyfile" {
+		t.Errorf("selection = %+v, want the stable document row after delete", sel)
+	}
+	m.View()
+	if strings.Contains(stripANSI(m.viewport.View()), "b.example.test") {
+		t.Errorf("source pane still shows the deleted node:\n%s", m.viewport.View())
+	}
+}
+
+// TestSecondNodeEditAfterStructuralAdd is a stale-range regression: after a
+// structural full-document save rebuilds the tree, a subsequent node edit
+// must target the freshly reloaded range, not the pre-edit one.
+func TestSecondNodeEditAfterStructuralAdd(t *testing.T) {
+	fs := map[string]string{"config/Caddyfile": "a.example.test {\n\trespond a\n}\n"}
+	edited := "a.example.test {\n\trespond a\n}\nnew.example.test {\n\trespond new\n}\n"
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(fs["config/Caddyfile"]),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
+
+	// First: E adds a site and saves; the refresh rebuilds the tree.
+	res := runFullEditorSave(t, m)
+	updated, _ := m.Update(res)
+	m = updated.(*Model)
+	if len(m.items) != 3 {
+		t.Fatalf("items = %d after E save, want 3; items = %v", len(m.items), itemLabels(m.items))
+	}
+
+	// Select the newly added node and edit it with e: the captured range
+	// must come from the reloaded graph.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // new.example.test
+	freshRange := m.state.Graph.Root.Nodes[1].Range
+	editor.result = app.EditResult{
+		Original:     []byte(edited),
+		Content:      []byte(edited + "third.example.test {\n\trespond third\n}\n"),
+		Changed:      true,
+		SnapshotPath: "snap-2",
+	}
+	done := pressEditorKey(t, m)
+	m.Update(done) // the edit diff opens
+	if editor.capturedRange != freshRange {
+		t.Errorf("capturedRange = %+v, want the fresh range %+v (stale ranges would fail)", editor.capturedRange, freshRange)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res2, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	updated, _ = m.Update(res2)
+	m = updated.(*Model)
+	if !strings.Contains(string(m.state.Graph.Root.Source), "third.example.test") {
+		t.Errorf("root Source = %q, want it to contain the third site", m.state.Graph.Root.Source)
+	}
+}
+
+// TestEditorFull_FooterShowsKey verifies that the footer lists E full edit
+// on document and node rows (when writable with an editor) and hides it in
+// read-only mode; e edit stays node-only.
+func TestEditorFull_FooterShowsKey(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "a.example.test {\n\trespond a\n}\n",
+	}))
+	editor := &fakeEditor{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	// On the document row: E is shown, e is not.
+	if !strings.Contains(m.View(), "E full edit") {
+		t.Errorf("footer missing 'E full edit' on a document row:\n%s", m.View())
+	}
+	if strings.Contains(m.View(), "e edit") {
+		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
+	}
+	// On a node row: both are shown.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if !strings.Contains(m.View(), "E full edit") || !strings.Contains(m.View(), "e edit") {
+		t.Errorf("footer missing E/e edit on a node row:\n%s", m.View())
+	}
+	// Read-only: neither.
+	readOnly := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "a.example.test {\n\trespond a\n}\n",
+	}))
+	m2 := newLoadedModel(t, fakeLoader{state: readOnly}, editor)
+	m2 = resize(m2, 120, 30)
+	if strings.Contains(m2.View(), "E full edit") || strings.Contains(m2.View(), "e edit") {
+		t.Errorf("footer shows edit keys in read-only mode:\n%s", m2.View())
+	}
+}
+
+// TestDelete_FooterShowsKey verifies that the footer lists d delete only on
+// node rows in writable mode.
+func TestDelete_FooterShowsKey(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "a.example.test {\n\trespond a\n}\n",
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	// On the document row the key is hidden.
+	if strings.Contains(m.View(), "d delete") {
+		t.Errorf("footer shows 'd delete' on a document row:\n%s", m.View())
+	}
+	// On a node row the key appears.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if !strings.Contains(m.View(), "d delete") {
+		t.Errorf("footer missing 'd delete' on a node row:\n%s", m.View())
+	}
+	// Read-only: hidden even on a node row.
+	readOnly := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "a.example.test {\n\trespond a\n}\n",
+	}))
+	m2 := newLoadedModel(t, fakeLoader{state: readOnly}, formatter)
+	m2 = resize(m2, 120, 30)
+	m2 = keyPress(t, m2, tea.KeyMsg{Type: tea.KeyDown})
+	if strings.Contains(m2.View(), "d delete") {
+		t.Errorf("footer shows 'd delete' in read-only mode:\n%s", m2.View())
+	}
+	// Without a formatter the key is hidden even on a writable node row:
+	// the delete flow validates before the diff, so the key would fail at
+	// the first press.
+	saverOnly := &fakeSaver{}
+	m3 := newLoadedModel(t, fakeLoader{state: state}, saverOnly)
+	m3 = resize(m3, 120, 30)
+	m3 = keyPress(t, m3, tea.KeyMsg{Type: tea.KeyDown})
+	if strings.Contains(m3.View(), "d delete") {
+		t.Errorf("footer shows 'd delete' without a formatter:\n%s", m3.View())
+	}
+}
+
+// TestDelete_DiagnosticsWithErrorOpensModal verifies that a delete whose
+// validation returns both diagnostics and an error (the real
+// FormatAndValidate contract when Caddy rejects the configuration) opens
+// the diagnostics modal instead of only surfacing a status line.
+func TestDelete_DiagnosticsWithErrorOpensModal(t *testing.T) {
+	src := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	msg := cmd()
+	vmsg := msg.(deleteValidatedMsg)
+	m.Update(vmsg)
+	if !m.showDiagnostics {
+		t.Fatal("showDiagnostics = false, want true when validation returns diagnostics alongside an error")
+	}
+	if m.showDiff {
+		t.Error("showDiff = true, want false (invalid delete, no diff)")
+	}
+	if m.pendingDelete != nil {
+		t.Error("pendingDelete set for an invalid delete, want nil")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestDelete_SecondPressIgnoredWhileValidating verifies that a second d
+// press while the first delete is still validating is ignored, so two
+// concurrent validations cannot overwrite each other.
+func TestDelete_SecondPressIgnoredWhileValidating(t *testing.T) {
+	src := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	formatter := &fakeFormatter{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd == nil {
+		t.Fatal("first d must return a command")
+	}
+	if !m.deleting {
+		t.Error("deleting = false after the first d, want true")
+	}
+	// A second d while validating is a no-op: no command, no extra call.
+	_, cmd2 := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd2 != nil {
+		t.Error("second d returned a command, want none")
+	}
+	msg := cmd() // runs FormatAndValidate exactly once
+	if formatter.calls != 1 {
+		t.Errorf("formatter.calls = %d, want 1 (the second d must not trigger a call)", formatter.calls)
+	}
+	vmsg, ok := msg.(deleteValidatedMsg)
+	if !ok {
+		t.Fatalf("got %T, want deleteValidatedMsg", msg)
+	}
+	updated, _ := m.Update(vmsg)
+	m = updated.(*Model)
+	if m.deleting {
+		t.Error("deleting = true after the result, want false")
+	}
+	if !m.showDiff {
+		t.Fatal("delete diff not open after the validated result")
 	}
 }

@@ -118,6 +118,18 @@ Completed:
   — while Esc closes without touching the selection, the log view or any
   workflow. Results are capped at 200 and the whole feature is read-only
   and available even in read-only mode.
+- full-document editing and node deletion: `E` edits the entire selected
+  document (root or imported) in $EDITOR, reusing the node-edit safety
+  pipeline (snapshot, external-change preflight, validation, diff,
+  backup, conflict detection, atomic save); comments outside any block
+  are editable and an empty full-edit result goes through validation and
+  the diff instead of being treated as a cancellation. `d` removes the
+  selected node's exact source range (never document rows or import
+  directives), preserving every byte outside the range, with the diff as
+  the single confirmation before the save. Both flows reload and
+  re-parse the graph after a successful save so the tree, the selection,
+  the line ranges and the search scope reflect the new structure, and
+  the runtime stays "saved but not reloaded" until an explicit `r`.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -149,7 +161,9 @@ change the original source documents.
 - Remote servers, SSH and multi-server state.
 - Automatic health checks, metrics and certificate renewal.
 - A visual form editor for every Caddy directive.
-- Deleting or reordering blocks through the structured view.
+- Deleting or reordering blocks through the structured view. (Node
+  deletion via the exact source range is now covered by `d`; reordering
+  and structured directive editing remain future work.)
 - Automatic reloads, background writes or silent formatting of the user's file.
 - Built-in privilege escalation or a privileged helper; v0.1 reports insufficient permissions and keeps mutating actions disabled.
 
@@ -233,9 +247,10 @@ Keybindings:
 ```text
 Enter      Open selected item
 e          Edit selected source range
+E          Edit entire document (root or imported)
 Ctrl-E     Toggle raw source view
 a          Add (only when supported by the current release)
-d          Delete (confirmation required; disabled until structured editing supports it)
+d          Delete selected node (confirmation via diff; never on document rows or import directives)
 v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
@@ -470,6 +485,9 @@ Acceptance: external changes are never overwritten, every successful save is rec
 ### v0.3 — structured editing
 
 - Add source-range-preserving structured editing for `reverse_proxy` and common directives.
+- Node deletion (`d`) is already covered by the exact-range patch plus the
+  diff confirmation and post-save graph reload; reordering and structured
+  directive editing remain.
 - Add inline validation and richer semantic highlighting when the parse tree
   can identify roles reliably.
 - Keep raw editing available for unsupported or plugin directives.

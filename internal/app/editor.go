@@ -18,14 +18,30 @@ import (
 // there is no editor to launch.
 var ErrNoEditor = errors.New("no editor configured (set $VISUAL or $EDITOR)")
 
+// EditMode distinguishes a node-range edit from a full-document edit.
+type EditMode int
+
+const (
+	// EditNode edits the exact bytes of the selected node range.
+	EditNode EditMode = iota
+	// EditFull edits the entire document (root or imported).
+	EditFull
+)
+
 // EditSession is the prepared state of one $EDITOR round-trip: the exact
 // bytes handed to the editor, the snapshot written before launch and the
 // argv to run. Prepare creates it; Complete consumes it.
 type EditSession struct {
+	// Mode is EditNode or EditFull. It controls how Complete interprets an
+	// empty edited result: for EditNode the empty file is a cancellation,
+	// for EditFull it is a legitimate (if likely invalid) document that
+	// must go through validation.
+	Mode EditMode
 	// DocPath is the path of the real document the range belongs to. It
 	// may be an imported file; it is never the root Caddyfile by accident.
 	DocPath string
-	// Range is the byte range that the edit may replace.
+	// Range is the byte range that the edit may replace. For EditFull it
+	// covers the whole document.
 	Range caddyfile.SourceRange
 	// Original is a copy of doc.Source at Prepare time: the baseline for
 	// the downstream conflict check and the Patch input.
@@ -73,9 +89,14 @@ type Editor interface {
 	// when the file on disk no longer matches doc.Source, and ErrNoEditor
 	// when no editor is configured.
 	Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange) (*EditSession, error)
+	// PrepareFull is Prepare for the whole document: the editor receives
+	// the exact bytes of doc.Source (root or imported) instead of a node
+	// range. Preflight, snapshot, temp file and argv behave identically.
+	PrepareFull(ctx context.Context, doc *caddyfile.Document) (*EditSession, error)
 	// Complete reads the edited temp file, recomposes the document with
-	// caddyfile.Patch and validates it. A non-zero exitCode, an empty
-	// result or an external change on disk all cancel the edit.
+	// caddyfile.Patch and validates it. A non-zero exitCode or an external
+	// change on disk always cancels the edit; an empty result cancels only
+	// EditNode sessions (an empty EditFull result is validated normally).
 	Complete(ctx context.Context, s *EditSession, exitCode int) (EditResult, error)
 }
 
@@ -138,11 +159,26 @@ type editor struct {
 	clock       func() time.Time
 }
 
-// Prepare implements Editor. It resolves the editor command, preflights
-// against external changes, snapshots the full document plus a plain-text
-// range sidecar, extracts the exact range bytes into a temp file and
-// assembles the argv ready for exec.Command.
+// Prepare implements Editor for a node-range edit.
 func (e *editor) Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange) (*EditSession, error) {
+	return e.prepare(ctx, doc, r, EditNode)
+}
+
+// PrepareFull implements Editor for a whole-document edit.
+func (e *editor) PrepareFull(ctx context.Context, doc *caddyfile.Document) (*EditSession, error) {
+	if doc == nil {
+		return nil, errors.New("editor: nil document")
+	}
+	full := caddyfile.SourceRange{Start: 0, End: len(doc.Source)}
+	return e.prepare(ctx, doc, full, EditFull)
+}
+
+// prepare is the shared implementation behind Prepare and PrepareFull: it
+// resolves the editor command, preflights against external changes,
+// snapshots the full document plus a plain-text range sidecar, extracts the
+// exact range bytes into a temp file and assembles the argv ready for
+// exec.Command.
+func (e *editor) prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange, mode EditMode) (*EditSession, error) {
 	if doc == nil {
 		return nil, errors.New("editor: nil document")
 	}
@@ -194,6 +230,7 @@ func (e *editor) Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfi
 	cmd = append(cmd, argv...)
 	cmd = append(cmd, tempFile.Name())
 	return &EditSession{
+		Mode:         mode,
 		DocPath:      doc.Path,
 		Range:        r,
 		Original:     append([]byte(nil), doc.Source...),
@@ -267,7 +304,9 @@ func (e *editor) Complete(ctx context.Context, s *EditSession, exitCode int) (Ed
 		result.Cancelled = true
 		return result, nil
 	}
-	if len(edited) == 0 {
+	if len(edited) == 0 && s.Mode == EditNode {
+		// An empty node edit is a cancellation. A full-document edit may
+		// legitimately be empty: it continues and validation decides.
 		result.Cancelled = true
 		return result, nil
 	}
@@ -303,7 +342,11 @@ func (e *editor) Complete(ctx context.Context, s *EditSession, exitCode int) (Ed
 		result.Diagnostics = diags
 		return result, nil
 	}
-	result.Content = append([]byte(nil), composed...)
+	// make keeps the slice non-nil even when composed is empty, so a
+	// validated empty full-document edit is a legitimate (if unusual)
+	// savable result rather than a "missing content" signal.
+	result.Content = make([]byte, len(composed))
+	copy(result.Content, composed)
 	return result, nil
 }
 
