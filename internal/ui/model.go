@@ -126,6 +126,16 @@ type editorErrorMsg struct {
 	Err error
 }
 
+// deleteValidatedMsg is delivered after the delete candidate (the document
+// with the selected node removed) has been validated.
+type deleteValidatedMsg struct {
+	Path        string
+	Original    []byte
+	Content     []byte
+	Diagnostics []validator.Diagnostic
+	Err         error
+}
+
 // pendingEdit holds a validated, recomposed document that came out of an
 // $EDITOR round-trip and is awaiting the diff review and the save
 // confirmation. path may be an imported file; it is the exact document the
@@ -138,6 +148,14 @@ type pendingEdit struct {
 	snapshotPath string
 	nodeName     string
 	startLine    int
+}
+
+// pendingDelete holds a validated document with the selected node removed,
+// awaiting the delete-diff confirmation and the normal save pipeline.
+type pendingDelete struct {
+	path     string
+	original []byte
+	content  []byte
 }
 
 // Model is the inspector screen: a document tree on the left, the raw
@@ -291,6 +309,10 @@ type Model struct {
 	// recomposed result is delivered; a second e press is ignored while
 	// it is set, mirroring the saving/busy guards.
 	editing bool
+	// deleting is true while a delete candidate is being validated; a
+	// second d press is ignored while it is set, so two concurrent
+	// validations can never overwrite each other's pendingDelete.
+	deleting bool
 	// editorSession is the active app.EditSession between editorReadyMsg
 	// and editorDoneMsg. It is cleared once the result is handled.
 	editorSession *app.EditSession
@@ -298,6 +320,10 @@ type Model struct {
 	// review, which is the single confirmation for saving it. nil means no
 	// editor edit is pending.
 	pendingEdit *pendingEdit
+	// pendingDelete holds a validated document with the selected node
+	// removed, awaiting the delete-diff confirmation and the normal save
+	// pipeline. nil means no delete is pending.
+	pendingDelete *pendingDelete
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the
@@ -460,6 +486,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorDone(msg)
 	case editorErrorMsg:
 		return m.handleEditorError(msg)
+	case deleteValidatedMsg:
+		return m.handleDeleteValidated(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -584,6 +612,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleLogView()
 	case "e":
 		return m.startEditor()
+	case "E":
+		return m.startFullEdit()
+	case "d":
+		return m.startDelete()
 	case "/", "ctrl+f":
 		return m.startSearch()
 	}
@@ -802,7 +834,7 @@ func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 		m.statusMessage = "read-only mode — start with --write to enable saving"
 		return m, nil
 	}
-	if m.saving || m.editing || m.busy || m.reloading {
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting {
 		return m, nil
 	}
 	sel := m.selectedItem()
@@ -816,6 +848,43 @@ func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 	r := sel.node.Range
 	return m, func() tea.Msg {
 		session, err := editor.Prepare(context.Background(), doc, r)
+		if err != nil {
+			return editorErrorMsg{Err: err}
+		}
+		return editorReadyMsg{Session: session}
+	}
+}
+
+// startFullEdit begins the $EDITOR round-trip for the whole selected
+// document (root or imported), mirroring startEditor's guards but with no
+// node requirement: both a document row and a node row carry a doc. There
+// is no fallback between the two commands — e is always the node edit and
+// E is always the full-document edit.
+func (m *Model) startFullEdit() (tea.Model, tea.Cmd) {
+	if m.state == nil || m.state.Graph == nil {
+		return m, nil
+	}
+	if m.editor == nil {
+		m.statusMessage = "✗ no editor configured (set $VISUAL or $EDITOR)"
+		return m, nil
+	}
+	if m.state.Settings.ReadOnly || m.saver == nil {
+		m.statusMessage = "read-only mode — start with --write to enable saving"
+		return m, nil
+	}
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting {
+		return m, nil
+	}
+	sel := m.selectedItem()
+	if sel == nil || sel.doc == nil {
+		return m, nil
+	}
+	m.editing = true
+	m.statusMessage = "launching editor…"
+	editor := m.editor
+	doc := sel.doc
+	return m, func() tea.Msg {
+		session, err := editor.PrepareFull(context.Background(), doc)
 		if err != nil {
 			return editorErrorMsg{Err: err}
 		}
@@ -915,18 +984,22 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = "no changes"
 		return m, nil
 	}
-	if session == nil || len(result.Content) == 0 {
+	if session == nil || (len(result.Content) == 0 && session.Mode == app.EditNode) {
 		m.statusMessage = "✗ editor session missing a result"
 		return m, nil
 	}
 	// During the editor flow the tree selection is still the edited node;
 	// capture its identity so the post-save tree refresh can re-anchor the
-	// selection even when the edit added or removed sections above it.
+	// selection even when the edit added or removed sections above it. A
+	// full-document edit replaces the whole doc, so its re-anchor falls on
+	// the document row instead.
 	nodeName := ""
 	startLine := 0
-	if sel := m.selectedItem(); sel != nil && sel.hasNode {
-		nodeName = sel.node.Name
-		startLine = sel.node.Range.StartLine
+	if session.Mode == app.EditNode {
+		if sel := m.selectedItem(); sel != nil && sel.hasNode {
+			nodeName = sel.node.Name
+			startLine = sel.node.Range.StartLine
+		}
 	}
 	m.pendingEdit = &pendingEdit{
 		path:         session.DocPath,
@@ -956,6 +1029,93 @@ func (m *Model) handleEditorError(msg editorErrorMsg) (tea.Model, tea.Cmd) {
 	m.editing = false
 	m.editorSession = nil
 	m.statusMessage = "✗ editor: " + msg.Err.Error()
+	return m, nil
+}
+
+// startDelete begins the delete workflow for the selected node: the node's
+// exact SourceRange is removed with caddyfile.Patch (every byte outside
+// the range is preserved), the candidate is validated, and the result is
+// reviewed in a diff before any write. Delete is a node operation only —
+// document rows and import directives can never be deleted.
+func (m *Model) startDelete() (tea.Model, tea.Cmd) {
+	if m.state == nil || m.state.Graph == nil {
+		return m, nil
+	}
+	if m.saver == nil || m.state.Settings.ReadOnly {
+		m.statusMessage = "read-only mode — start with --write to enable saving"
+		return m, nil
+	}
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting {
+		return m, nil
+	}
+	sel := m.selectedItem()
+	if sel == nil || !sel.hasNode || sel.doc == nil {
+		// Delete removes a node range; a document row has none.
+		return m, nil
+	}
+	if sel.node.Kind == caddyfile.KindDirective && sel.node.Name == "import" {
+		m.statusMessage = "✗ import directives cannot be deleted"
+		return m, nil
+	}
+	if m.formatter == nil {
+		m.statusMessage = "✗ validation unavailable — caddy binary not configured"
+		return m, nil
+	}
+	working, err := caddyfile.Patch(sel.doc.Source, sel.node.Range, []byte{})
+	if err != nil {
+		m.statusMessage = "✗ delete failed: " + err.Error()
+		return m, nil
+	}
+	m.deleting = true
+	doc := sel.doc
+	original := append([]byte(nil), doc.Source...)
+	formatter := m.formatter
+	return m, func() tea.Msg {
+		_, diags, err := formatter.FormatAndValidate(context.Background(), doc.Path, working)
+		return deleteValidatedMsg{Path: doc.Path, Original: original, Content: working, Diagnostics: diags, Err: err}
+	}
+}
+
+// handleDeleteValidated routes the validated delete candidate. Error
+// diagnostics have precedence over a companion error: FormatAndValidate
+// returns both when Caddy rejects the configuration, and the modal must
+// open. The error is an infrastructural failure (missing binary, timeout)
+// only when no diagnostics accompany it. A clean candidate opens the
+// delete diff, which is the single confirmation before the save.
+func (m *Model) handleDeleteValidated(msg deleteValidatedMsg) (tea.Model, tea.Cmd) {
+	m.deleting = false
+	var errorDiags []validator.Diagnostic
+	for _, d := range msg.Diagnostics {
+		if d.Severity == validator.SeverityError {
+			errorDiags = append(errorDiags, d)
+		}
+	}
+	if len(errorDiags) > 0 {
+		m.diagnostics = errorDiags
+		m.diagCursor = 0
+		m.showDiagnostics = true
+		m.statusMessage = "✗ delete did not validate — not applied"
+		return m, nil
+	}
+	if msg.Err != nil {
+		m.statusMessage = "✗ delete validation failed: " + msg.Err.Error()
+		return m, nil
+	}
+	if len(msg.Diagnostics) > 0 {
+		m.statusMessage = "✗ delete has warnings — not applied"
+		return m, nil
+	}
+	m.pendingDelete = &pendingDelete{path: msg.Path, original: msg.Original, content: msg.Content}
+	lines, err := diff.Unified(msg.Original, msg.Content, msg.Path, msg.Path+" (after delete)")
+	if err != nil {
+		m.statusMessage = "✗ diff failed: " + err.Error()
+		return m, nil
+	}
+	m.diffLines = lines
+	m.diffTitle = "Delete · " + msg.Path
+	m.showDiff = true
+	m.syncDiffContent()
+	m.diffViewport.GotoTop()
 	return m, nil
 }
 
@@ -1375,12 +1535,15 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pendingEdit != nil {
 			m.pendingEdit = nil
 			m.statusMessage = "edit discarded"
+		} else if m.pendingDelete != nil {
+			m.pendingDelete = nil
+			m.statusMessage = "delete cancelled"
 		}
 	case "enter":
-		if m.pendingEdit != nil {
-			// For an editor edit the diff is the single confirmation:
-			// Enter saves directly (the edit was already validated),
-			// mirroring the save-confirmation Enter branch.
+		if m.pendingEdit != nil || m.pendingDelete != nil {
+			// The diff is the single confirmation for both an editor
+			// edit and a delete: Enter saves directly (already
+			// validated), mirroring the save-confirmation Enter branch.
 			m.closeDiff()
 			m.saving = true
 			m.statusMessage = "saving…"
@@ -1429,7 +1592,7 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 	if m.reloading {
 		return m, nil
 	}
-	if m.pendingEdit != nil {
+	if m.pendingEdit != nil || m.pendingDelete != nil {
 		m.showSaveConfirm = true
 		return m, nil
 	}
@@ -1458,6 +1621,7 @@ func (m *Model) updateSaveConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "q":
 		m.closeSaveConfirm()
 		m.pendingEdit = nil
+		m.pendingDelete = nil
 		m.statusMessage = "save cancelled"
 	case "enter":
 		m.closeSaveConfirm()
@@ -1475,8 +1639,9 @@ func (m *Model) closeSaveConfirm() {
 
 // saveCmd returns a tea.Cmd that calls the injected saver in a
 // goroutine and reports the result as a saveResultMsg. A pending editor
-// edit is saved to its own document path (which may be an imported
-// file); otherwise the root working copy is saved to the config path.
+// edit or a pending delete is saved to its own document path (which may
+// be an imported file); otherwise the root working copy is saved to the
+// config path.
 func (m *Model) saveCmd() tea.Cmd {
 	saver := m.saver
 	path := m.state.Settings.ConfigPath
@@ -1486,6 +1651,10 @@ func (m *Model) saveCmd() tea.Cmd {
 		path = m.pendingEdit.path
 		original = m.pendingEdit.original
 		working = m.pendingEdit.content
+	} else if m.pendingDelete != nil {
+		path = m.pendingDelete.path
+		original = m.pendingDelete.original
+		working = m.pendingDelete.content
 	}
 	return func() tea.Msg {
 		result, err := saver.Save(context.Background(), path, original, working)
@@ -1507,6 +1676,9 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 		if m.pendingEdit != nil {
 			path = m.pendingEdit.path
 			content = m.pendingEdit.content
+		} else if m.pendingDelete != nil {
+			path = m.pendingDelete.path
+			content = m.pendingDelete.content
 		}
 		// Refresh the exact document the save targeted: imported files
 		// keep their own Source, the root keeps its own as well.
@@ -1532,15 +1704,19 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 		m.loaded = loadedStale
 		m.loadedAt = time.Time{}
 		status := "✓ saved (backup: " + msg.Result.BackupPath + ")"
-		if m.pendingEdit != nil {
-			// An editor edit can add or remove sections: rebuild the tree
-			// from the freshly written file so the new structure, the
-			// selection range and the source pane stay in sync.
+		if m.pendingEdit != nil || m.pendingDelete != nil {
+			// An editor edit or a delete can change the document
+			// structure: rebuild the tree from the freshly written file so
+			// the new structure, the selection range and the source pane
+			// stay in sync. For a delete, pendingDelete carries no node
+			// identity, so the selection falls back to the document row —
+			// the stable anchor requested for deletes.
 			if !m.refreshAfterStructuralSave(path) {
 				status += " · tree refresh failed"
 			}
 		}
 		m.pendingEdit = nil
+		m.pendingDelete = nil
 		m.statusMessage = status
 		return m, nil
 	}
@@ -1620,24 +1796,34 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 	return true
 }
 
-// reopenEditDiff reopens the diff modal for the pending editor edit after
-// a failed save, so the operator can retry with Enter or discard with Esc.
-// It is a no-op when no edit is pending. The status message set by the
-// caller stays visible above the reopened modal.
+// reopenEditDiff reopens the diff modal for the pending editor edit or
+// pending delete after a failed save, so the operator can retry with Enter
+// or discard with Esc. It is a no-op when neither is pending. The status
+// message set by the caller stays visible above the reopened modal.
 func (m *Model) reopenEditDiff() {
-	pe := m.pendingEdit
-	if pe == nil {
+	if pe := m.pendingEdit; pe != nil {
+		lines, err := diff.Unified(pe.original, pe.content, pe.path, pe.path+" (edited)")
+		if err != nil {
+			return
+		}
+		m.diffLines = lines
+		m.diffTitle = "Diff · " + pe.path
+		m.showDiff = true
+		m.syncDiffContent()
+		m.diffViewport.GotoTop()
 		return
 	}
-	lines, err := diff.Unified(pe.original, pe.content, pe.path, pe.path+" (edited)")
-	if err != nil {
-		return
+	if pd := m.pendingDelete; pd != nil {
+		lines, err := diff.Unified(pd.original, pd.content, pd.path, pd.path+" (after delete)")
+		if err != nil {
+			return
+		}
+		m.diffLines = lines
+		m.diffTitle = "Delete · " + pd.path
+		m.showDiff = true
+		m.syncDiffContent()
+		m.diffViewport.GotoTop()
 	}
-	m.diffLines = lines
-	m.diffTitle = "Diff · " + pe.path
-	m.showDiff = true
-	m.syncDiffContent()
-	m.diffViewport.GotoTop()
 }
 
 // startReload begins the reload workflow. It is gated by a loaded
@@ -2333,11 +2519,10 @@ func (m *Model) footer(width int) string {
 	// Modals replace the global keymap with context-aware keys, so the
 	// bottom footer never shows keys that are not active in the current
 	// context.
-	// The r key is only shown when a reloader is configured, mirroring
-	// how the s key presence depends on the saver. The l key is only
-	// shown when a log source is configured. The e key is only shown when
-	// an editor is configured, writable mode is active and a node (not a
-	// document row) is selected.
+	// The e key is only shown when an editor is configured, writable mode
+	// is active and a node (not a document row) is selected. E edits the
+	// whole selected document (row or node), and d deletes the selected
+	// node (never a document row or an import directive).
 	reloadSuffix := ""
 	if m.reloader != nil {
 		reloadSuffix = " · r reload"
@@ -2347,10 +2532,25 @@ func (m *Model) footer(width int) string {
 		logSuffix = " · l logs"
 	}
 	editSuffix := ""
+	fullEditSuffix := ""
 	if m.editor != nil && m.state != nil && !m.state.Settings.ReadOnly && m.saver != nil {
 		sel := m.selectedItem()
 		if sel != nil && sel.hasNode {
 			editSuffix = " · e edit"
+		}
+		if sel != nil && sel.doc != nil {
+			fullEditSuffix = " · E full edit"
+		}
+	}
+	// d delete is only shown when a formatter is wired as well: the delete
+	// flow validates the candidate before the diff, so without caddy
+	// validation the key would fail at the first press.
+	deleteSuffix := ""
+	if m.saver != nil && m.formatter != nil && m.state != nil && !m.state.Settings.ReadOnly {
+		if sel := m.selectedItem(); sel != nil && sel.hasNode {
+			if !(sel.node.Kind == caddyfile.KindDirective && sel.node.Name == "import") {
+				deleteSuffix = " · d delete"
+			}
 		}
 	}
 	searchSuffix := ""
@@ -2360,7 +2560,9 @@ func (m *Model) footer(width int) string {
 	var keys string
 	switch {
 	case m.showDiff:
-		if m.pendingEdit != nil {
+		if m.pendingDelete != nil {
+			keys = "↑/↓ scroll · PgUp/PgDown page · Enter delete · Esc cancel"
+		} else if m.pendingEdit != nil {
 			keys = "↑/↓ scroll · PgUp/PgDown page · Enter save · Esc discard"
 		} else {
 			keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
@@ -2380,7 +2582,7 @@ func (m *Model) footer(width int) string {
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s · s save%s%s · q quit · %d items", reloadSuffix, editSuffix, logSuffix, searchSuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s · q quit · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, len(m.items))
 	default:
 		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + " · q quit"
 	}
@@ -2489,7 +2691,9 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 // Enter to save and Esc to discard.
 func (m *Model) diffView(width, height int) string {
 	title := m.diffTitle
-	if m.pendingEdit != nil {
+	if m.pendingDelete != nil {
+		title += " · Enter delete · Esc cancel"
+	} else if m.pendingEdit != nil {
 		title += " · Enter save · Esc discard"
 	} else {
 		title += " · Esc close"

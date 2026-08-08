@@ -645,3 +645,158 @@ func TestSplitCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestEditorPrepareFull_WritesWholeDocument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	session, err := e.PrepareFull(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("PrepareFull: %v", err)
+	}
+	if session.Mode != EditFull {
+		t.Errorf("Mode = %v, want EditFull", session.Mode)
+	}
+	if session.Range.Start != 0 || session.Range.End != len(src) {
+		t.Errorf("Range = %+v, want [0,%d)", session.Range, len(src))
+	}
+	if got := readFileContent(t, session.TempFile); got != src {
+		t.Errorf("temp file = %q, want the whole document %q", got, src)
+	}
+	if got := readFileContent(t, session.SnapshotPath); got != src {
+		t.Errorf("snapshot = %q, want the whole document", got)
+	}
+	if !bytes.Equal(session.RangeBytes, []byte(src)) {
+		t.Errorf("RangeBytes = %q, want the whole document", session.RangeBytes)
+	}
+}
+
+func TestEditorPrepareFull_UsesDocumentPath(t *testing.T) {
+	dir := t.TempDir()
+	rootPath := filepath.Join(dir, "Caddyfile")
+	imported := filepath.Join(dir, "sites", "a.caddy")
+	src := "a.example.test {\n\trespond ok\n}\n"
+	writeFile(t, rootPath, "import sites/a.caddy\n")
+	if err := os.MkdirAll(filepath.Dir(imported), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, imported, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, imported, src)
+	session, err := e.PrepareFull(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("PrepareFull: %v", err)
+	}
+	if session.DocPath != imported {
+		t.Errorf("DocPath = %q, want the imported path %q", session.DocPath, imported)
+	}
+	if got := readFileContent(t, session.TempFile); got != src {
+		t.Errorf("temp file = %q, want the imported document bytes", got)
+	}
+}
+
+func TestEditorPrepareFull_EmptyResultValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	session, err := e.PrepareFull(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("PrepareFull: %v", err)
+	}
+	// The editor emptied the file: for a full edit that is a legitimate
+	// (if unlikely valid) document, not a cancellation.
+	writeFile(t, session.TempFile, "")
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if result.Cancelled {
+		t.Error("Cancelled = true, want false: an empty full edit goes through validation")
+	}
+	if !result.Changed {
+		t.Error("Changed = false, want true (the document was emptied)")
+	}
+	if result.Content == nil || !bytes.Equal(result.Content, []byte{}) {
+		t.Errorf("Content = %q, want an empty (but non-nil) validated document", result.Content)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Errorf("Diagnostics = %v, want none", result.Diagnostics)
+	}
+}
+
+func TestEditorPrepareFull_EmptyResultInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	diags := []validator.Diagnostic{
+		{Path: path, Line: 1, Column: 1, Message: "empty document", Severity: validator.SeverityError},
+	}
+	e := newTestEditor(t, EditorOptions{Formatter: &fakeEditorFormatter{diagnostics: diags}})
+	doc := sampleDoc(t, path, src)
+	session, err := e.PrepareFull(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("PrepareFull: %v", err)
+	}
+	writeFile(t, session.TempFile, "")
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if result.Cancelled {
+		t.Error("Cancelled = true, want false: an empty full edit is validated, not cancelled")
+	}
+	if !result.Changed {
+		t.Error("Changed = false, want true")
+	}
+	if result.Content != nil {
+		t.Errorf("Content = %q, want nil: the empty document did not validate", result.Content)
+	}
+	if len(result.Diagnostics) != 1 {
+		t.Fatalf("Diagnostics = %v, want the formatter diagnostics", result.Diagnostics)
+	}
+}
+
+// TestEditorComplete_NodeEmptyStillCancels locks the node-edit policy: an
+// empty result from a node-range edit stays a cancellation, unlike a full
+// edit where the empty document goes through validation.
+func TestEditorComplete_NodeEmptyStillCancels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if session.Mode != EditNode {
+		t.Fatalf("Mode = %v, want EditNode", session.Mode)
+	}
+	writeFile(t, session.TempFile, "")
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !result.Cancelled {
+		t.Error("Cancelled = false, want true: an empty node edit is a cancellation")
+	}
+	if result.Content != nil || result.Diagnostics != nil {
+		t.Errorf("empty node edit must yield no Content/Diagnostics: %+v", result)
+	}
+}
