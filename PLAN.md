@@ -108,10 +108,16 @@ Completed:
   save-confirmation modal remains for the normal `s` flow. Explicit
   decision: with a document row selected (no node) the command is
   disabled — there is no fallback to opening the whole file.
-
-Next milestone:
-
-- Search across sites, files and logs.
+- read-only global search across sites, files and logs: the `/` and
+  Ctrl-F keybindings open a case-insensitive substring search over node
+  labels, document paths and document content lines (imported files
+  included, each hit carrying its exact 1-based line) and the bounded
+  loaded log history. Enter jumps to the hit — a node row re-anchors the
+  tree cursor and reveals the block, a document line reveals the exact
+  source line, and a log hit opens the log view with the entry's detail
+  — while Esc closes without touching the selection, the log view or any
+  workflow. Results are capped at 200 and the whole feature is read-only
+  and available even in read-only mode.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -237,6 +243,7 @@ D          Diff current changes
 l          Logs
 t          TLS
 /          Search
+Ctrl-F     Search
 f          Toggle log follow mode
 p          Pause or resume logs
 ?          Help
@@ -443,10 +450,11 @@ Completed within the vertical slice:
   and flows it through the existing diff / confirmation / backup /
   conflict / atomic-save pipeline. Editing a document row (no node) is
   explicitly disabled — there is no fallback to opening the whole file.
-
-Remaining for v0.1:
-
-- Search across sites, files and logs.
+- [x] Search across sites, files and logs. The `/` and Ctrl-F
+  keybindings open a read-only, case-insensitive substring search over
+  node labels, document paths and content lines (imports included) and
+  the loaded log history; Enter jumps to the hit (node reveal, exact
+  source line, or log detail) and Esc closes without side effects.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.
 

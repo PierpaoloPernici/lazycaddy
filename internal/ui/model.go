@@ -295,6 +295,27 @@ type Model struct {
 	// review, which is the single confirmation for saving it. nil means no
 	// editor edit is pending.
 	pendingEdit *pendingEdit
+
+	// searcher runs read-only substring search across node labels,
+	// document paths/content and the loaded log history; nil disables the
+	// / keybinding.
+	searcher app.Searcher
+	// searchActive is true while the search modal is open. While it is
+	// active every other keybinding is inert and resumes on close.
+	searchActive bool
+	// searchQuery accumulates the typed query as a rune buffer (the model
+	// does not use bubbles.textinput).
+	searchQuery []rune
+	// searchResults holds the current hits and searchCursor moves over
+	// them.
+	searchResults []app.SearchResult
+	searchCursor  int
+	// searchViewport renders the result list.
+	searchViewport viewport.Model
+	// sourceRevealLine is a one-shot 1-based line to reveal in the source
+	// pane when a search activates a document content hit; 0 means no
+	// reveal. It is consumed by syncSource on the next render.
+	sourceRevealLine int
 }
 
 // New returns a Model that will load its state through loader, run
@@ -305,9 +326,10 @@ type Model struct {
 // be nil; the r keybinding is disabled in that case. runtimeStatus may
 // be nil; the startup runtime probe is disabled in that case. logSource
 // may be nil; the l log-view keybinding is disabled in that case. editor
-// may be nil; the e editor keybinding is disabled in that case. Call
+// may be nil; the e editor keybinding is disabled in that case. searcher
+// may be nil; the / search keybinding is disabled in that case. Call
 // Load before starting the program.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor) *Model {
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher) *Model {
 	return &Model{
 		loader:            loader,
 		formatter:         formatter,
@@ -316,12 +338,14 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		runtime:           runtimeStatus,
 		logSource:         logSource,
 		editor:            editor,
+		searcher:          searcher,
 		collapsed:         map[string]bool{},
 		viewport:          viewport.New(1, 1),
 		detailViewport:    viewport.New(1, 1),
 		diffViewport:      viewport.New(1, 1),
 		logViewport:       viewport.New(1, 1),
 		logDetailViewport: viewport.New(1, 1),
+		searchViewport:    viewport.New(1, 1),
 		logFollow:         true,
 	}
 }
@@ -521,6 +545,12 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.showLogs {
 		return m.updateLogKey(msg)
 	}
+	// The search modal is read-only and only opens from the main view. It
+	// takes over every key while it is active, so the editor/diff/save/log
+	// bindings are inert and resume on close.
+	if m.searchActive {
+		return m.updateSearchKey(msg)
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.quit = true
@@ -551,6 +581,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleLogView()
 	case "e":
 		return m.startEditor()
+	case "/", "ctrl+f":
+		return m.startSearch()
 	}
 	return m, nil
 }
@@ -578,6 +610,176 @@ func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
 	m.logDetailOpen = false
 	m.showLogs = true
 	return m, m.logPollCmd()
+}
+
+// startSearch opens the read-only search modal. It is gated on a
+// configured searcher; there is no read-only gate (search never writes).
+// Opening seeds the log scope from the configured source when it was never
+// loaded, so search covers the bounded history even before the log view
+// was opened: every recompute passes m.logLines as scope.Logs, so a
+// LogIndex always refers to that exact slice.
+func (m *Model) startSearch() (tea.Model, tea.Cmd) {
+	if m.searcher == nil {
+		m.statusMessage = "✗ search unavailable"
+		return m, nil
+	}
+	if m.logSource != nil && len(m.logLines) == 0 {
+		m.logLines = append([]logs.Entry(nil), m.logSource.History()...)
+	}
+	m.searchQuery = nil
+	m.searchResults = nil
+	m.searchCursor = 0
+	m.searchActive = true
+	m.statusMessage = ""
+	m.searchViewport.SetContent("")
+	return m, nil
+}
+
+// updateSearchKey handles keys while the search modal is open. Runes
+// always accumulate into the query before any named-key handling, so
+// ordinary characters (q, j, k, space, …) are always searchable; only the
+// actual navigation keys move the result cursor, PgUp/PgDown page the
+// result viewport, Enter activates the result under the cursor, backspace
+// trims the query and Esc closes without side effects.
+func (m *Model) updateSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// An input buffer must always win over named-key navigation: a typed
+	// character is text, never a shortcut.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		m.searchQuery = append(m.searchQuery, msg.Runes...)
+		m.recomputeSearch()
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc":
+		m.closeSearch()
+	case "ctrl+c":
+		m.quit = true
+		return m, tea.Quit
+	case "backspace":
+		if len(m.searchQuery) > 0 {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			m.recomputeSearch()
+		}
+	case "up":
+		if m.searchCursor > 0 {
+			m.searchCursor--
+		}
+		m.revealSearchCursor()
+	case "down":
+		if m.searchCursor < len(m.searchResults)-1 {
+			m.searchCursor++
+		}
+		m.revealSearchCursor()
+	case "pgup":
+		m.searchViewport.PageUp()
+	case "pgdown":
+		m.searchViewport.PageDown()
+	case "enter":
+		if m.searchCursor >= 0 && m.searchCursor < len(m.searchResults) {
+			m.activateSearchResult(m.searchResults[m.searchCursor])
+			m.closeSearch()
+		}
+	}
+	return m, nil
+}
+
+// recomputeSearch rebuilds the results for the current query against the
+// whole resolved graph (every document, node and content line, imported
+// files included, independent of the collapsed UI state) plus the loaded
+// log lines, resets the cursor to the top and re-anchors the viewport
+// scroll (the content itself is rebuilt on the next render).
+func (m *Model) recomputeSearch() {
+	if m.searcher == nil {
+		m.searchResults = nil
+		m.searchCursor = 0
+		return
+	}
+	scope := app.SearchScope{Logs: m.logLines}
+	if m.state != nil && m.state.Graph != nil {
+		for _, doc := range m.state.Graph.Documents {
+			if doc == nil {
+				continue
+			}
+			// Document row: path and content matches.
+			scope.Items = append(scope.Items, app.SearchItem{Label: doc.Path, Doc: doc})
+			// Every node, independent of the collapsed UI state: a global
+			// search must cover collapsed documents too.
+			for _, n := range doc.Nodes {
+				scope.Items = append(scope.Items, app.SearchItem{Label: nodeLabel(n), Doc: doc, Node: n, HasNode: true})
+			}
+		}
+	}
+	m.searchResults = m.searcher.Search(string(m.searchQuery), scope)
+	m.searchCursor = 0
+	m.searchViewport.GotoTop()
+}
+
+// closeSearch dismisses the search modal and clears its state. It never
+// touches the selection, the log view, the diff, the editor or the save
+// workflow; sourceRevealLine survives so a just-activated result can still
+// be revealed by the next render.
+func (m *Model) closeSearch() {
+	m.searchActive = false
+	m.searchQuery = nil
+	m.searchResults = nil
+	m.searchCursor = 0
+	m.searchViewport.SetContent("")
+}
+
+// activateSearchResult jumps to the target of a search hit: a node hit
+// re-anchors the tree cursor on the node row, a document hit selects the
+// document row (optionally revealing a content line), and a log hit opens
+// the log view with the entry's detail.
+func (m *Model) activateSearchResult(r app.SearchResult) {
+	m.sourceRevealLine = 0
+	switch r.Kind {
+	case app.SearchNode:
+		// A search covers collapsed documents too; expand the containing
+		// document first so its node row exists in the tree.
+		if r.Doc != nil && m.collapsed[r.Doc.Path] {
+			delete(m.collapsed, r.Doc.Path)
+			if m.state != nil && m.state.Graph != nil {
+				m.items = buildItems(m.state.Graph, m.collapsed)
+			}
+		}
+		for i := range m.items {
+			it := &m.items[i]
+			if it.doc == r.Doc && it.hasNode && it.node.Range == r.Node.Range {
+				m.cursor = i
+				return
+			}
+		}
+	case app.SearchDocument:
+		for i := range m.items {
+			it := &m.items[i]
+			if it.doc != nil && !it.hasNode && it.doc.Path == r.Doc.Path {
+				m.cursor = i
+				break
+			}
+		}
+		if r.Line > 0 {
+			m.sourceRevealLine = r.Line
+		}
+	case app.SearchLog:
+		if r.LogIndex < 0 || r.LogIndex >= len(m.logLines) {
+			return
+		}
+		m.logCursor = r.LogIndex
+		m.logDetailEntry = m.logLines[r.LogIndex]
+		m.logDetailOpen = true
+		m.logFollow = false
+		m.showLogs = true
+	}
+}
+
+// revealSearchCursor scrolls the search viewport just enough so that the
+// row under searchCursor is visible, mirroring revealLogCursor.
+func (m *Model) revealSearchCursor() {
+	if m.searchCursor < m.searchViewport.YOffset {
+		m.searchViewport.SetYOffset(m.searchCursor)
+	} else if m.searchCursor >= m.searchViewport.YOffset+m.searchViewport.Height {
+		m.searchViewport.SetYOffset(m.searchCursor - m.searchViewport.Height + 1)
+	}
 }
 
 // startEditor begins the $EDITOR round-trip for the selected node. It is
@@ -1631,6 +1833,10 @@ func (m *Model) View() string {
 			b.WriteString(m.logDetailView(width, paneH))
 			b.WriteString("\n")
 		}
+	} else if m.searchActive {
+		// The search modal is read-only and only opens from the main view.
+		b.WriteString(m.searchView(width, paneH))
+		b.WriteString("\n")
 	} else {
 		treeW := width * 2 / 5
 		// Both panes carry a left and right border; subtract the full
@@ -1828,13 +2034,24 @@ func (m *Model) syncSource(srcW, paneH int) {
 		m.sourceTitle = title
 	}
 
-	// Reveal-if-needed, but only when the selection changed or the source
-	// was refreshed: after a manual scroll the viewport must stay where
-	// the user left it, while a save must re-position the viewport on the
-	// still-selected node.
-	if key != prevSel || refresh {
+	// Reveal-if-needed, but only when the selection changed, the source
+	// was refreshed, or a search activated a document line: after a manual
+	// scroll the viewport must stay where the user left it, while a save
+	// or a search activation must re-position the viewport on the
+	// selected node / line.
+	if key != prevSel || refresh || m.sourceRevealLine > 0 {
 		if key.hasNode {
+			m.sourceRevealLine = 0
 			m.revealRange(key.start, key.end)
+		} else if m.sourceRevealLine > 0 {
+			// A search result activated a document content line: reveal
+			// it (one-shot) instead of resetting to the top.
+			offset := m.sourceRevealLine - 1 // 1-based line → 0-based offset
+			if offset < 0 {
+				offset = 0
+			}
+			m.viewport.SetYOffset(offset)
+			m.sourceRevealLine = 0
 		} else {
 			// Returning to a document row: reset the source view to the top
 			// (the "home" position) instead of keeping a stale node reveal.
@@ -2053,6 +2270,10 @@ func (m *Model) footer(width int) string {
 			editSuffix = " · e edit"
 		}
 	}
+	searchSuffix := ""
+	if m.searcher != nil {
+		searchSuffix = " · / search"
+	}
 	var keys string
 	switch {
 	case m.showDiff:
@@ -2073,10 +2294,12 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back · q quit"
 	case m.showLogs:
 		keys = "↑/↓ move · PgUp/PgDown page · Enter detail · f follow (on/off) · p pause/resume · Esc close · q quit"
+	case m.searchActive:
+		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s · s save%s · q quit · %d items", reloadSuffix, editSuffix, logSuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s · s save%s%s · q quit · %d items", reloadSuffix, editSuffix, logSuffix, searchSuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + " · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + " · q quit"
 	}
 	return statusLineStyle.Width(width).Render(keys)
 }
@@ -2206,6 +2429,82 @@ func (m *Model) diffView(width, height int) string {
 	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.diffViewport.View())
 }
 
+// searchView renders the read-only search modal: the current query on an
+// input row and the scrollable result list below it. The content is only
+// rebuilt when the size changes; the offset survives across renders so
+// PgUp/PgDown and the cursor reveal keep working.
+func (m *Model) searchView(width, height int) string {
+	query := string(m.searchQuery)
+	title := "Search"
+	if query != "" {
+		title += " · " + truncateToWidth(query, 30)
+	}
+	title += fmt.Sprintf(" · %d result(s)", len(m.searchResults))
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	// The query input row takes one line above the results.
+	viewportH := bodyH - 1
+	if viewportH < 1 {
+		viewportH = 1
+	}
+	m.syncSearchViewport(paneContentW, viewportH)
+	input := cursorStyle.Render("> ") + query
+	inputW := paneContentW - 4 // border (2) + padding (2)
+	if inputW < 1 {
+		inputW = 1
+	}
+	input = truncateToWidth(input, inputW)
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + input + "\n" + m.searchViewport.View())
+}
+
+// syncSearchViewport sizes the search viewport and refreshes its content
+// from the current results, highlighting the row under searchCursor. The
+// current offset is preserved by SetContent (it clamps only when the
+// result set shrank), matching the "don't clobber manual scroll" rule used
+// elsewhere.
+func (m *Model) syncSearchViewport(width, height int) {
+	contentW := width - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
+	contentH := height
+	if contentH < 1 {
+		contentH = 1
+	}
+	m.searchViewport.Width = contentW
+	m.searchViewport.Height = contentH
+
+	var content strings.Builder
+	if len(m.searchResults) == 0 {
+		if string(m.searchQuery) != "" {
+			content.WriteString(dimStyle.Render("no matches"))
+		} else {
+			content.WriteString(dimStyle.Render("type to search across sites, files and logs"))
+		}
+	} else {
+		textW := contentW - 2 // cursor prefix ("▸ ")
+		if textW < 1 {
+			textW = 1
+		}
+		for i, r := range m.searchResults {
+			line := truncateToWidth(r.Label, textW)
+			if i == m.searchCursor {
+				line = cursorStyle.Render("▸ " + line)
+			} else {
+				line = "  " + line
+			}
+			content.WriteString(line + "\n")
+		}
+	}
+	m.searchViewport.SetContent(content.String())
+}
+
 // wrapText wraps text to fit within the given cell width, breaking on
 // word boundaries when possible. A single word longer than the
 // width is hard-broken on rune boundaries so multi-byte characters
@@ -2272,21 +2571,34 @@ func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 			continue
 		}
 		for _, n := range doc.Nodes {
+			// Only the rendered block kinds appear in the tree; opaque
+			// directive rows (e.g. top-level import) stay out, exactly as
+			// before. nodeLabel still labels them for global search.
 			switch n.Kind {
-			case caddyfile.KindGlobalOptions:
-				// The global options block has no header, so it renders
-				// under a fixed label rather than a name.
-				items = append(items, item{label: "global options", depth: 1, doc: doc, node: n, hasNode: true})
-			case caddyfile.KindSite:
-				items = append(items, item{label: n.Name, depth: 1, doc: doc, node: n, hasNode: true})
-			case caddyfile.KindSnippet:
-				items = append(items, item{label: "snippet (" + n.Name + ")", depth: 1, doc: doc, node: n, hasNode: true})
-			case caddyfile.KindNamedRoute:
-				items = append(items, item{label: "route &(" + n.Name + ")", depth: 1, doc: doc, node: n, hasNode: true})
+			case caddyfile.KindGlobalOptions, caddyfile.KindSite, caddyfile.KindSnippet, caddyfile.KindNamedRoute:
+				items = append(items, item{label: nodeLabel(n), depth: 1, doc: doc, node: n, hasNode: true})
 			}
 		}
 	}
 	return items
+}
+
+// nodeLabel renders the tree label for a node. buildItems and the search
+// scope share it, so a collapsed document still contributes its nodes to
+// global search with the same labels the tree would show.
+func nodeLabel(n caddyfile.Node) string {
+	switch n.Kind {
+	case caddyfile.KindGlobalOptions:
+		// The global options block has no header, so it renders under a
+		// fixed label rather than a name.
+		return "global options"
+	case caddyfile.KindSnippet:
+		return "snippet (" + n.Name + ")"
+	case caddyfile.KindNamedRoute:
+		return "route &(" + n.Name + ")"
+	default:
+		return n.Name // KindSite and unknown kinds
+	}
 }
 
 // numberedSource renders the source pane content: line numbers, the exact

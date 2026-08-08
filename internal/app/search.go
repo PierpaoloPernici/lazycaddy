@@ -1,0 +1,175 @@
+package app
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
+	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
+)
+
+// maxSearchResults caps the hits returned by a single search so a huge
+// document or log history can never stall the UI.
+const maxSearchResults = 200
+
+// SearchKind classifies a search hit.
+type SearchKind int
+
+const (
+	// SearchNode is a hit on a site/node label.
+	SearchNode SearchKind = iota
+	// SearchDocument is a hit on a document path or a content line.
+	SearchDocument
+	// SearchLog is a hit on a log-history entry.
+	SearchLog
+)
+
+// SearchItem is one flattened tree row the UI builds from its items: a
+// document row (HasNode false) or a site/snippet/named-route row.
+type SearchItem struct {
+	Label   string
+	Doc     *caddyfile.Document
+	Node    caddyfile.Node
+	HasNode bool
+}
+
+// SearchScope is the read-only search input: tree rows (root and imports)
+// plus the already-loaded bounded log history.
+type SearchScope struct {
+	Items []SearchItem
+	Logs  []logs.Entry
+}
+
+// SearchResult is a single hit.
+type SearchResult struct {
+	Kind     SearchKind
+	Label    string
+	Doc      *caddyfile.Document
+	Node     caddyfile.Node
+	Line     int // 1-based for content hits; 0 for path/node-only hits
+	LogIndex int // index into SearchScope.Logs
+}
+
+// Searcher finds read-only, case-insensitive substring matches across node
+// labels, document paths, document content lines and the loaded log
+// history. It never touches disk and never mutates its input.
+type Searcher interface {
+	Search(query string, scope SearchScope) []SearchResult
+}
+
+// SearcherFunc adapts a plain function to the Searcher interface (mirrors
+// the other app *Func adapters; tests use it).
+type SearcherFunc func(query string, scope SearchScope) []SearchResult
+
+// Search implements Searcher.
+func (f SearcherFunc) Search(query string, scope SearchScope) []SearchResult {
+	return f(query, scope)
+}
+
+// NewSearcher returns the production Searcher.
+func NewSearcher() Searcher { return substringSearcher{} }
+
+// substringSearcher is the concrete, dependency-free search implementation:
+// case-insensitive substring matching, no regex, no fuzzy matching, no disk
+// access.
+type substringSearcher struct{}
+
+// Search implements Searcher. An empty (or whitespace-only) query yields
+// no results. Results are ordered by scope.Items — for a node row the label
+// is matched, for a document row the path and then every content line — and
+// the log hits come last. The result count is capped at maxSearchResults.
+func (substringSearcher) Search(query string, scope SearchScope) []SearchResult {
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	q := strings.ToLower(query)
+	var out []SearchResult
+	for _, item := range scope.Items {
+		if item.HasNode {
+			// Node label hits.
+			if strings.Contains(strings.ToLower(item.Label), q) {
+				out = append(out, SearchResult{Kind: SearchNode, Label: item.Label, Doc: item.Doc, Node: item.Node})
+				if len(out) >= maxSearchResults {
+					return out
+				}
+			}
+			continue
+		}
+		if item.Doc == nil {
+			continue
+		}
+		// Document path hits.
+		if strings.Contains(strings.ToLower(item.Doc.Path), q) {
+			out = append(out, SearchResult{Kind: SearchDocument, Label: item.Doc.Path, Doc: item.Doc})
+			if len(out) >= maxSearchResults {
+				return out
+			}
+		}
+		// Document content line hits.
+		lines := strings.Split(string(item.Doc.Source), "\n")
+		for i, line := range lines {
+			if strings.Contains(strings.ToLower(line), q) {
+				out = append(out, SearchResult{
+					Kind:  SearchDocument,
+					Label: fmt.Sprintf("%s:%d  %s", item.Doc.Path, i+1, strings.TrimSpace(line)),
+					Doc:   item.Doc,
+					Line:  i + 1,
+				})
+				if len(out) >= maxSearchResults {
+					return out
+				}
+			}
+		}
+	}
+	// Log history hits, after every tree hit.
+	for i, entry := range scope.Logs {
+		if strings.Contains(strings.ToLower(string(entry.Raw)), q) {
+			out = append(out, SearchResult{Kind: SearchLog, Label: searchLogLabel(entry), LogIndex: i})
+			if len(out) >= maxSearchResults {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// maxSearchLogLabel bounds a log search label so a huge entry cannot blow
+// up the result list.
+const maxSearchLogLabel = 120
+
+// searchLogLabel builds a compact label for a log search hit: the parsed
+// timestamp / level / logger / message when available, otherwise the raw
+// line, bounded to maxSearchLogLabel.
+func searchLogLabel(entry logs.Entry) string {
+	raw := string(entry.Raw)
+	if !entry.Parsed {
+		return truncateSearchLabel(raw)
+	}
+	parts := make([]string, 0, 4)
+	if !entry.Timestamp.IsZero() {
+		parts = append(parts, entry.Timestamp.Local().Format("15:04:05.000"))
+	}
+	if entry.Level != "" {
+		parts = append(parts, strings.ToUpper(entry.Level))
+	}
+	if entry.Logger != "" {
+		parts = append(parts, entry.Logger)
+	}
+	if entry.Msg != "" {
+		parts = append(parts, entry.Msg)
+	}
+	if len(parts) == 0 {
+		return truncateSearchLabel(raw)
+	}
+	return truncateSearchLabel(strings.Join(parts, " "))
+}
+
+// truncateSearchLabel shortens s to maxSearchLogLabel runes, appending an
+// ellipsis when it had to cut.
+func truncateSearchLabel(s string) string {
+	r := []rune(s)
+	if len(r) <= maxSearchLogLabel {
+		return s
+	}
+	return string(r[:maxSearchLogLabel]) + "…"
+}
