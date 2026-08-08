@@ -90,12 +90,28 @@ Completed:
   loaded states (LOADED, STALE, UNREACHABLE); a failed reload leaves
   the saved file and backup intact and no reload ever happens
   implicitly.
+- `$EDITOR` round-trip on the selected node range: the `e` keybinding
+  hands the exact range bytes (header and braces included) of the
+  selected node in its real document — imported files included, never
+  the root by accident — to the configured editor. Before launch the
+  document and the range are snapshotted (plain-text sidecar, no JSON),
+  the file is preflighted against external changes, and the editor is
+  launched without a shell from a quote-aware split of $VISUAL /
+  $EDITOR. A non-zero exit, an empty result or a file changed on disk
+  cancel the edit without applying anything; the recomposed document is
+  validated before it can be saved, and the change is applied only to
+  the original range via `caddyfile.Patch` (every byte outside the range
+  is preserved). The diff is the single confirmation for the edit:
+  Enter saves directly and Esc discards; the write then flows through
+  the existing backup → conflict detection → atomic save pipeline,
+  targeting the document that actually changed. The separate
+  save-confirmation modal remains for the normal `s` flow. Explicit
+  decision: with a document row selected (no node) the command is
+  disabled — there is no fallback to opening the whole file.
 
 Next milestone:
 
-- `$EDITOR` round-trip for a selected source range: open the range in
-  the configured editor and safely re-import the result, keeping the
-  Caddyfile as the source of truth.
+- Search across sites, files and logs.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -418,10 +434,18 @@ Completed within the vertical slice:
   logs, so a configured file is the only v0.1 source; polling is bounded
   (500 ms tick) and cancellable, and the TUI stays fully browsable without
   a log source.
+- [x] `$EDITOR` round-trip on a selected source range. The `e`
+  keybinding opens the exact bytes of the selected node (in its real
+  document, imports included) in $VISUAL / $EDITOR without a shell,
+  snapshots the document and range before launch, treats a non-zero
+  exit / empty result / external change as a cancellation, recomposes
+  the document with `caddyfile.Patch`, gates the result on validation
+  and flows it through the existing diff / confirmation / backup /
+  conflict / atomic-save pipeline. Editing a document row (no node) is
+  explicitly disabled — there is no fallback to opening the whole file.
 
 Remaining for v0.1:
 
-- `$EDITOR` round-trip for a selected source range.
 - Search across sites, files and logs.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.

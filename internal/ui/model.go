@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -97,6 +98,45 @@ type logTailMsg struct {
 	Err     error
 }
 
+// editorReadyMsg is delivered when the injected app.Editor finishes
+// Prepare: the session holds the snapshot, the range bytes temp file and
+// the argv to run, and the model hands it to the Bubble Tea exec pipeline.
+type editorReadyMsg struct {
+	Session *app.EditSession
+}
+
+// editorExecMsg is delivered by the Bubble Tea exec pipeline when the
+// external editor process exits. Err is what exec.Command.Run returned:
+// nil for a clean exit, an *exec.ExitError for a non-zero exit, or any
+// other launch failure.
+type editorExecMsg struct {
+	Err error
+}
+
+// editorDoneMsg is delivered when the injected app.Editor finishes
+// Complete. ExecErr, when set, means the editor could not even start.
+type editorDoneMsg struct {
+	Result  app.EditResult
+	ExecErr error
+}
+
+// editorErrorMsg is delivered when the injected app.Editor returns an
+// error from Prepare or Complete (for example ErrConflict or ErrNoEditor).
+type editorErrorMsg struct {
+	Err error
+}
+
+// pendingEdit holds a validated, recomposed document that came out of an
+// $EDITOR round-trip and is awaiting the diff review and the save
+// confirmation. path may be an imported file; it is the exact document the
+// edit targets.
+type pendingEdit struct {
+	path         string
+	original     []byte
+	content      []byte
+	snapshotPath string
+}
+
 // Model is the inspector screen: a document tree on the left, the raw
 // source of the selected document on the right (scrollable with
 // PgUp/PgDown) and optional diagnostics / diff / save-confirmation
@@ -124,6 +164,12 @@ type Model struct {
 	// lastSel tracks the selection for which revealRange last ran, so a
 	// manual scroll (PgUp/PgDown) is not overridden on the next render.
 	lastSel selectionKey
+	// sourceRefresh forces the source pane to reload its content and
+	// re-reveal the selected node on the next render. It is set after a
+	// save, which replaces the document bytes in place, so the previous
+	// reveal decision (based on an unchanged selection key) must not
+	// suppress the reveal.
+	sourceRefresh bool
 
 	// detailViewport shows the body of the diagnostic detail view.
 	// It is independent of the source viewport: the source is hidden
@@ -234,6 +280,21 @@ type Model struct {
 	logDetailEntry logs.Entry
 	// logDetailViewport renders the detail modal body.
 	logDetailViewport viewport.Model
+
+	// editor launches $EDITOR on the selected node range; nil disables
+	// the e keybinding (no editor command and/or no validation binary).
+	editor app.Editor
+	// editing is true from the moment the editor session starts until the
+	// recomposed result is delivered; a second e press is ignored while
+	// it is set, mirroring the saving/busy guards.
+	editing bool
+	// editorSession is the active app.EditSession between editorReadyMsg
+	// and editorDoneMsg. It is cleared once the result is handled.
+	editorSession *app.EditSession
+	// pendingEdit holds a validated recomposed document awaiting the diff
+	// review, which is the single confirmation for saving it. nil means no
+	// editor edit is pending.
+	pendingEdit *pendingEdit
 }
 
 // New returns a Model that will load its state through loader, run
@@ -243,9 +304,10 @@ type Model struct {
 // s keybinding is disabled in that case (read-only mode). reloader may
 // be nil; the r keybinding is disabled in that case. runtimeStatus may
 // be nil; the startup runtime probe is disabled in that case. logSource
-// may be nil; the l log-view keybinding is disabled in that case. Call
+// may be nil; the l log-view keybinding is disabled in that case. editor
+// may be nil; the e editor keybinding is disabled in that case. Call
 // Load before starting the program.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource) *Model {
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor) *Model {
 	return &Model{
 		loader:            loader,
 		formatter:         formatter,
@@ -253,6 +315,7 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		reloader:          reloader,
 		runtime:           runtimeStatus,
 		logSource:         logSource,
+		editor:            editor,
 		collapsed:         map[string]bool{},
 		viewport:          viewport.New(1, 1),
 		detailViewport:    viewport.New(1, 1),
@@ -362,6 +425,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRuntimeProbeResult(msg)
 	case logTailMsg:
 		return m.handleLogTail(msg)
+	case editorReadyMsg:
+		return m.handleEditorReady(msg)
+	case editorExecMsg:
+		return m.handleEditorExec(msg)
+	case editorDoneMsg:
+		return m.handleEditorDone(msg)
+	case editorErrorMsg:
+		return m.handleEditorError(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -478,6 +549,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startReload()
 	case "l":
 		return m.toggleLogView()
+	case "e":
+		return m.startEditor()
 	}
 	return m, nil
 }
@@ -505,6 +578,169 @@ func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
 	m.logDetailOpen = false
 	m.showLogs = true
 	return m, m.logPollCmd()
+}
+
+// startEditor begins the $EDITOR round-trip for the selected node. It is
+// gated on a configured editor, writable mode, a free busy state and a
+// selected node. A document row (depth 0, no node) has no range to edit,
+// so the command is disabled there by design: there is no fallback to
+// opening the whole file.
+func (m *Model) startEditor() (tea.Model, tea.Cmd) {
+	if m.state == nil || m.state.Graph == nil {
+		return m, nil
+	}
+	if m.editor == nil {
+		m.statusMessage = "✗ no editor configured (set $VISUAL or $EDITOR)"
+		return m, nil
+	}
+	if m.state.Settings.ReadOnly || m.saver == nil {
+		m.statusMessage = "read-only mode — start with --write to enable saving"
+		return m, nil
+	}
+	if m.saving || m.editing || m.busy || m.reloading {
+		return m, nil
+	}
+	sel := m.selectedItem()
+	if sel == nil || !sel.hasNode || sel.doc == nil {
+		return m, nil
+	}
+	m.editing = true
+	m.statusMessage = "launching editor…"
+	editor := m.editor
+	doc := sel.doc
+	r := sel.node.Range
+	return m, func() tea.Msg {
+		session, err := editor.Prepare(context.Background(), doc, r)
+		if err != nil {
+			return editorErrorMsg{Err: err}
+		}
+		return editorReadyMsg{Session: session}
+	}
+}
+
+// handleEditorReady stores the prepared session and returns a
+// tea.ExecProcess command that runs the editor argv directly — never
+// through a shell. Bubble Tea suspends the TUI while the editor runs and
+// resumes it when the process exits.
+func (m *Model) handleEditorReady(msg editorReadyMsg) (tea.Model, tea.Cmd) {
+	if msg.Session == nil || len(msg.Session.Cmd) == 0 {
+		m.editing = false
+		m.editorSession = nil
+		m.statusMessage = "✗ editor session could not start"
+		return m, nil
+	}
+	m.editorSession = msg.Session
+	cmd := exec.Command(msg.Session.Cmd[0], msg.Session.Cmd[1:]...)
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return editorExecMsg{Err: err}
+	})
+}
+
+// handleEditorExec maps the exec outcome to an exit code and hands it to
+// app.Editor.Complete. A non-zero exit (an *exec.ExitError) is treated as
+// a cancellation by Complete; any other launch failure is kept for the
+// status line.
+func (m *Model) handleEditorExec(msg editorExecMsg) (tea.Model, tea.Cmd) {
+	if m.editorSession == nil {
+		m.editing = false
+		return m, nil
+	}
+	exitCode := 0
+	var execErr error
+	if msg.Err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(msg.Err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			execErr = msg.Err
+			exitCode = -1
+		}
+	}
+	editor := m.editor
+	session := m.editorSession
+	return m, func() tea.Msg {
+		result, err := editor.Complete(context.Background(), session, exitCode)
+		if err != nil {
+			return editorErrorMsg{Err: err}
+		}
+		return editorDoneMsg{Result: result, ExecErr: execErr}
+	}
+}
+
+// handleEditorDone routes the completed round-trip. Launch failures,
+// cancellations and invalid results never reach the diff; a validated,
+// changed result opens the diff modal, which is the single confirmation
+// for saving the pending edit.
+func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
+	m.editing = false
+	session := m.editorSession
+	m.editorSession = nil
+	if msg.ExecErr != nil {
+		m.statusMessage = "✗ could not start editor: " + msg.ExecErr.Error()
+		return m, nil
+	}
+	result := msg.Result
+	switch {
+	case result.Cancelled:
+		m.statusMessage = "editor cancelled or empty result — nothing applied"
+		return m, nil
+	case len(result.Diagnostics) > 0:
+		// The modal is for actionable findings, so non-error diagnostics
+		// are filtered out, mirroring the format+validate flow.
+		var errorDiags []validator.Diagnostic
+		for _, d := range result.Diagnostics {
+			if d.Severity == validator.SeverityError {
+				errorDiags = append(errorDiags, d)
+			}
+		}
+		if len(errorDiags) == 0 {
+			// Only warnings or info-level findings survived the filter:
+			// there is nothing actionable to list, so surface a status
+			// line instead of an empty modal, mirroring the
+			// format+validate flow.
+			m.statusMessage = "✗ edited document has warnings — not saved"
+			return m, nil
+		}
+		m.diagnostics = errorDiags
+		m.diagCursor = 0
+		m.showDiagnostics = true
+		m.statusMessage = "✗ edited document did not validate — not saved"
+		return m, nil
+	case !result.Changed:
+		m.statusMessage = "no changes"
+		return m, nil
+	}
+	if session == nil || len(result.Content) == 0 {
+		m.statusMessage = "✗ editor session missing a result"
+		return m, nil
+	}
+	m.pendingEdit = &pendingEdit{
+		path:         session.DocPath,
+		original:     result.Original,
+		content:      result.Content,
+		snapshotPath: result.SnapshotPath,
+	}
+	lines, err := diff.Unified(result.Original, result.Content, session.DocPath, session.DocPath+" (edited)")
+	if err != nil {
+		m.statusMessage = "✗ diff failed: " + err.Error()
+		return m, nil
+	}
+	m.diffLines = lines
+	m.diffTitle = "Diff · " + session.DocPath
+	m.showDiff = true
+	m.syncDiffContent()
+	m.diffViewport.GotoTop()
+	return m, nil
+}
+
+// handleEditorError surfaces a Prepare or Complete failure (an
+// external-change conflict, a missing editor command or a patch error) in
+// the status line.
+func (m *Model) handleEditorError(msg editorErrorMsg) (tea.Model, tea.Cmd) {
+	m.editing = false
+	m.editorSession = nil
+	m.statusMessage = "✗ editor: " + msg.Err.Error()
+	return m, nil
 }
 
 // updateLogKey handles keys while the log view is open. The arrow keys
@@ -912,10 +1148,28 @@ func (m *Model) startDiff() (tea.Model, tea.Cmd) {
 
 // updateDiffKey handles keys when the diff modal is open. Esc and q
 // close the modal; the arrow keys and PgUp/PgDown scroll the viewport.
+// When the diff shows a pending editor edit, the diff is the single
+// confirmation: Enter saves directly and Esc additionally discards the
+// pending edit (nothing is saved). The read-only D flow keeps its
+// current behavior.
 func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.closeDiff()
+		if m.pendingEdit != nil {
+			m.pendingEdit = nil
+			m.statusMessage = "edit discarded"
+		}
+	case "enter":
+		if m.pendingEdit != nil {
+			// For an editor edit the diff is the single confirmation:
+			// Enter saves directly (the edit was already validated),
+			// mirroring the save-confirmation Enter branch.
+			m.closeDiff()
+			m.saving = true
+			m.statusMessage = "saving…"
+			return m, m.saveCmd()
+		}
 	case "up", "k":
 		m.diffViewport.LineUp(1)
 	case "down", "j":
@@ -941,7 +1195,10 @@ func (m *Model) closeDiff() {
 // a loaded graph, a configured saver, an in-flight save guard, a
 // validated working copy and actual changes. When all guards pass it
 // opens the save-confirmation modal so the operator can review the
-// target path and backup directory before confirming the write.
+// target path and backup directory before confirming the write. A
+// pending editor edit bypasses the root working-copy guards: it was
+// already validated by the editor flow and targets its own document,
+// so the root state is irrelevant.
 func (m *Model) startSave() (tea.Model, tea.Cmd) {
 	if m.state == nil || m.state.Graph == nil {
 		return m, nil
@@ -954,6 +1211,10 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.reloading {
+		return m, nil
+	}
+	if m.pendingEdit != nil {
+		m.showSaveConfirm = true
 		return m, nil
 	}
 	if m.workingBytes == nil {
@@ -974,11 +1235,13 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 
 // updateSaveConfirmKey handles keys when the save-confirmation modal
 // is open. Enter confirms (closes the modal and starts the async
-// save); Esc and q cancel.
+// save); Esc and q cancel. Cancelling an editor edit also discards the
+// pending edit, since the operator declined to apply it.
 func (m *Model) updateSaveConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.closeSaveConfirm()
+		m.pendingEdit = nil
 		m.statusMessage = "save cancelled"
 	case "enter":
 		m.closeSaveConfirm()
@@ -995,12 +1258,19 @@ func (m *Model) closeSaveConfirm() {
 }
 
 // saveCmd returns a tea.Cmd that calls the injected saver in a
-// goroutine and reports the result as a saveResultMsg.
+// goroutine and reports the result as a saveResultMsg. A pending editor
+// edit is saved to its own document path (which may be an imported
+// file); otherwise the root working copy is saved to the config path.
 func (m *Model) saveCmd() tea.Cmd {
 	saver := m.saver
 	path := m.state.Settings.ConfigPath
 	original := m.loadedBytes
 	working := m.workingBytes
+	if m.pendingEdit != nil {
+		path = m.pendingEdit.path
+		original = m.pendingEdit.original
+		working = m.pendingEdit.content
+	}
 	return func() tea.Msg {
 		result, err := saver.Save(context.Background(), path, original, working)
 		return saveResultMsg{Result: result, Err: err}
@@ -1008,35 +1278,81 @@ func (m *Model) saveCmd() tea.Cmd {
 }
 
 // handleSaveResult is invoked on the main goroutine when the saver
-// returns. On success it refreshes the loaded snapshot and the root
-// source so the source viewport and the diff command reflect the new
-// state. On failure it surfaces the specific error in the status
-// line, including the backup path when one was created.
+// returns. On success it refreshes the saved document in memory (the
+// root or an imported file) and, for a root save, the loaded snapshot,
+// so the source viewport and the diff command reflect the new state.
+// On failure it surfaces the specific error in the status line,
+// including the backup path when one was created.
 func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 	m.saving = false
 	if msg.Err == nil {
-		m.loadedBytes = append([]byte(nil), m.workingBytes...)
-		m.state.Graph.Root.Source = append([]byte(nil), m.workingBytes...)
-		// Force the source viewport to reload on next render.
-		m.sourceDoc = nil
+		path := m.state.Settings.ConfigPath
+		content := m.workingBytes
+		if m.pendingEdit != nil {
+			path = m.pendingEdit.path
+			content = m.pendingEdit.content
+		}
+		// Refresh the exact document the save targeted: imported files
+		// keep their own Source, the root keeps its own as well.
+		if m.state != nil && m.state.Graph != nil {
+			cleanPath := filepath.Clean(path)
+			for _, doc := range m.state.Graph.Documents {
+				if doc != nil && filepath.Clean(doc.Path) == cleanPath {
+					doc.Source = append([]byte(nil), content...)
+				}
+			}
+		}
+		if filepath.Clean(path) == filepath.Clean(m.state.Settings.ConfigPath) {
+			m.loadedBytes = append([]byte(nil), content...)
+			m.workingBytes = append([]byte(nil), content...)
+		}
+		// The saved document bytes replaced the in-memory source, so the
+		// source pane must reload its content AND re-reveal the selected
+		// node on the next render. A plain selection-key comparison would
+		// suppress the reveal because the selection did not change.
+		m.sourceRefresh = true
 		// The file on disk changed: until a reload proves otherwise,
 		// the running config no longer matches it.
 		m.loaded = loadedStale
 		m.loadedAt = time.Time{}
+		m.pendingEdit = nil
 		m.statusMessage = "✓ saved (backup: " + msg.Result.BackupPath + ")"
 		return m, nil
 	}
 	if errors.Is(msg.Err, app.ErrConflict) {
 		m.statusMessage = "✗ file changed on disk — reload before saving"
+		m.reopenEditDiff()
 		return m, nil
 	}
 	var saveErr *app.SaveError
 	if errors.As(msg.Err, &saveErr) {
 		m.statusMessage = "✗ save failed (backup: " + saveErr.BackupPath + "): " + saveErr.Err.Error()
+		m.reopenEditDiff()
 		return m, nil
 	}
 	m.statusMessage = "✗ save failed: " + msg.Err.Error()
+	m.reopenEditDiff()
 	return m, nil
+}
+
+// reopenEditDiff reopens the diff modal for the pending editor edit after
+// a failed save, so the operator can retry with Enter or discard with Esc.
+// It is a no-op when no edit is pending. The status message set by the
+// caller stays visible above the reopened modal.
+func (m *Model) reopenEditDiff() {
+	pe := m.pendingEdit
+	if pe == nil {
+		return
+	}
+	lines, err := diff.Unified(pe.original, pe.content, pe.path, pe.path+" (edited)")
+	if err != nil {
+		return
+	}
+	m.diffLines = lines
+	m.diffTitle = "Diff · " + pe.path
+	m.showDiff = true
+	m.syncDiffContent()
+	m.diffViewport.GotoTop()
 }
 
 // startReload begins the reload workflow. It is gated by a loaded
@@ -1147,9 +1463,18 @@ func (m *Model) handleReloadResult(msg reloadResultMsg) (tea.Model, tea.Cmd) {
 
 // saveConfirmView renders the save-confirmation modal. It names the
 // target path and the backup directory (safety requirement for any
-// replacing action) and offers Enter to confirm or Esc to cancel.
+// replacing action) and offers Enter to confirm or Esc to cancel. An
+// editor edit names its own document path, which may be an imported
+// file.
 func (m *Model) saveConfirmView(width, height int) string {
 	title := "Save config · Enter save · Esc cancel"
+	path := m.state.Settings.ConfigPath
+	hint := dimStyle.Render("review the diff with D before confirming")
+	if m.pendingEdit != nil {
+		title = "Save edit · Enter save · Esc cancel"
+		path = m.pendingEdit.path
+		hint = dimStyle.Render("the edit applies only to the selected node range")
+	}
 	bodyH := height - 3 // border (2) + title (1)
 	if bodyH < 1 {
 		bodyH = 1
@@ -1159,11 +1484,11 @@ func (m *Model) saveConfirmView(width, height int) string {
 		paneContentW = 1
 	}
 	var body strings.Builder
-	body.WriteString(dimStyle.Render("Path       ") + m.state.Settings.ConfigPath + "\n")
+	body.WriteString(dimStyle.Render("Path       ") + path + "\n")
 	body.WriteString(dimStyle.Render("Backup dir ") + m.state.Settings.BackupDir + "\n")
 	body.WriteString("\n")
 	body.WriteString(dimStyle.Render("a backup is created before the file is replaced") + "\n")
-	body.WriteString(dimStyle.Render("review the diff with D before confirming"))
+	body.WriteString(hint)
 	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
 }
 
@@ -1476,9 +1801,14 @@ func (m *Model) syncSource(srcW, paneH int) {
 		key.end = selected.node.Range.EndLine
 	}
 
+	// A refresh (set by a save) forces the content reload and the reveal
+	// even when the selection key is unchanged; it is consumed here so it
+	// applies to exactly one render.
+	refresh := m.sourceRefresh
+	m.sourceRefresh = false
 	prevDoc := m.sourceDoc
 	prevSel := m.lastSel
-	needsContent := doc != m.sourceDoc || key != m.lastSel
+	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel
 	if needsContent {
 		m.sourceDoc = doc
 		m.lastSel = key
@@ -1488,18 +1818,21 @@ func (m *Model) syncSource(srcW, paneH int) {
 			src = doc.Source
 		}
 		m.viewport.SetContent(numberedSource(src, key.start, key.end))
-		if doc != prevDoc {
+		if doc != prevDoc && !refresh {
 			// New document: start at the top; revealRange then scrolls
-			// just enough for the selected node.
+			// just enough for the selected node. A save refresh stays put
+			// and re-reveals the selection below instead.
 			m.viewport.GotoTop()
 		}
 	} else if title != m.sourceTitle {
 		m.sourceTitle = title
 	}
 
-	// Reveal-if-needed, but only when the selection changed: after a
-	// manual scroll the viewport must stay where the user left it.
-	if key != prevSel {
+	// Reveal-if-needed, but only when the selection changed or the source
+	// was refreshed: after a manual scroll the viewport must stay where
+	// the user left it, while a save must re-position the viewport on the
+	// still-selected node.
+	if key != prevSel || refresh {
 		if key.hasNode {
 			m.revealRange(key.start, key.end)
 		} else {
@@ -1702,7 +2035,9 @@ func (m *Model) footer(width int) string {
 	// context.
 	// The r key is only shown when a reloader is configured, mirroring
 	// how the s key presence depends on the saver. The l key is only
-	// shown when a log source is configured.
+	// shown when a log source is configured. The e key is only shown when
+	// an editor is configured, writable mode is active and a node (not a
+	// document row) is selected.
 	reloadSuffix := ""
 	if m.reloader != nil {
 		reloadSuffix = " · r reload"
@@ -1711,10 +2046,21 @@ func (m *Model) footer(width int) string {
 	if m.logSource != nil {
 		logSuffix = " · l logs"
 	}
+	editSuffix := ""
+	if m.editor != nil && m.state != nil && !m.state.Settings.ReadOnly && m.saver != nil {
+		sel := m.selectedItem()
+		if sel != nil && sel.hasNode {
+			editSuffix = " · e edit"
+		}
+	}
 	var keys string
 	switch {
 	case m.showDiff:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
+		if m.pendingEdit != nil {
+			keys = "↑/↓ scroll · PgUp/PgDown page · Enter save · Esc discard"
+		} else {
+			keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
+		}
 	case m.showSaveConfirm:
 		keys = "Enter save · Esc cancel"
 	case m.showReloadConfirm:
@@ -1728,7 +2074,7 @@ func (m *Model) footer(width int) string {
 	case m.showLogs:
 		keys = "↑/↓ move · PgUp/PgDown page · Enter detail · f follow (on/off) · p pause/resume · Esc close · q quit"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s · s save%s · q quit · %d items", reloadSuffix, logSuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s · s save%s · q quit · %d items", reloadSuffix, editSuffix, logSuffix, len(m.items))
 	default:
 		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + " · q quit"
 	}
@@ -1833,9 +2179,15 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 
 // diffView renders the unified diff modal. The content is only rebuilt
 // when the body height changes, so scrolling with PgUp/PgDown is
-// preserved across renders.
+// preserved across renders. A diff reviewing an editor edit offers
+// Enter to save and Esc to discard.
 func (m *Model) diffView(width, height int) string {
-	title := m.diffTitle + " · Esc close"
+	title := m.diffTitle
+	if m.pendingEdit != nil {
+		title += " · Enter save · Esc discard"
+	} else {
+		title += " · Esc close"
+	}
 	bodyH := height - 3 // border (2) + title (1)
 	if bodyH < 1 {
 		bodyH = 1
