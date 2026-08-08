@@ -1465,22 +1465,9 @@ func (m *Model) syncSource(srcW, paneH int) {
 			title += fmt.Sprintf(" · %s (lines %d-%d)", selected.node.Name, selected.node.Range.StartLine, selected.node.Range.EndLine)
 		}
 	}
-	if doc != m.sourceDoc {
-		// New document: load its full source and start at the top. The
-		// reveal below then scrolls just enough for the selected node.
-		m.sourceDoc = doc
-		m.sourceTitle = title
-		var src []byte
-		if doc != nil {
-			src = doc.Source
-		}
-		m.viewport.SetContent(numberedSource(src))
-		m.viewport.GotoTop()
-	} else if title != m.sourceTitle {
-		m.sourceTitle = title
-	}
-	// Reveal-if-needed, but only when the selection changed: after a
-	// manual scroll the viewport must stay where the user left it.
+
+	// Build the selection key first: it carries the 1-based range used
+	// both for highlighting the source gutter and for revealing the node.
 	key := selectionKey{doc: doc}
 	if selected != nil && selected.hasNode {
 		key.hasNode = true
@@ -1488,8 +1475,31 @@ func (m *Model) syncSource(srcW, paneH int) {
 		key.start = selected.node.Range.StartLine
 		key.end = selected.node.Range.EndLine
 	}
-	if key != m.lastSel {
+
+	prevDoc := m.sourceDoc
+	prevSel := m.lastSel
+	needsContent := doc != m.sourceDoc || key != m.lastSel
+	if needsContent {
+		m.sourceDoc = doc
 		m.lastSel = key
+		m.sourceTitle = title
+		var src []byte
+		if doc != nil {
+			src = doc.Source
+		}
+		m.viewport.SetContent(numberedSource(src, key.start, key.end))
+		if doc != prevDoc {
+			// New document: start at the top; revealRange then scrolls
+			// just enough for the selected node.
+			m.viewport.GotoTop()
+		}
+	} else if title != m.sourceTitle {
+		m.sourceTitle = title
+	}
+
+	// Reveal-if-needed, but only when the selection changed: after a
+	// manual scroll the viewport must stay where the user left it.
+	if key != prevSel {
 		if key.hasNode {
 			m.revealRange(key.start, key.end)
 		} else {
@@ -1929,6 +1939,8 @@ func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 
 // numberedSource renders the source pane content: line numbers, the exact
 // source bytes and syntax highlighting. It is a thin wrapper around
-// highlightSource; the signature is unchanged because syncSource calls it by
-// name for the viewport content.
-func numberedSource(src []byte) string { return highlightSource(src) }
+// highlightSource that accepts the same selected-line range so syncSource can
+// keep the gutter highlight in sync with the tree selection.
+func numberedSource(src []byte, selStartLine, selEndLine int) string {
+	return highlightSource(src, selStartLine, selEndLine)
+}

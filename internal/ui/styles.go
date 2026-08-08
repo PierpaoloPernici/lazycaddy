@@ -97,6 +97,16 @@ var (
 			Foreground(lipgloss.Color("212"))
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245"))
+	// selectedGutterNumberStyle emphasizes the line numbers of the
+	// currently selected section. It stays quiet (grey, not the cursor
+	// accent) so it reads as a subtle guide rather than state.
+	selectedGutterNumberStyle = lipgloss.NewStyle().
+					Bold(true).
+					Foreground(lipgloss.Color("250"))
+	// selectedGutterBarStyle renders the thin vertical bar that marks
+	// the selected block's lines in the source gutter.
+	selectedGutterBarStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
 	statusLineStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(lipgloss.Color("245"))

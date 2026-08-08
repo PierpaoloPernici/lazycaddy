@@ -16,12 +16,16 @@ import (
 // lipgloss emits no escape sequences when stdout is not a TTY, so the style
 // assertions below would silently test nothing.
 func renderWithANSI(src []byte) string {
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	defer lipgloss.SetColorProfile(termenv.Ascii)
-	return highlightSource(src)
+	return renderWithANSISelected(src, 0, 0)
 }
 
-var gutterRe = regexp.MustCompile(`^\s*\d+│ `)
+func renderWithANSISelected(src []byte, startLine, endLine int) string {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	return highlightSource(src, startLine, endLine)
+}
+
+var gutterRe = regexp.MustCompile(`^\s*\d+[│▎] `)
 
 // assertSourceLossless verifies that every source line appears in the
 // stripped rendered output exactly once, with the gutter removed: byte
@@ -163,6 +167,76 @@ func TestHighlightSourceANSIChunksSelfClose(t *testing.T) {
 		if n := len(re.FindAllString(line, -1)); n%2 != 0 {
 			t.Errorf("line %d has %d ANSI sequences, want an even number (balanced chunks):\n%s", i+1, n, line)
 		}
+	}
+}
+
+// TestHighlightSourceSelectedRange verifies that the gutter for lines inside
+// the selected range carries the selection marker and styling, while the
+// rest of the gutter stays plain.
+func TestHighlightSourceSelectedRange(t *testing.T) {
+	src := []byte("a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n")
+	got := renderWithANSISelected(src, 4, 6)
+	assertSourceLossless(t, src, got)
+
+	lines := strings.Split(got, "\n")
+	// Drop the trailing empty line produced by strings.Split on a final newline.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i, line := range lines {
+		lineNo := i + 1
+		stripped := stripANSI(line)
+		hasBar := strings.Contains(stripped, "▎")
+		if lineNo >= 4 && lineNo <= 6 {
+			if !hasBar {
+				t.Errorf("line %d inside the selected range missing the selection bar:\n%s", lineNo, line)
+			}
+			if !strings.Contains(line, "\x1b[") {
+				t.Errorf("line %d inside the selected range must be styled, got plain:\n%s", lineNo, line)
+			}
+		} else {
+			if hasBar {
+				t.Errorf("line %d outside the selected range must not contain the selection bar:\n%s", lineNo, line)
+			}
+		}
+	}
+}
+
+// TestHighlightSourceSelectedRangeClamped verifies ranges that extend past
+// the end of the file only mark the lines that actually exist.
+func TestHighlightSourceSelectedRangeClamped(t *testing.T) {
+	src := []byte("example.test {\n\trespond ok\n}\n")
+	got := renderWithANSISelected(src, 2, 100)
+	assertSourceLossless(t, src, got)
+
+	lines := strings.Split(stripANSI(got), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i, line := range lines {
+		lineNo := i + 1
+		hasBar := strings.Contains(line, "▎")
+		switch {
+		case lineNo >= 2 && lineNo <= len(lines):
+			if !hasBar {
+				t.Errorf("line %d should carry the selection bar:\n%s", lineNo, line)
+			}
+		case lineNo == 1:
+			if hasBar {
+				t.Errorf("line %d must not carry the selection bar:\n%s", lineNo, line)
+			}
+		}
+	}
+}
+
+// TestHighlightSourceNoSelection verifies that a zero range leaves every
+// gutter plain, matching the original behavior.
+func TestHighlightSourceNoSelection(t *testing.T) {
+	src := []byte("example.test {\n\trespond ok\n}\n")
+	got := renderWithANSISelected(src, 0, 0)
+	assertSourceLossless(t, src, got)
+	if strings.Contains(stripANSI(got), "▎") {
+		t.Errorf("no-selection render must not contain the selection bar:\n%s", got)
 	}
 }
 

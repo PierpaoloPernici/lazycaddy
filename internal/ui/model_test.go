@@ -448,6 +448,45 @@ func TestModelRevealKeepsPositionWhenVisible(t *testing.T) {
 	}
 }
 
+func TestModelSourcePaneMarksSelectedNodeRange(t *testing.T) {
+	src := "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n"
+	readFile := func(p string) ([]byte, error) { return []byte(src), nil }
+	state := stateFor(t, "config/Caddyfile", readFile)
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 20)
+
+	// Select b.example.test (lines 4-6).
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // b.example.test
+	view := m.View()
+
+	content := stripANSI(m.viewport.View())
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i, line := range lines {
+		lineNo := i + 1
+		hasBar := strings.Contains(line, "▎")
+		switch {
+		case lineNo >= 4 && lineNo <= 6:
+			if !hasBar {
+				t.Errorf("line %d (selected b.example.test) missing the selection bar:\n%s", lineNo, line)
+			}
+		default:
+			if hasBar {
+				t.Errorf("line %d (outside selected range) must not contain the selection bar:\n%s", lineNo, line)
+			}
+		}
+	}
+	// The full view must still show both site blocks.
+	for _, want := range []string{"a.example.test", "b.example.test"} {
+		if !strings.Contains(stripANSI(view), want) {
+			t.Errorf("source view missing %q", want)
+		}
+	}
+}
+
 func TestModelRevealScrollsBackUpWhenBlockAbove(t *testing.T) {
 	var src strings.Builder
 	src.WriteString("example.test {\n\trespond ok\n}\n")

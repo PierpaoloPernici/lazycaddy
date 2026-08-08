@@ -13,10 +13,12 @@ import (
 )
 
 // highlightSource renders src with line numbers and syntax highlighting.
-// It is the highlighted successor of numberedSource and keeps the same
-// signature contract. Returns the dim "(empty source ...)" message for an
+// The 1-based inclusive range [selStartLine, selEndLine] marks the selected
+// section: its line numbers are emphasized and a subtle vertical bar is
+// drawn in the gutter for those lines. Passing 0 for both bounds renders
+// the gutter plainly. Returns the dim "(empty source ...)" message for an
 // empty src, exactly like numberedSource.
-func highlightSource(src []byte) string {
+func highlightSource(src []byte, selStartLine, selEndLine int) string {
 	if len(src) == 0 {
 		return dimStyle.Render("(empty source — raw view still available)")
 	}
@@ -25,7 +27,14 @@ func highlightSource(src []byte) string {
 	var b strings.Builder
 	base := 0
 	for i, ln := range lines {
-		fmt.Fprintf(&b, "%4d│ ", i+1)
+		lineNo := i + 1
+		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
+			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%4d", lineNo)))
+			b.WriteString(selectedGutterBarStyle.Render("▎"))
+			b.WriteByte(' ')
+		} else {
+			fmt.Fprintf(&b, "%4d│ ", lineNo)
+		}
 		if i < len(lineSpans) {
 			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i]))
 		} else {
