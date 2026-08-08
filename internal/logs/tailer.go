@@ -53,7 +53,9 @@ func NewTailer(opts Options) *Tailer {
 //     from the one being read) -> first drain remaining complete lines
 //     from the old handle, then open the new file and continue from the
 //     start of the new file
-//   - file truncated -> reset to the start of the current file
+//   - file truncated -> reset to the start of the current file; the
+//     partial-line carry is dropped too, so a line spanning the
+//     truncation point is never recombined with pre-truncation bytes
 //
 // The ctx value is checked between file operations; a cancelled ctx
 // returns context.Canceled.
@@ -106,8 +108,12 @@ func (t *Tailer) Next(ctx context.Context) ([]Entry, error) {
 	}
 
 	if pathInfo.Size() < t.offset {
-		// The file was truncated; keep the handle and start over.
+		// The file was truncated; keep the handle and start over. The
+		// partial-line carry must be dropped too: prepending bytes read
+		// before the truncation to the first post-truncation chunk would
+		// corrupt the first record.
 		t.offset = 0
+		t.carry = nil
 	}
 	return t.readAll(ctx)
 }

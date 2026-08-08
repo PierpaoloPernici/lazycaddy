@@ -372,13 +372,19 @@ func (m *Model) logPollCmd() tea.Cmd {
 
 // handleLogTail is invoked on the main goroutine when a poll completes.
 // It appends the new entries (bounded at logMaxLines) and reschedules the
-// next poll unless the view is closed or paused.
+// next poll unless the view is closed or paused. A stale "log poll failed"
+// status line is cleared by the next successful poll (only that message:
+// status lines set by other actions are left untouched).
 func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
 		m.logErr = msg.Err
 		m.statusMessage = "✗ log poll failed: " + msg.Err.Error()
 	} else {
 		m.logErr = nil
+		// A recovered poll must not leave the error text visible.
+		if strings.HasPrefix(m.statusMessage, "✗ log poll failed") {
+			m.statusMessage = ""
+		}
 	}
 	if len(msg.Entries) > 0 {
 		m.logLines = append(m.logLines, msg.Entries...)
@@ -1498,7 +1504,9 @@ func (m *Model) syncLogViewport(width, height int) {
 		content.WriteString(dimStyle.Render("no log entries yet — waiting for the first poll"))
 	} else {
 		for _, entry := range m.logLines {
-			content.WriteString(truncateToWidth(renderLogLine(entry), contentW))
+			// renderLogLine truncates the raw text before styling, so a
+			// long line can never cut an ANSI escape sequence in half.
+			content.WriteString(renderLogLine(entry, contentW))
 			content.WriteString("\n")
 		}
 	}

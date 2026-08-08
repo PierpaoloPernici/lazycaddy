@@ -167,11 +167,13 @@ func TestHighlightSourceANSIChunksSelfClose(t *testing.T) {
 }
 
 // renderLogLineANSI renders one log line with ANSI output forced on, then
-// restores the terminal-agnostic profile, mirroring renderWithANSI.
-func renderLogLineANSI(entry logs.Entry) string {
+// restores the terminal-agnostic profile, mirroring renderWithANSI. maxW
+// is passed straight through to renderLogLine so each test controls the
+// truncation width.
+func renderLogLineANSI(entry logs.Entry, maxW int) string {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
-	return renderLogLine(entry)
+	return renderLogLine(entry, maxW)
 }
 
 // TestRenderLogLine_HighlightsJSON renders a realistic Caddy access log
@@ -181,7 +183,7 @@ func renderLogLineANSI(entry logs.Entry) string {
 // and status colors).
 func TestRenderLogLine_HighlightsJSON(t *testing.T) {
 	line := `{"level":"info","ts":1592833155.86084,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","remote_port":"50786","proto":"HTTP/2.0","method":"GET","host":"localhost","uri":"/"},"bytes_read":0,"user_id":"","duration":0.000571055,"size":1259,"status":200}`
-	got := renderLogLineANSI(logs.Entry{Raw: []byte(line)})
+	got := renderLogLineANSI(logs.Entry{Raw: []byte(line)}, 400)
 	stripped := stripANSI(got)
 	if stripped != line {
 		t.Errorf("rendered line is not lossless:\n got %q\nwant %q", stripped, line)
@@ -202,7 +204,7 @@ func TestRenderLogLine_HighlightsJSON(t *testing.T) {
 // rendered byte-for-byte with no ANSI codes.
 func TestRenderLogLine_NonJSONVerbatim(t *testing.T) {
 	line := "2026/08/08 12:00:00 INFO something happened"
-	got := renderLogLineANSI(logs.Entry{Raw: []byte(line), Status: -1})
+	got := renderLogLineANSI(logs.Entry{Raw: []byte(line), Status: -1}, 200)
 	if got != line {
 		t.Errorf("non-JSON line = %q, want verbatim %q", got, line)
 	}
@@ -215,12 +217,12 @@ func TestRenderLogLine_NonJSONVerbatim(t *testing.T) {
 // status tokens are rendered in the error-red style.
 func TestRenderLogLine_LevelAndStatusColors(t *testing.T) {
 	errorLine := logs.Entry{Raw: []byte(`{"level":"error","msg":"boom"}`)}
-	got := renderLogLineANSI(errorLine)
+	got := renderLogLineANSI(errorLine, 200)
 	if !strings.Contains(got, "38;5;203") {
 		t.Errorf("error level must use the red style (38;5;203):\n%s", got)
 	}
 	fivexxLine := logs.Entry{Raw: []byte(`{"level":"info","status":503}`)}
-	got = renderLogLineANSI(fivexxLine)
+	got = renderLogLineANSI(fivexxLine, 200)
 	if !strings.Contains(got, "38;5;203") {
 		t.Errorf("5xx status must use the red style (38;5;203):\n%s", got)
 	}
@@ -228,7 +230,35 @@ func TestRenderLogLine_LevelAndStatusColors(t *testing.T) {
 
 // TestRenderLogLine_Empty verifies an empty raw line renders empty.
 func TestRenderLogLine_Empty(t *testing.T) {
-	if got := renderLogLineANSI(logs.Entry{Raw: nil}); got != "" {
+	if got := renderLogLineANSI(logs.Entry{Raw: nil}, 200); got != "" {
 		t.Errorf("empty line rendered %q, want empty", got)
+	}
+}
+
+// TestRenderLogLine_TruncatesBeforeStyling verifies that a long JSON line
+// is truncated on the PLAIN text before any ANSI styling: the visible
+// (stripped) output must equal the plain truncated text, proving no escape
+// sequence was split by the cut and no bytes were lost.
+func TestRenderLogLine_TruncatesBeforeStyling(t *testing.T) {
+	uri := strings.Repeat("a", 120)
+	line := `{"level":"error","msg":"long request","request":{"method":"GET","uri":"/` + uri + `"},"status":503}`
+	got := renderLogLineANSI(logs.Entry{Raw: []byte(line)}, 40)
+	want := truncateToWidth(line, 40)
+	if stripANSI(got) != want {
+		t.Errorf("stripped output = %q, want the plain truncated text %q", stripANSI(got), want)
+	}
+}
+
+// TestRenderLogLine_FitsStillHighlights verifies that a line within the
+// width is returned highlighted: the output carries ANSI codes and the
+// stripped text equals the untruncated raw line.
+func TestRenderLogLine_FitsStillHighlights(t *testing.T) {
+	line := `{"level":"warn","msg":"still styled"}`
+	got := renderLogLineANSI(logs.Entry{Raw: []byte(line)}, 200)
+	if got == stripANSI(got) {
+		t.Errorf("fitted line must be styled, got no ANSI:\n%s", got)
+	}
+	if stripANSI(got) != line {
+		t.Errorf("stripped output = %q, want %q", stripANSI(got), line)
 	}
 }

@@ -303,23 +303,28 @@ func logStyleForKey(key int) lipgloss.Style {
 	}
 }
 
-// renderLogLine renders one log line with JSON syntax highlighting.
-// Non-JSON lines are rendered verbatim, byte-for-byte. The entry is
-// passed whole so callers can fall back to plain rendering without
-// re-parsing; renderLogLine uses logs.HighlightJSON(entry.Raw) whose
-// spans are already relative to the line. The line is gated on
-// json.Valid because HighlightJSON can return partial spans for a line
-// whose tokenization failed midway (e.g. a console line that merely
-// starts with digits).
-func renderLogLine(entry logs.Entry) string {
-	line := string(entry.Raw)
+// renderLogLine renders one log line with JSON syntax highlighting,
+// truncated to at most maxW cells. The raw text is truncated BEFORE
+// styling so an ANSI escape sequence can never be split by the cut
+// (matching truncateToWidth's plain-text contract). A line that fits is
+// returned highlighted; when truncation makes the line no longer valid
+// JSON (the ellipsis or a mid-token cut breaks it), the truncated plain
+// text is returned verbatim. The entry is passed whole so callers can
+// fall back to plain rendering without re-parsing; renderLogLine uses
+// logs.HighlightJSON whose spans are already relative to the line. The
+// line is gated on json.Valid because HighlightJSON can return partial
+// spans for a line whose tokenization failed midway (e.g. a console line
+// that merely starts with digits).
+func renderLogLine(entry logs.Entry, maxW int) string {
+	line := truncateToWidth(string(entry.Raw), maxW)
 	if line == "" {
 		return ""
 	}
-	if !json.Valid(entry.Raw) {
+	raw := []byte(line)
+	if !json.Valid(raw) {
 		return line
 	}
-	spans := logs.HighlightJSON(entry.Raw)
+	spans := logs.HighlightJSON(raw)
 	if len(spans) == 0 {
 		return line
 	}

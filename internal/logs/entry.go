@@ -97,10 +97,17 @@ func stripTrailingCR(line []byte) []byte {
 
 // parseTS converts the raw "ts" field value into a time.Time. The value may
 // be a numeric unix-seconds float or a string in one of tsStringLayouts.
-// time.Time{} is returned when the value is absent or unparseable.
+// time.Time{} is returned when the value is absent, blank, null, or
+// unparseable (including non-number, non-string values such as booleans).
 func parseTS(raw json.RawMessage) time.Time {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
+		return time.Time{}
+	}
+	// The literal null (and anything that is not a number or a string) is
+	// treated as absent: json.Unmarshal into a float64 would silently
+	// succeed for null with value 0, which must not read as Unix epoch.
+	if bytes.Equal(trimmed, []byte("null")) {
 		return time.Time{}
 	}
 	if trimmed[0] == '"' {
@@ -119,6 +126,11 @@ func parseTS(raw json.RawMessage) time.Time {
 	// the fractional nanoseconds are recovered from the decimal text so the
 	// float64 representation error (up to ~1e-7 for unix-second magnitudes)
 	// does not leak into the nanosecond digits.
+	if c := trimmed[0]; c != '-' && (c < '0' || c > '9') {
+		// Defensive: any value that is neither a string nor null nor a
+		// number (e.g. a boolean) cannot be a timestamp.
+		return time.Time{}
+	}
 	var f float64
 	if err := json.Unmarshal(trimmed, &f); err != nil {
 		return time.Time{}

@@ -2805,6 +2805,49 @@ func TestModelLogTail_EscCloses(t *testing.T) {
 	}
 }
 
+// TestModelLogTail_ClearsStaleError verifies that a successful poll clears
+// the "log poll failed" status line left by a previous failed poll, while
+// leaving status messages set by other actions untouched.
+func TestModelLogTail_ClearsStaleError(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+
+	// A failing poll sets the error status line.
+	updated, _ = m.Update(logTailMsg{Err: errors.New("boom")})
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "log poll failed") {
+		t.Fatalf("statusMessage = %q, want a poll-failure message", m.statusMessage)
+	}
+	if m.logErr == nil {
+		t.Fatal("logErr = nil after a failed poll, want the error")
+	}
+
+	// A successful poll clears it.
+	updated, _ = m.Update(logTailMsg{Entries: []logs.Entry{{Raw: []byte("x"), Status: -1}}})
+	m = updated.(*Model)
+	if m.statusMessage != "" {
+		t.Errorf("statusMessage = %q, want cleared after a successful poll", m.statusMessage)
+	}
+	if m.logErr != nil {
+		t.Errorf("logErr = %v, want nil after a successful poll", m.logErr)
+	}
+
+	// Status messages owned by other actions are NOT cleared by a poll.
+	m.statusMessage = "log follow on"
+	updated, _ = m.Update(logTailMsg{Entries: nil})
+	m = updated.(*Model)
+	if m.statusMessage != "log follow on" {
+		t.Errorf("statusMessage = %q, want it untouched (only poll failures are cleared)", m.statusMessage)
+	}
+}
+
 // TestModelLogTail_Bounded verifies the UI-side scrollback stays capped at
 // logMaxLines and keeps the tail.
 func TestModelLogTail_Bounded(t *testing.T) {

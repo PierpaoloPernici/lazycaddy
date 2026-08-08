@@ -188,6 +188,40 @@ func TestTailer_Truncate(t *testing.T) {
 	assertRaw(t, tt.Entries(), []string{"a", "b", "c"})
 }
 
+// TestTailer_TruncateDropsCarry verifies that truncating a file while a
+// partial line is carried does not recombine the pre-truncation carry with
+// the first post-truncation chunk: the carried bytes belong to a record
+// that no longer exists.
+func TestTailer_TruncateDropsCarry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	writeFile(t, path, "partial")
+
+	tt := NewTailer(Options{Path: path})
+	ctx := context.Background()
+
+	// First poll carries "partial" (no trailing newline): no entries yet.
+	got, err := tt.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Next returned %d entries, want 0 (partial line carried)", len(got))
+	}
+
+	// Truncate the file and write a fresh complete line.
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, path, "fresh\n")
+
+	got, err = tt.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next after truncate: %v", err)
+	}
+	assertRaw(t, got, []string{"fresh"})
+	assertRaw(t, tt.Entries(), []string{"fresh"})
+}
+
 func TestTailer_NonJSONLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.log")
 	writeFile(t, path, "2026/08/08 12:00:00 INFO something\n")

@@ -86,6 +86,34 @@ func TestParseEntry_AbsentTS(t *testing.T) {
 	}
 }
 
+// TestParseEntry_TSNull verifies that an explicit null (and a non-number,
+// non-string value such as a boolean) is treated as an absent timestamp:
+// json.Unmarshal into a float64 would otherwise succeed for null with
+// value 0 and read as the Unix epoch.
+func TestParseEntry_TSNull(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   string
+	}{
+		{name: "null", ts: "null"},
+		{name: "boolean", ts: "true"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := ParseEntry([]byte(`{"ts":` + tt.ts + `,"level":"info"}`))
+			if err != nil {
+				t.Fatalf("ParseEntry returned error: %v", err)
+			}
+			if !e.Timestamp.IsZero() {
+				t.Errorf("Timestamp = %v, want zero for ts=%s", e.Timestamp, tt.ts)
+			}
+			if e.Level != "info" {
+				t.Errorf("Level = %q, want info (other fields must still parse)", e.Level)
+			}
+		})
+	}
+}
+
 func TestParseEntry_TSSringLayouts(t *testing.T) {
 	tests := []struct {
 		name string
