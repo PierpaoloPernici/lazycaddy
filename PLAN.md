@@ -391,14 +391,19 @@ Completed within the vertical slice:
   layer colors comments, strings, heredocs, braces and placeholders while
   preserving the original bytes; semantic site-address and directive roles
   are intentionally deferred.
+- [x] Basic runtime/version information and capability detection with a
+  read-only fallback. A startup probe queries the configured caddy binary
+  for its version and checks the local Admin API, deriving a provable
+  runtime status (unknown, running, stopped, unreachable) and a capability
+  set (binary, validation, Admin API access, readable configuration,
+  reload, writable mode). The header shows the Caddy version and a runtime
+  status badge; probe failures degrade to explicit unknown/stopped states
+  and the TUI remains fully browsable without caddy or write permissions.
 
 Remaining for v0.1:
 
 - `$EDITOR` round-trip for a selected source range.
 - Search across sites, files and logs.
-- Basic runtime/version information and capability detection with a
-  read-only fallback (browsing already works without caddy or write
-  permissions).
 - Basic log view when a configured source is available.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.
