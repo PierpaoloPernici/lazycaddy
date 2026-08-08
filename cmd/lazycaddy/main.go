@@ -15,7 +15,11 @@
 // unknown/stopped state and the TUI remains fully browsable read-only.
 // With --log-file, the l keybinding opens a read-only log view that
 // follows the Caddy log file (polling, rotation-aware) and highlights
-// each line's JSON structure; without it the log view is disabled.
+// each line's JSON structure; without it the log view is disabled. The /
+// and Ctrl-F keybindings open a read-only, case-insensitive substring
+// search across site/node labels, document paths and content (imported
+// files included) and the loaded log history; Enter jumps to the hit and
+// Esc closes without side effects.
 // The operator is always in control of when format, validate, save and
 // reload run.
 package main
@@ -125,7 +129,11 @@ func main() {
 			if settings.LogPath != "" {
 				logSource = app.NewLogSource(logs.NewTailer(logs.Options{Path: settings.LogPath}))
 			}
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor)
+			// Search is always available and read-only: it matches node
+			// labels, document paths and content lines (imports included)
+			// and the loaded log history with / or Ctrl-F.
+			searcher := app.NewSearcher()
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
