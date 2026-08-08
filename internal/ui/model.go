@@ -17,6 +17,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
+	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
@@ -73,6 +74,12 @@ type saveResultMsg struct {
 type reloadResultMsg struct {
 	Result app.ReloadResult
 	Err    error
+}
+
+// runtimeProbeResultMsg is delivered to the model when the startup
+// runtime probe completes.
+type runtimeProbeResultMsg struct {
+	Report runtime.Report
 }
 
 // Model is the inspector screen: a document tree on the left, the raw
@@ -177,6 +184,17 @@ type Model struct {
 	// applied to each format+validate invocation. Zero means "no extra
 	// timeout on top of the validator package default (5s)".
 	validatorTimeout time.Duration
+
+	// runtime is the startup capability probe; nil disables it (the
+	// header then renders no runtime badges).
+	runtime app.RuntimeStatus
+	// runtimeReport holds the latest probe result. It is rendered only
+	// once runtimeProbed is true, so the header never flashes an
+	// unproven state.
+	runtimeReport runtime.Report
+	// runtimeProbed is true once the startup probe has delivered its
+	// report.
+	runtimeProbed bool
 }
 
 // New returns a Model that will load its state through loader, run
@@ -184,14 +202,16 @@ type Model struct {
 // reload the running configuration through reloader. formatter may be
 // nil; the v keybinding is disabled in that case. saver may be nil; the
 // s keybinding is disabled in that case (read-only mode). reloader may
-// be nil; the r keybinding is disabled in that case. Call Load before
-// starting the program.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader) *Model {
+// be nil; the r keybinding is disabled in that case. runtimeStatus may
+// be nil; the startup runtime probe is disabled in that case. Call Load
+// before starting the program.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus) *Model {
 	return &Model{
 		loader:         loader,
 		formatter:      formatter,
 		saver:          saver,
 		reloader:       reloader,
+		runtime:        runtimeStatus,
 		collapsed:      map[string]bool{},
 		viewport:       viewport.New(1, 1),
 		detailViewport: viewport.New(1, 1),
@@ -226,8 +246,62 @@ func (m *Model) Load() error {
 }
 
 // Init implements tea.Model. Loading is done synchronously before the
-// program starts, so there is no startup command.
-func (m *Model) Init() tea.Cmd { return nil }
+// program starts, so the only startup command is the async runtime
+// probe (when a probe is configured).
+func (m *Model) Init() tea.Cmd {
+	if m.runtime == nil {
+		return nil
+	}
+	return m.runtimeProbeCmd()
+}
+
+// runtimeProbeCmd returns a tea.Cmd that runs the startup probe in a
+// goroutine and delivers the report as a runtimeProbeResultMsg. The
+// detector applies its own per-step timeouts, so the probe context is
+// deliberately unbounded.
+func (m *Model) runtimeProbeCmd() tea.Cmd {
+	probe := m.runtime
+	return func() tea.Msg {
+		return runtimeProbeResultMsg{Report: probe.Probe(context.Background())}
+	}
+}
+
+// handleRuntimeProbeResult stores the probe report on the main goroutine
+// and, on the first delivery only, surfaces a concise status line so the
+// probe outcome is visible without a dedicated modal.
+func (m *Model) handleRuntimeProbeResult(msg runtimeProbeResultMsg) (tea.Model, tea.Cmd) {
+	m.runtimeReport = msg.Report
+	if !m.runtimeProbed {
+		if text := runtimeStatusMessage(msg.Report); text != "" {
+			m.statusMessage = text
+		}
+	}
+	m.runtimeProbed = true
+	return m, nil
+}
+
+// runtimeStatusMessage builds the concise one-line status text for a
+// probe report. Outcomes use the explicit ✓/✗ glyphs so the state never
+// relies on color alone; an empty string means "keep the status line
+// as-is".
+func runtimeStatusMessage(rep runtime.Report) string {
+	switch rep.Status {
+	case runtime.StatusRunning:
+		if rep.Capabilities.Version != "" {
+			return "✓ caddy " + rep.Capabilities.Version + " · running"
+		}
+		return "✓ caddy running"
+	case runtime.StatusStopped:
+		return "✗ caddy binary present but Admin API not reachable (stopped or admin disabled)"
+	case runtime.StatusUnreachable:
+		return "✗ runtime probe timed out"
+	case runtime.StatusUnknown:
+		if rep.Capabilities.Binary {
+			return "caddy " + rep.Capabilities.Version + " detected (no Admin API)"
+		}
+	}
+	return ""
+}
 
 // Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -240,6 +314,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSaveResult(msg)
 	case reloadResultMsg:
 		return m.handleReloadResult(msg)
+	case runtimeProbeResultMsg:
+		return m.handleRuntimeProbeResult(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -1002,6 +1078,12 @@ func (m *Model) header(width int) string {
 		path = "unknown"
 	}
 	left := headerStyle.Render(" lazycaddy ")
+	// A compact version indicator joins the left cluster once the startup
+	// probe has proven the binary exists. The version is shown exactly as
+	// reported (leading "v" included).
+	if m.runtimeProbed && m.runtimeReport.Capabilities.Binary {
+		left += dimStyle.Render(" caddy " + m.runtimeReport.Capabilities.Version)
+	}
 	// Important state is conveyed by an explicit text label, not
 	// color alone, matching the existing READ-ONLY pattern.
 	right := readOnlyBadge.Render(" READ-ONLY ")
@@ -1010,6 +1092,20 @@ func (m *Model) header(width int) string {
 	}
 	if m.state != nil && m.state.Graph != nil && m.state.Graph.Err != nil {
 		right = errorStyle.Render(" PARSE ERROR ") + right
+	}
+	// The runtime status badge sits at the front of the right stack
+	// (before the PARSE ERROR marker) so the most immediate operational
+	// state reads first. Nothing is rendered before the probe returns,
+	// and an unknown probe result stays quiet.
+	if m.runtimeProbed && m.runtimeReport.Status != runtime.StatusUnknown {
+		switch m.runtimeReport.Status {
+		case runtime.StatusRunning:
+			right = runtimeRunningBadge.Render(" RUNNING ") + right
+		case runtime.StatusStopped:
+			right = runtimeStoppedBadge.Render(" STOPPED ") + right
+		case runtime.StatusUnreachable:
+			right = runtimeUnreachableBadge.Render(" UNREACHABLE ") + right
+		}
 	}
 	// The loaded-state badge sits between the PARSE ERROR marker and the
 	// read/write badge. Explicit text labels carry the state, never color
