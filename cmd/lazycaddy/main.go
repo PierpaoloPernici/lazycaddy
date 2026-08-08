@@ -88,6 +88,22 @@ func main() {
 				}
 				saver = app.NewSaver(creator, os.ReadFile)
 			}
+			// The editor runs the operator's $EDITOR on the selected node
+			// range and recomposes the document from the result. It needs
+			// the caddy binary for the validation gate; without it the e
+			// keybinding stays disabled, because an unvalidated edit must
+			// never become savable. The editor command itself comes from
+			// $VISUAL / $EDITOR at run time — there is no CLI flag.
+			var editor app.Editor
+			if formatter != nil {
+				editor = app.NewEditor(app.EditorOptions{
+					LookupEnv:   os.LookupEnv,
+					Formatter:   formatter,
+					ReadFile:    os.ReadFile,
+					SnapshotDir: filepath.Join(filepath.Dir(settings.ConfigPath), ".lazycaddy", "snapshots"),
+					Clock:       time.Now,
+				})
+			}
 			// The startup runtime probe queries the configured caddy
 			// binary for its version and checks the Admin API, feeding
 			// the header's capability badges. Failures degrade to
@@ -109,7 +125,7 @@ func main() {
 			if settings.LogPath != "" {
 				logSource = app.NewLogSource(logs.NewTailer(logs.Options{Path: settings.LogPath}))
 			}
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource)
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.

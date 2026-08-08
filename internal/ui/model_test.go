@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
@@ -91,6 +92,53 @@ func (f *fakeReloader) Reload(ctx context.Context, path string, saved []byte) (a
 	return f.result, f.err
 }
 
+// fakeEditor is a programmable app.Editor for tests. Prepare records the
+// document and range it was given and returns a session built from that
+// document (so the flow tests exercise the real doc path, including
+// imported files), or the configured session / error. Complete records
+// the exit code and returns the configured result / error.
+type fakeEditor struct {
+	session       *app.EditSession
+	prepareErr    error
+	result        app.EditResult
+	completeErr   error
+	prepareCalls  int
+	completeCalls int
+	capturedDoc   *caddyfile.Document
+	capturedRange caddyfile.SourceRange
+	capturedExit  int
+}
+
+func (f *fakeEditor) Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange) (*app.EditSession, error) {
+	f.prepareCalls++
+	f.capturedDoc = doc
+	f.capturedRange = r
+	if f.prepareErr != nil {
+		return nil, f.prepareErr
+	}
+	if f.session != nil {
+		return f.session, nil
+	}
+	return &app.EditSession{
+		DocPath:      doc.Path,
+		Range:        r,
+		Original:     append([]byte(nil), doc.Source...),
+		RangeBytes:   append([]byte(nil), doc.Source[r.Start:r.End]...),
+		TempFile:     "editor-temp",
+		SnapshotPath: "editor-snapshot",
+		Cmd:          []string{"vim", "editor-temp"},
+	}, nil
+}
+
+func (f *fakeEditor) Complete(ctx context.Context, s *app.EditSession, exitCode int) (app.EditResult, error) {
+	f.completeCalls++
+	f.capturedExit = exitCode
+	if f.completeErr != nil {
+		return app.EditResult{}, f.completeErr
+	}
+	return f.result, nil
+}
+
 type noSuchFile struct{ path string }
 
 func (e *noSuchFile) Error() string { return "no such file: " + e.path }
@@ -119,9 +167,10 @@ func writableStateFor(t *testing.T, path, backupDir string, readFile app.FileRea
 }
 
 // newLoadedModel builds a Model from loader with optional formatter,
-// saver, reloader, runtime probe and log source. The variadic options
-// accept an app.Formatter, an app.Saver, an app.Reloader, an
-// app.RuntimeStatus, an app.LogSource, any combination, or none.
+// saver, reloader, runtime probe, log source and editor. The variadic
+// options accept an app.Formatter, an app.Saver, an app.Reloader, an
+// app.RuntimeStatus, an app.LogSource, an app.Editor, any combination,
+// or none.
 func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	t.Helper()
 	var f app.Formatter
@@ -129,6 +178,7 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	var r app.Reloader
 	var rt app.RuntimeStatus
 	var ls app.LogSource
+	var e app.Editor
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		case app.Formatter:
@@ -141,9 +191,11 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 			rt = v
 		case app.LogSource:
 			ls = v
+		case app.Editor:
+			e = v
 		}
 	}
-	m := New(loader, f, s, r, rt, ls)
+	m := New(loader, f, s, r, rt, ls, e)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -328,7 +380,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -701,7 +753,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -3174,5 +3226,710 @@ func TestModelLogView_CompactLines(t *testing.T) {
 	// The raw JSON structure must be gone from the list view.
 	if strings.Contains(visible, `"request":{`) {
 		t.Errorf("compact log view still shows the raw JSON blob:\n%s", visible)
+	}
+}
+
+// editorStateFor returns a writable state whose root imports one site
+// file, so the editor flow exercises a document that is not the root.
+func editorStateFor(t *testing.T) *app.State {
+	t.Helper()
+	return writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile":     "import sites/a.caddy\n",
+		"config/sites/a.caddy": "a.example.test {\n\trespond ok\n}\n",
+	}))
+}
+
+// pressEditorKey drives a full $EDITOR round-trip from the e keypress
+// through the delivered editorDoneMsg, assuming a clean editor exit with
+// code 0. It mutates m in place and returns the done message for the
+// caller to deliver.
+func pressEditorKey(t *testing.T, m *Model) editorDoneMsg {
+	t.Helper()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		t.Fatal("e must return a command")
+	}
+	msg := cmd()
+	ready, ok := msg.(editorReadyMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorReadyMsg", msg)
+	}
+	m.Update(ready)
+	updated, cmd := m.Update(editorExecMsg{Err: nil})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("editorExecMsg must return the complete command")
+	}
+	doneMsg := cmd()
+	done, ok := doneMsg.(editorDoneMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorDoneMsg", doneMsg)
+	}
+	return done
+}
+
+// TestEditorKey_DisabledOnDocumentRow verifies the explicit decision: with
+// a document row selected (depth 0, no node) the e command is disabled and
+// never falls back to opening the whole file.
+func TestEditorKey_DisabledOnDocumentRow(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	editor := &fakeEditor{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	if m.selectedItem().hasNode {
+		t.Fatal("precondition: the root document row must have no node")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd != nil {
+		t.Errorf("e on a document row returned a command, want none")
+	}
+	if editor.prepareCalls != 0 {
+		t.Errorf("Prepare called %d times on a document row, want 0", editor.prepareCalls)
+	}
+	if m.editing {
+		t.Error("editing = true, want false")
+	}
+	if m.editorSession != nil {
+		t.Error("editorSession set, want nil")
+	}
+}
+
+// TestEditorKey_DisabledInReadOnly verifies that the e command is ignored
+// in read-only mode, mirroring the save flow.
+func TestEditorKey_DisabledInReadOnly(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	editor := &fakeEditor{}
+	m := newLoadedModel(t, fakeLoader{state: state}, editor)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // select the node row
+	if !m.selectedItem().hasNode {
+		t.Fatal("precondition: a node row must be selected")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd != nil {
+		t.Errorf("e in read-only mode returned a command, want none")
+	}
+	if editor.prepareCalls != 0 {
+		t.Errorf("Prepare called %d times in read-only mode, want 0", editor.prepareCalls)
+	}
+	if m.editing {
+		t.Error("editing = true, want false")
+	}
+}
+
+// TestEditorKey_DisabledWithoutEditor verifies that the e command is
+// ignored when no app.Editor is wired, surfacing a hint.
+func TestEditorKey_DisabledWithoutEditor(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver) // no editor
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})       // select the node row
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd != nil {
+		t.Errorf("e without an editor returned a command, want none")
+	}
+	if m.editing {
+		t.Error("editing = true, want false")
+	}
+	if !strings.Contains(m.statusMessage, "no editor configured") {
+		t.Errorf("statusMessage = %q, want the editor hint", m.statusMessage)
+	}
+}
+
+// TestEditorFlow_ValidAppliesToDocument walks the happy path against an
+// imported document: Prepare targets the imported file (never the root),
+// the diff opens with the document path, Enter confirms through the save
+// modal and the saver writes the imported path.
+func TestEditorFlow_ValidAppliesToDocument(t *testing.T) {
+	importedSrc := "a.example.test {\n\trespond ok\n}\n"
+	editedSrc := "a.example.test {\n\trespond ok\n\tencode gzip\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile":     "import sites/a.caddy\n",
+		"config/sites/a.caddy": importedSrc,
+	}))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(importedSrc),
+		Content:      []byte(editedSrc),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+
+	// items: root doc, a.caddy doc, a.example.test node.
+	if len(m.items) != 3 {
+		t.Fatalf("items = %d, want 3", len(m.items))
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
+	if !m.selectedItem().hasNode {
+		t.Fatal("precondition: the node row must be selected")
+	}
+
+	// Press e: Prepare must target the imported document, never the root.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd == nil {
+		t.Fatal("e must return a command")
+	}
+	if !m.editing {
+		t.Error("editing = false after e, want true")
+	}
+	msg := cmd()
+	ready, ok := msg.(editorReadyMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorReadyMsg", msg)
+	}
+	if editor.prepareCalls != 1 {
+		t.Errorf("Prepare calls = %d, want 1", editor.prepareCalls)
+	}
+	if editor.capturedDoc == nil || editor.capturedDoc.Path != "config/sites/a.caddy" {
+		t.Errorf("Prepare doc path = %v, want the imported config/sites/a.caddy (never the root)", editor.capturedDoc)
+	}
+	wantRange := state.Graph.Documents[1].Nodes[0].Range
+	if editor.capturedRange != wantRange {
+		t.Errorf("Prepare range = %+v, want the node range %+v", editor.capturedRange, wantRange)
+	}
+
+	// The ready message stores the session and returns the exec command.
+	updated, cmd := m.Update(ready)
+	m = updated.(*Model)
+	if m.editorSession == nil {
+		t.Fatal("editorSession not stored on editorReadyMsg")
+	}
+	if cmd == nil {
+		t.Fatal("editorReadyMsg must return the exec command")
+	}
+
+	// Simulate the editor exiting cleanly.
+	updated, cmd = m.Update(editorExecMsg{Err: nil})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("editorExecMsg must return the complete command")
+	}
+	doneMsg := cmd()
+	done, ok := doneMsg.(editorDoneMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorDoneMsg", doneMsg)
+	}
+	if editor.capturedExit != 0 {
+		t.Errorf("Complete exit = %d, want 0", editor.capturedExit)
+	}
+
+	// Deliver the result: the edit diff opens with the document path.
+	updated, _ = m.Update(done)
+	m = updated.(*Model)
+	if m.editing {
+		t.Error("editing = true after the result, want false")
+	}
+	if !m.showDiff {
+		t.Fatal("showDiff = false after a valid edit, want true")
+	}
+	if m.pendingEdit == nil {
+		t.Fatal("pendingEdit not set after a valid edit")
+	}
+	if m.pendingEdit.path != "config/sites/a.caddy" {
+		t.Errorf("pendingEdit.path = %q, want the imported path", m.pendingEdit.path)
+	}
+	if string(m.pendingEdit.content) != editedSrc {
+		t.Errorf("pendingEdit.content = %q, want %q", m.pendingEdit.content, editedSrc)
+	}
+	if m.diffTitle != "Diff · config/sites/a.caddy" {
+		t.Errorf("diffTitle = %q, want the imported document path", m.diffTitle)
+	}
+
+	// Enter in the edit diff saves directly: the diff is the single
+	// confirmation for an editor edit, and the saver targets the
+	// imported document.
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if m.showDiff {
+		t.Error("showDiff = true after Enter, want false")
+	}
+	if m.showSaveConfirm {
+		t.Error("showSaveConfirm = true after Enter in the edit diff, want false (the diff is the only confirmation)")
+	}
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	if saver.capturedPath != "config/sites/a.caddy" {
+		t.Errorf("saver path = %q, want the imported document, never the root", saver.capturedPath)
+	}
+	if string(saver.capturedOriginal) != importedSrc {
+		t.Errorf("saver original = %q, want %q", saver.capturedOriginal, importedSrc)
+	}
+	if string(saver.capturedWorking) != editedSrc {
+		t.Errorf("saver working = %q, want %q", saver.capturedWorking, editedSrc)
+	}
+
+	// The delivered save refreshes the imported document in memory and
+	// leaves the root untouched.
+	updated, _ = m.Update(res)
+	m = updated.(*Model)
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit not cleared after a successful save")
+	}
+	var importedDoc *caddyfile.Document
+	for _, d := range m.state.Graph.Documents {
+		if d.Path == "config/sites/a.caddy" {
+			importedDoc = d
+		}
+	}
+	if importedDoc == nil {
+		t.Fatal("imported document not found in the graph")
+	}
+	if string(importedDoc.Source) != editedSrc {
+		t.Errorf("imported doc Source = %q, want %q", importedDoc.Source, editedSrc)
+	}
+	if string(m.state.Graph.Root.Source) != "import sites/a.caddy\n" {
+		t.Errorf("root Source = %q, want it untouched", m.state.Graph.Root.Source)
+	}
+	if string(m.loadedBytes) != "import sites/a.caddy\n" {
+		t.Errorf("loadedBytes = %q, want the root unchanged after an imported-document save", m.loadedBytes)
+	}
+}
+
+// TestEditorFlow_CancelledNoSave verifies that a cancelled result never
+// reaches the diff and never touches the saver.
+func TestEditorFlow_CancelledNoSave(t *testing.T) {
+	state := editorStateFor(t)
+	editor := &fakeEditor{result: app.EditResult{
+		Original:  []byte("a.example.test {\n\trespond ok\n}\n"),
+		Cancelled: true,
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if m.showDiff {
+		t.Error("showDiff = true for a cancelled edit, want false")
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit set for a cancelled edit, want nil")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+	if m.editing {
+		t.Error("editing = true, want false")
+	}
+}
+
+// TestEditorFlow_InvalidShowsDiagnostics verifies that an edit that fails
+// validation opens the diagnostics modal and is never savable.
+func TestEditorFlow_InvalidShowsDiagnostics(t *testing.T) {
+	state := editorStateFor(t)
+	diags := []validator.Diagnostic{
+		{Path: "config/sites/a.caddy", Line: 1, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	editor := &fakeEditor{result: app.EditResult{
+		Original:    []byte("a.example.test {\n\trespond ok\n}\n"),
+		Diagnostics: diags,
+		Changed:     true,
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if !m.showDiagnostics {
+		t.Fatal("showDiagnostics = false, want true for an invalid edit")
+	}
+	if len(m.diagnostics) != 1 {
+		t.Errorf("diagnostics = %v, want the editor diagnostics", m.diagnostics)
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit set for an invalid edit, want nil (not savable)")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestEditorFlow_NoChanges verifies that an edit leaving the range intact
+// surfaces a no-changes status and opens nothing.
+func TestEditorFlow_NoChanges(t *testing.T) {
+	state := editorStateFor(t)
+	editor := &fakeEditor{result: app.EditResult{
+		Original: []byte("a.example.test {\n\trespond ok\n}\n"),
+		Changed:  false,
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if m.showDiff {
+		t.Error("showDiff = true for a no-change edit, want false")
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit set for a no-change edit, want nil")
+	}
+	if !strings.Contains(m.statusMessage, "no changes") {
+		t.Errorf("statusMessage = %q, want a no-changes hint", m.statusMessage)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestEditorFlow_DiscardViaEsc verifies that Esc from the edit diff closes
+// it and discards the pending edit without saving.
+func TestEditorFlow_DiscardViaEsc(t *testing.T) {
+	state := editorStateFor(t)
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte("a.example.test {\n\trespond ok\n}\n"),
+		Content:      []byte("a.example.test {\n\trespond ok\n\tencode gzip\n}\n"),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if !m.showDiff {
+		t.Fatal("showDiff = false, want true before discarding")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showDiff {
+		t.Error("showDiff = true after Esc, want false")
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit not discarded after Esc, want nil")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestEditorFlow_CouldNotStart verifies that a launch failure (as opposed
+// to a non-zero editor exit) surfaces a status line and applies nothing.
+func TestEditorFlow_CouldNotStart(t *testing.T) {
+	state := editorStateFor(t)
+	editor := &fakeEditor{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	msg := cmd()
+	ready, ok := msg.(editorReadyMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorReadyMsg", msg)
+	}
+	m.Update(ready)
+	updated, cmd := m.Update(editorExecMsg{Err: errors.New("exec: no such file")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("editorExecMsg must return the complete command")
+	}
+	doneMsg := cmd()
+	done, ok := doneMsg.(editorDoneMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorDoneMsg", doneMsg)
+	}
+	m.Update(done)
+	if !strings.Contains(m.statusMessage, "could not start editor") {
+		t.Errorf("statusMessage = %q, want a launch failure hint", m.statusMessage)
+	}
+	if m.editing {
+		t.Error("editing = true, want false")
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit set despite the launch failure")
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestEditorFlow_FooterShowsKey verifies that the footer lists the e edit
+// key only when an editor is wired, writable mode is active and a node row
+// is selected.
+func TestEditorFlow_FooterShowsKey(t *testing.T) {
+	state := editorStateFor(t)
+	editor := &fakeEditor{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	// On a document row the key is hidden (no node range to edit).
+	if strings.Contains(m.View(), "e edit") {
+		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
+	}
+	// On a node row the key appears.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if !strings.Contains(m.View(), "e edit") {
+		t.Errorf("footer missing 'e edit' on a node row:\n%s", m.View())
+	}
+	// In read-only mode the key is hidden even on a node row.
+	readOnly := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m2 := newLoadedModel(t, fakeLoader{state: readOnly}, editor)
+	m2 = resize(m2, 120, 30)
+	m2 = keyPress(t, m2, tea.KeyMsg{Type: tea.KeyDown})
+	if strings.Contains(m2.View(), "e edit") {
+		t.Errorf("footer shows 'e edit' in read-only mode:\n%s", m2.View())
+	}
+}
+
+// TestEditorFlow_FailedSaveReopensDiff verifies that a failed save of a
+// pending editor edit reopens the diff modal — so the operator can retry
+// with Enter or discard with Esc — and keeps the pendingEdit intact
+// alongside the error status message.
+func TestEditorFlow_FailedSaveReopensDiff(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+	}{
+		{name: "conflict", err: app.ErrConflict, wantMsg: "changed on disk"},
+		{name: "save error with backup", err: &app.SaveError{BackupPath: "config/backups/a.caddy.bak", Err: errors.New("boom")}, wantMsg: "save failed"},
+		{name: "generic error", err: errors.New("boom"), wantMsg: "save failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := editorStateFor(t)
+			editor := &fakeEditor{result: app.EditResult{
+				Original:     []byte("a.example.test {\n\trespond ok\n}\n"),
+				Content:      []byte("a.example.test {\n\trespond ok\n\tencode gzip\n}\n"),
+				Changed:      true,
+				SnapshotPath: "snap-1",
+			}}
+			saver := &fakeSaver{err: tt.err}
+			m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+			m = resize(m, 120, 30)
+			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+			done := pressEditorKey(t, m)
+			m.Update(done)
+			if !m.showDiff {
+				t.Fatal("precondition: diff must be open")
+			}
+			// Enter in the edit diff saves directly (the diff is the only
+			// confirmation for an editor edit).
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+			m = updated.(*Model)
+			if m.showDiff {
+				t.Error("showDiff = true after Enter, want false")
+			}
+			if cmd == nil {
+				t.Fatal("Enter must return the save command")
+			}
+			msg := cmd() // saveResultMsg carrying tt.err
+			updated, _ = m.Update(msg)
+			m = updated.(*Model)
+			if !m.showDiff {
+				t.Fatalf("diff not reopened after a failed save (statusMessage = %q)", m.statusMessage)
+			}
+			if m.pendingEdit == nil {
+				t.Error("pendingEdit cleared after a failed save, want retained")
+			}
+			if !strings.Contains(m.statusMessage, tt.wantMsg) {
+				t.Errorf("statusMessage = %q, want it to contain %q", m.statusMessage, tt.wantMsg)
+			}
+			// Enter retries the save from the reopened diff.
+			updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+			m = updated.(*Model)
+			if cmd == nil {
+				t.Fatal("retry Enter must return the save command")
+			}
+			retryMsg := cmd()
+			if saver.calls != 2 {
+				t.Errorf("saver.calls = %d, want 2 (Enter retries the save)", saver.calls)
+			}
+			updated, _ = m.Update(retryMsg)
+			m = updated.(*Model)
+			if !m.showDiff {
+				t.Fatal("diff must be reopened after the failed retry")
+			}
+			// Esc discards the pending edit.
+			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+			if m.pendingEdit != nil {
+				t.Error("pendingEdit not discarded after Esc from the reopened diff")
+			}
+		})
+	}
+}
+
+// TestEditorFlow_SaveShortcutOpensConfirmForPendingEdit verifies that the
+// s keybinding opens the save confirmation for a pending editor edit even
+// when no root working copy exists: the pending edit was already validated
+// by the editor flow and targets its own document.
+func TestEditorFlow_SaveShortcutOpensConfirmForPendingEdit(t *testing.T) {
+	state := editorStateFor(t)
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver)
+	m = resize(m, 120, 30)
+	// No working copy exists; only the pending edit is set.
+	m.pendingEdit = &pendingEdit{
+		path:         "config/sites/a.caddy",
+		original:     []byte("a.example.test {\n\trespond ok\n}\n"),
+		content:      []byte("a.example.test {\n\trespond ok\n\tencode gzip\n}\n"),
+		snapshotPath: "snap-1",
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if cmd != nil {
+		t.Errorf("s returned a command, want none (confirmation is a modal, not a cmd)")
+	}
+	if !m.showSaveConfirm {
+		t.Fatal("showSaveConfirm = false, want true: a pending edit saves regardless of the root working copy")
+	}
+}
+
+// TestEditorKey_DisabledWhileReloading verifies that the e command is
+// ignored while a reload is in flight, mirroring the save/reload mutual
+// exclusion.
+func TestEditorKey_DisabledWhileReloading(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	editor := &fakeEditor{}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // select the node row
+	m.reloading = true
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if cmd != nil {
+		t.Error("e while reloading returned a command, want none")
+	}
+	if editor.prepareCalls != 0 {
+		t.Errorf("Prepare called %d times while reloading, want 0", editor.prepareCalls)
+	}
+	if m.editing {
+		t.Error("editing = true, want false")
+	}
+}
+
+// TestEditorFlow_WarningsOnlyNotSaved verifies that an edit whose only
+// diagnostics are warnings (no errors) is not savable and surfaces a
+// warnings status instead of an empty modal, mirroring the
+// format+validate flow.
+func TestEditorFlow_WarningsOnlyNotSaved(t *testing.T) {
+	state := editorStateFor(t)
+	diags := []validator.Diagnostic{
+		{Path: "config/sites/a.caddy", Line: 1, Message: "deprecated directive", Severity: validator.SeverityWarning},
+	}
+	editor := &fakeEditor{result: app.EditResult{
+		Original:    []byte("a.example.test {\n\trespond ok\n}\n"),
+		Diagnostics: diags,
+		Changed:     true,
+	}}
+	saver := &fakeSaver{}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if m.showDiagnostics {
+		t.Error("showDiagnostics = true for warning-only findings, want false")
+	}
+	if m.pendingEdit != nil {
+		t.Error("pendingEdit set for a warnings-only edit, want nil (not savable)")
+	}
+	if !strings.Contains(m.statusMessage, "warnings") {
+		t.Errorf("statusMessage = %q, want a warnings hint", m.statusMessage)
+	}
+	if saver.calls != 0 {
+		t.Errorf("saver.calls = %d, want 0", saver.calls)
+	}
+}
+
+// TestModelSave_KeepsSourceRevealed is a regression test for the source
+// pane jumping back to the top after a save: handleSaveResult used to
+// reset the source pane via sourceDoc = nil, which reloaded the content
+// but never re-revealed the still-selected node, so the viewport stayed
+// pinned at the top. The fix sets a one-shot sourceRefresh flag that
+// forces a content reload plus a re-reveal on the next render.
+func TestModelSave_KeepsSourceRevealed(t *testing.T) {
+	importedSrc := "top.example.test {\n\trespond top\n}\n" +
+		strings.Repeat("# padding\n", 70) +
+		"target.example.test {\n\trespond target\n}\n"
+	editedSrc := "top.example.test {\n\trespond top\n}\n" +
+		strings.Repeat("# padding\n", 70) +
+		"target.example.test {\n\trespond edited\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile":     "import sites/a.caddy\n",
+		"config/sites/a.caddy": importedSrc,
+	}))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(importedSrc),
+		Content:      []byte(editedSrc),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}
+	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	// A short window so the target node (line 74) starts below the first
+	// screen: a correct reveal produces YOffset > 0, while the bug leaves
+	// the viewport pinned at the top.
+	m = resize(m, 120, 30)
+
+	// items: root doc, a.caddy doc, top.example.test, target.example.test.
+	if len(m.items) != 4 {
+		t.Fatalf("items = %d, want 4", len(m.items))
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // top.example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // target.example.test
+	if !m.selectedItem().hasNode {
+		t.Fatal("precondition: the target node must be selected")
+	}
+	// Render: the reveal scrolls the source pane onto the selected node.
+	m.View()
+	if m.viewport.YOffset == 0 {
+		t.Fatalf("precondition: reveal must scroll to the target node, YOffset = %d", m.viewport.YOffset)
+	}
+
+	// Complete the editor round-trip and save it. Enter in the edit diff
+	// saves directly — the diff is the single confirmation for an editor
+	// edit.
+	done := pressEditorKey(t, m)
+	m.Update(done) // the edit diff opens
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	updated, _ = m.Update(res)
+	m = updated.(*Model)
+
+	// After the save the source pane must stay on the edited section: the
+	// document bytes were replaced in place, but the selected node is
+	// re-revealed instead of the viewport being reset to the top.
+	m.View()
+	if m.viewport.YOffset == 0 {
+		t.Errorf("viewport YOffset = 0 after save, want it to stay revealed on the edited section")
+	}
+	if string(m.state.Graph.Documents[1].Source) != editedSrc {
+		t.Errorf("imported doc Source = %q, want the saved bytes", m.state.Graph.Documents[1].Source)
 	}
 }

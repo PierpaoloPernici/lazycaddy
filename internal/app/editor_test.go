@@ -1,0 +1,647 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
+)
+
+// fakeEditorFormatter is a programmable Formatter for the editor tests. The
+// zero value reports a clean validation (no diagnostics, no error).
+type fakeEditorFormatter struct {
+	diagnostics []validator.Diagnostic
+	err         error
+	called      bool
+}
+
+func (f *fakeEditorFormatter) FormatAndValidate(ctx context.Context, displayPath string, src []byte) ([]byte, []validator.Diagnostic, error) {
+	f.called = true
+	return nil, f.diagnostics, f.err
+}
+
+// newTestEditor wires an editor over t.TempDir() with a vim command, a
+// clean fake formatter, os.ReadFile and the real temp directory so the
+// editor temp file can be created and asserted on. A non-empty options
+// argument overrides the matching hook.
+func newTestEditor(t *testing.T, opts ...EditorOptions) *editor {
+	t.Helper()
+	dir := t.TempDir()
+	tempDir := filepath.Join(dir, "temp")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		t.Fatalf("mkdir temp dir: %v", err)
+	}
+	o := EditorOptions{
+		LookupEnv: func(key string) (string, bool) {
+			if key == "VISUAL" {
+				return "vim -f", true
+			}
+			return "", false
+		},
+		Formatter:   &fakeEditorFormatter{},
+		ReadFile:    os.ReadFile,
+		SnapshotDir: filepath.Join(dir, "snapshots"),
+		TempDir:     tempDir,
+	}
+	for _, opt := range opts {
+		if opt.LookupEnv != nil {
+			o.LookupEnv = opt.LookupEnv
+		}
+		if opt.Formatter != nil {
+			o.Formatter = opt.Formatter
+		}
+		if opt.ReadFile != nil {
+			o.ReadFile = opt.ReadFile
+		}
+		if opt.SnapshotDir != "" {
+			o.SnapshotDir = opt.SnapshotDir
+		}
+		if opt.TempDir != "" {
+			o.TempDir = opt.TempDir
+		}
+		if opt.Clock != nil {
+			o.Clock = opt.Clock
+		}
+	}
+	e := NewEditor(o)
+	typed, ok := e.(*editor)
+	if !ok {
+		t.Fatalf("NewEditor returned %T, want *editor", e)
+	}
+	return typed
+}
+
+// sampleDoc parses src as the document at path and fails the test unless it
+// parses cleanly.
+func sampleDoc(t *testing.T, path, src string) *caddyfile.Document {
+	t.Helper()
+	doc := caddyfile.Parse([]byte(src))
+	doc.Path = path
+	if doc.Err != nil {
+		t.Fatalf("fixture %s must parse cleanly: %v", path, doc.Err)
+	}
+	return doc
+}
+
+func TestEditorPrepare_WritesRangeAndSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	r := doc.Nodes[0].Range
+	session, err := e.Prepare(context.Background(), doc, r)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	// The temp file holds exactly the range bytes.
+	got := readFileContent(t, session.TempFile)
+	if got != src[r.Start:r.End] {
+		t.Errorf("temp file = %q, want the exact range bytes %q", got, src[r.Start:r.End])
+	}
+	// The snapshot holds the full document.
+	if got := readFileContent(t, session.SnapshotPath); got != src {
+		t.Errorf("snapshot = %q, want the full document %q", got, src)
+	}
+	// The sidecar is plain text: "start end\n", never JSON.
+	sidecar := session.SnapshotPath + ".range"
+	wantRange := fmt.Sprintf("%d %d\n", r.Start, r.End)
+	if got := readFileContent(t, sidecar); got != wantRange {
+		t.Errorf("sidecar = %q, want %q", got, wantRange)
+	}
+	// The command is the editor argv plus the temp file.
+	want := []string{"vim", "-f", session.TempFile}
+	if len(session.Cmd) != len(want) {
+		t.Fatalf("Cmd = %v, want %v", session.Cmd, want)
+	}
+	for i := range want {
+		if session.Cmd[i] != want[i] {
+			t.Errorf("Cmd = %v, want %v", session.Cmd, want)
+		}
+	}
+	if session.DocPath != path {
+		t.Errorf("DocPath = %q, want %q", session.DocPath, path)
+	}
+	if !bytes.Equal(session.Original, []byte(src)) {
+		t.Errorf("Original = %q, want %q", session.Original, src)
+	}
+}
+
+func TestEditorPrepare_UsesDocumentPath(t *testing.T) {
+	dir := t.TempDir()
+	// The document belongs to an imported file; the editor must target
+	// that path, never the root Caddyfile.
+	rootPath := filepath.Join(dir, "Caddyfile")
+	imported := filepath.Join(dir, "sites", "a.caddy")
+	src := "a.example.test {\n\trespond ok\n}\n"
+	writeFile(t, rootPath, "import sites/a.caddy\n")
+	if err := os.MkdirAll(filepath.Dir(imported), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, imported, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, imported, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if session.DocPath != imported {
+		t.Errorf("DocPath = %q, want the imported path %q", session.DocPath, imported)
+	}
+	if got := readFileContent(t, session.SnapshotPath); got != src {
+		t.Errorf("snapshot = %q, want the imported document bytes", got)
+	}
+}
+
+func TestEditorPrepare_SnapshotNameUsesClock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	e := newTestEditor(t, EditorOptions{Clock: func() time.Time { return fixed }})
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// The injected clock stamps the snapshot name so recovery trails are
+	// sortable; os.CreateTemp still appends its own random suffix.
+	name := filepath.Base(session.SnapshotPath)
+	wantPrefix := "editor-20260102-030405-"
+	if !strings.HasPrefix(name, wantPrefix) {
+		t.Errorf("snapshot name %q, want the %q prefix from the injected clock", name, wantPrefix)
+	}
+}
+
+func TestEditorPrepare_NoEditorConfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t, EditorOptions{
+		LookupEnv: func(string) (string, bool) { return "", false },
+	})
+	doc := sampleDoc(t, path, src)
+	_, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if !errors.Is(err, ErrNoEditor) {
+		t.Fatalf("err = %v, want ErrNoEditor", err)
+	}
+}
+
+func TestEditorPrepare_ExternalChangeBefore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	// The file on disk diverged from the loaded document.
+	writeFile(t, path, src+"\n# external edit\n")
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	_, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	// Nothing was prepared: no snapshot dir, no temp file.
+	if _, statErr := os.Stat(e.snapshotDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("snapshot dir exists despite preflight conflict: %v", statErr)
+	}
+}
+
+func TestEditorComplete_NonZeroExitCancels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	result, err := e.Complete(context.Background(), session, 1)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !result.Cancelled {
+		t.Error("Cancelled = false, want true for a non-zero exit")
+	}
+	if result.Content != nil || result.Diagnostics != nil {
+		t.Errorf("non-zero exit must yield no Content/Diagnostics: %+v", result)
+	}
+	if _, statErr := os.Stat(session.TempFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp file still exists after cancellation: %v", statErr)
+	}
+}
+
+func TestEditorComplete_EmptyResultCancels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// The editor cleared the file.
+	writeFile(t, session.TempFile, "")
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !result.Cancelled {
+		t.Error("Cancelled = false, want true for an empty result")
+	}
+	if _, statErr := os.Stat(session.TempFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp file still exists after cancellation: %v", statErr)
+	}
+}
+
+func TestEditorComplete_ExternalChangeDuring(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// The file changed on disk while the editor was open.
+	writeFile(t, path, src+"\n# external edit\n")
+	writeFile(t, session.TempFile, "example.test {\n\trespond changed\n}\n")
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !result.Cancelled {
+		t.Error("Cancelled = false, want true when the file changed during the edit")
+	}
+	if _, statErr := os.Stat(session.TempFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp file still exists after cancellation: %v", statErr)
+	}
+}
+
+func TestEditorComplete_ValidResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	edited := "example.test {\n\trespond ok\n\tencode gzip\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	r := doc.Nodes[0].Range
+	session, err := e.Prepare(context.Background(), doc, r)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	writeFile(t, session.TempFile, edited)
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if result.Cancelled {
+		t.Error("Cancelled = true, want false for a valid edit")
+	}
+	if !result.Changed {
+		t.Error("Changed = false, want true")
+	}
+	want, err := caddyfile.Patch([]byte(src), r, []byte(edited))
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if !bytes.Equal(result.Content, want) {
+		t.Errorf("Content = %q, want the patched document %q", result.Content, want)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Errorf("Diagnostics = %v, want none", result.Diagnostics)
+	}
+	if _, statErr := os.Stat(session.TempFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp file still exists after completion: %v", statErr)
+	}
+	// The snapshot is a recovery artifact and must survive the session.
+	if _, statErr := os.Stat(session.SnapshotPath); statErr != nil {
+		t.Errorf("snapshot removed after completion: %v", statErr)
+	}
+}
+
+func TestEditorComplete_InvalidResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	edited := "example.test {\n\tbroken\n}\n"
+	writeFile(t, path, src)
+
+	diags := []validator.Diagnostic{
+		{Path: path, Line: 2, Column: 1, Message: "unknown directive", Severity: validator.SeverityError},
+	}
+	e := newTestEditor(t, EditorOptions{Formatter: &fakeEditorFormatter{diagnostics: diags}})
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	writeFile(t, session.TempFile, edited)
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if result.Cancelled {
+		t.Error("Cancelled = true, want false: an invalid edit is not a cancellation")
+	}
+	if !result.Changed {
+		t.Error("Changed = false, want true")
+	}
+	if result.Content != nil {
+		t.Errorf("Content = %q, want nil: an invalid document must not be savable", result.Content)
+	}
+	if len(result.Diagnostics) != 1 {
+		t.Fatalf("Diagnostics = %v, want the formatter diagnostics", result.Diagnostics)
+	}
+	if _, statErr := os.Stat(session.TempFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp file still exists after an invalid result: %v", statErr)
+	}
+}
+
+// TestEditorComplete_ErrWithDiagnosticsKeepsDiags verifies that a
+// validation failure that carries both an error (the *validator.ExitError)
+// and parse diagnostics preserves the diagnostics in the result instead of
+// dropping them: the UI must open the diagnostics modal, not just show a
+// status line. Only a hard failure with no diagnostics at all (missing
+// binary, timeout) surfaces as an error.
+func TestEditorComplete_ErrWithDiagnosticsKeepsDiags(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	edited := "example.test {\n\tbroken\n}\n"
+	writeFile(t, path, src)
+
+	diags := []validator.Diagnostic{
+		{Path: path, Line: 2, Column: 1, Message: "unknown directive", Severity: validator.SeverityError},
+	}
+	e := newTestEditor(t, EditorOptions{Formatter: &fakeEditorFormatter{
+		diagnostics: diags,
+		err:         errors.New("caddy exit 1"),
+	}})
+	doc := sampleDoc(t, path, src)
+	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	writeFile(t, session.TempFile, edited)
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v, diagnostics must travel in the result", err)
+	}
+	if result.Cancelled {
+		t.Error("Cancelled = true, want false: an invalid edit is not a cancellation")
+	}
+	if !result.Changed {
+		t.Error("Changed = false, want true")
+	}
+	if result.Content != nil {
+		t.Errorf("Content = %q, want nil: an invalid document must not be savable", result.Content)
+	}
+	if len(result.Diagnostics) != 1 {
+		t.Fatalf("Diagnostics = %v, want the formatter diagnostics preserved", result.Diagnostics)
+	}
+	if result.Diagnostics[0].Message != "unknown directive" {
+		t.Errorf("Diagnostics[0].Message = %q, want %q", result.Diagnostics[0].Message, "unknown directive")
+	}
+}
+
+func TestEditorComplete_NoChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	r := doc.Nodes[0].Range
+	session, err := e.Prepare(context.Background(), doc, r)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// The editor left the range bytes untouched.
+	writeFile(t, session.TempFile, src[r.Start:r.End])
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if result.Changed {
+		t.Error("Changed = true, want false when the range was untouched")
+	}
+	if result.Content != nil {
+		t.Errorf("Content = %q, want nil for a no-change result", result.Content)
+	}
+	if result.Cancelled {
+		t.Error("Cancelled = true, want false for a no-change result")
+	}
+}
+
+func TestEditor_CRLFPreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "a.example.test {\r\n\trespond a\r\n}\r\nb.example.test {\r\n\trespond b\r\n}\r\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	r := doc.Nodes[0].Range // the a.example.test block
+	editedRange := "a.example.test {\r\n\trespond a\r\n\tencode gzip\r\n}\r\n"
+	session, err := e.Prepare(context.Background(), doc, r)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	writeFile(t, session.TempFile, editedRange)
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := editedRange + src[r.End:]
+	if !bytes.Equal(result.Content, []byte(want)) {
+		t.Errorf("Content = %q, want %q (CRLF must survive byte-for-byte outside the range)", result.Content, want)
+	}
+	// The untouched tail is byte-identical to the original.
+	if !bytes.Equal(result.Content[len(result.Content)-len(src[r.End:]):], []byte(src[r.End:])) {
+		t.Errorf("bytes outside the edited range were modified")
+	}
+}
+
+func TestEditor_ByteForByteOutsideRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "# header comment\n\nexample.test {\n\t# inner comment\n\trespond ok\n}\n\n# trailing comment\n"
+	writeFile(t, path, src)
+
+	e := newTestEditor(t)
+	doc := sampleDoc(t, path, src)
+	r := doc.Nodes[0].Range
+	editedRange := "example.test {\n\t# inner comment\n\trespond ok\n\tencode gzip\n}\n"
+	session, err := e.Prepare(context.Background(), doc, r)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	writeFile(t, session.TempFile, editedRange)
+
+	result, err := e.Complete(context.Background(), session, 0)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	// The recomposed document equals the untouched prefix, the edited range
+	// and the untouched suffix: comments, blank lines and indentation
+	// outside the range are preserved byte-for-byte.
+	want := string(src[:r.Start]) + editedRange + string(src[r.End:])
+	if string(result.Content) != want {
+		t.Errorf("Content = %q, want %q (comments and indentation outside the range must be preserved)", result.Content, want)
+	}
+	// The untouched suffix is byte-identical to the original.
+	if !bytes.Equal(result.Content[len(result.Content)-len(src[r.End:]):], []byte(src[r.End:])) {
+		t.Errorf("bytes outside the edited range were modified")
+	}
+}
+
+func TestSplitCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		want    []string
+		wantErr error
+	}{
+		{
+			name:    "code with wait flag",
+			command: "code --wait",
+			want:    []string{"code", "--wait"},
+		},
+		{
+			name:    "vim foreground flag",
+			command: "vim -f",
+			want:    []string{"vim", "-f"},
+		},
+		{
+			name:    "absolute binary path",
+			command: "/usr/bin/nano",
+			want:    []string{"/usr/bin/nano"},
+		},
+		{
+			name:    "quoted path with spaces",
+			command: `"/Applications/Visual Studio Code.app/Contents/MacOS/Code" --wait`,
+			want:    []string{"/Applications/Visual Studio Code.app/Contents/MacOS/Code", "--wait"},
+		},
+		{
+			name:    "double-quoted group",
+			command: `"vim -f"`,
+			want:    []string{"vim -f"},
+		},
+		{
+			name:    "single-quoted group",
+			command: `'code --wait'`,
+			want:    []string{"code --wait"},
+		},
+		{
+			name:    "backslash escape inside double quotes",
+			command: `"a\"b"`,
+			want:    []string{`a"b`},
+		},
+		{
+			name:    "backslash literal inside single quotes",
+			command: `'a\b'`,
+			want:    []string{`a\b`},
+		},
+		{
+			name:    "quoted shell injection stays one argument",
+			command: `"vim; rm -rf /"`,
+			want:    []string{`vim; rm -rf /`},
+		},
+		{
+			name:    "unquoted semicolons stay literal arguments",
+			command: "vim; rm -rf /",
+			want:    []string{"vim;", "rm", "-rf", "/"},
+		},
+		{
+			name:    "empty double-quoted argument dropped",
+			command: `code "" --wait`,
+			want:    []string{"code", "--wait"},
+		},
+		{
+			name:    "empty single-quoted argument dropped",
+			command: `code ''`,
+			want:    []string{"code"},
+		},
+		{
+			name:    "empty quoted command yields no editor",
+			command: `""`,
+			wantErr: ErrNoEditor,
+		},
+		{
+			name:    "empty string",
+			command: "",
+			wantErr: ErrNoEditor,
+		},
+		{
+			name:    "whitespace only",
+			command: "   \t  ",
+			wantErr: ErrNoEditor,
+		},
+		{
+			name:    "unmatched single quote",
+			command: "'unclosed",
+			wantErr: errors.New("unmatched"),
+		},
+		{
+			name:    "unmatched double quote",
+			command: `"unclosed`,
+			wantErr: errors.New("unmatched"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := splitCommand(tt.command)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("splitCommand(%q) = %v, want error %v", tt.command, got, tt.wantErr)
+				}
+				if tt.wantErr != ErrNoEditor && errors.Is(err, ErrNoEditor) {
+					t.Errorf("splitCommand(%q) err = %v, want a quote error, not ErrNoEditor", tt.command, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("splitCommand(%q): %v", tt.command, err)
+			}
+			if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Errorf("splitCommand(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
+	}
+}
