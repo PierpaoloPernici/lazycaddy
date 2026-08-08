@@ -406,12 +406,23 @@ Completed within the vertical slice:
   reload, writable mode). The header shows the Caddy version and a runtime
   status badge; probe failures degrade to explicit unknown/stopped states
   and the TUI remains fully browsable without caddy or write permissions.
+- [x] Basic log view when a configured source is available. `--log-file`
+  opts into a read-only log screen (`l`): a bounded 1000-line scrollback
+  with follow mode (`f`, bottom-anchored, manual scroll takes control),
+  pause/resume polling (`p`), and per-line JSON syntax highlighting
+  (keys, values, timestamps, log levels and HTTP status classes follow
+  the zap color conventions). The source is `internal/logs` — tolerant
+  per-line JSON parsing, a bounded history buffer, and a rotation-aware
+  file tailer (`tail -F` semantics, carries partial lines, follows Caddy's
+  rename-based rotation). Caddy has no Admin API endpoint for reading
+  logs, so a configured file is the only v0.1 source; polling is bounded
+  (500 ms tick) and cancellable, and the TUI stays fully browsable without
+  a log source.
 
 Remaining for v0.1:
 
 - `$EDITOR` round-trip for a selected source range.
 - Search across sites, files and logs.
-- Basic log view when a configured source is available.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.
 
