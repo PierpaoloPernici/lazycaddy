@@ -22,8 +22,8 @@ The UI must never reload Caddy implicitly after an edit.
 ## Current implementation status
 
 The repository has completed the configuration-engine spike and a
-read-only TUI vertical slice with an opt-in format and validate
-workflow.
+read-only-by-default TUI vertical slice with opt-in editing, validation,
+save and reload workflows.
 
 Completed:
 
@@ -77,7 +77,7 @@ Completed:
   the backup. The TUI gates saving on a validated working copy, a
   confirmation modal that names the target and backup directory, and
   the opt-in `--write` mode (read-only by default).
-- A test suite of 271 test functions covering the lossless-editing
+- A test suite of 454 test functions covering the lossless-editing
   contract, import resolution, validation, diagnostics, unified
   diffs, atomic writes, backups, the save workflow, the reload
   workflow and the TUI. Tests use fakes and require no installed
@@ -478,7 +478,6 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
 - Improve diff review, unsaved-state prompts and error recovery.
 - Detect external changes with `fsnotify` and provide reload/compare/keep actions.
 - Add backup comparison, rollback and configurable retention.
-- Add search/filtering across sites, files and logs.
 
 Acceptance: external changes are never overwritten, every successful save is recoverable, and rollback follows validation, diff and confirmation rules.
 

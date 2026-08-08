@@ -37,8 +37,8 @@ make check
 ## Current status
 
 The lossless Caddyfile parser and patcher are complete. The current vertical
-slice is a read-only inspector with an opt-in format, validate, diff and save
-workflow:
+slice is a read-only-by-default inspector with an opt-in format, validate,
+diff, edit, save and reload workflow:
 
 - load a Caddyfile and resolve nested imports while keeping imported files as
   separate documents;
@@ -56,9 +56,22 @@ workflow:
 - detect external changes before saving and report a recovery backup if a
   write fails after backup creation.
 
+The inspector also provides:
+
+- Caddy version, Admin API reachability and capability status in the header;
+- an opt-in, rotation-aware log view with bounded history and JSON
+  highlighting (`--log-file`, `l`);
+- `$EDITOR` editing for a selected node (`e`) or an entire document (`E`),
+  including imported files, with validation, diff review and the same backup
+  and atomic-save pipeline;
+- read-only global search across nodes, files, source lines and loaded logs
+  (`/` or `Ctrl-F`);
+- exact-range node deletion (`d`) with diff confirmation and post-save tree
+  rebuilding.
+
 The application is read-only by default and never reloads Caddy implicitly.
-`$EDITOR` round-trips, search, runtime information and log views are not yet
-available.
+Unavailable capabilities disable only the affected actions, while browsing
+and raw source inspection remain available.
 
 ### Safe change workflow
 
