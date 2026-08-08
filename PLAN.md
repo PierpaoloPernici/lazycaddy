@@ -293,6 +293,13 @@ The runtime adapter is isolated from the UI and supports these operations in v0.
 - reload through the local Admin API, with configurable endpoint and timeout;
 - report whether the loaded configuration matches the validated file on disk.
 
+In v0.1, keybinding gating is adapter-based, not capability-driven: a nil
+formatter/saver/reloader disables the corresponding action, and the startup
+runtime probe is a read-only report (version, runtime status badge, status
+message) that does not gate keys. Capability-driven gating (e.g. disabling
+`r` until the Admin API is provably reachable) is deferred to the runtime
+dashboard milestone, where it can react to capability changes.
+
 Process/service-manager integration (`systemd`, Docker, launchd, etc.) is deferred. Runtime status must distinguish `running`, `stopped`, `unreachable` and `unknown`; absence of the Admin API must not prevent browsing or validating the file.
 
 Do not claim that the loaded configuration matches the file unless that state can be proven. Record successful reload identity locally where possible and show `unknown` when comparison is ambiguous; do not infer equality by regenerating a Caddyfile from Admin API JSON. Future capability discovery may inspect `caddy list-modules` to improve version- and plugin-aware summaries, but unknown modules must never block browsing or preservation.
@@ -391,14 +398,19 @@ Completed within the vertical slice:
   layer colors comments, strings, heredocs, braces and placeholders while
   preserving the original bytes; semantic site-address and directive roles
   are intentionally deferred.
+- [x] Basic runtime/version information and capability detection with a
+  read-only fallback. A startup probe queries the configured caddy binary
+  for its version and checks the local Admin API, deriving a provable
+  runtime status (unknown, running, stopped, unreachable) and a capability
+  set (binary, validation, Admin API access, readable configuration,
+  reload, writable mode). The header shows the Caddy version and a runtime
+  status badge; probe failures degrade to explicit unknown/stopped states
+  and the TUI remains fully browsable without caddy or write permissions.
 
 Remaining for v0.1:
 
 - `$EDITOR` round-trip for a selected source range.
 - Search across sites, files and logs.
-- Basic runtime/version information and capability detection with a
-  read-only fallback (browsing already works without caddy or write
-  permissions).
 - Basic log view when a configured source is available.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.

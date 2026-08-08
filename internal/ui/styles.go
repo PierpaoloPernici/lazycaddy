@@ -63,6 +63,29 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color("0")).
 			Background(lipgloss.Color("244"))
+	// runtimeRunningBadge marks a Caddy daemon reachable through the
+	// Admin API. The green background matches the writable mode badge.
+	runtimeRunningBadge = lipgloss.NewStyle().
+				Bold(true).
+				Padding(0, 1).
+				Foreground(lipgloss.Color("15")).
+				Background(lipgloss.Color("28"))
+	// runtimeStoppedBadge marks a queryable caddy binary whose Admin API
+	// is unreachable (daemon stopped or admin disabled). The dark-red
+	// background matches the unreachable badge.
+	runtimeStoppedBadge = lipgloss.NewStyle().
+				Bold(true).
+				Padding(0, 1).
+				Foreground(lipgloss.Color("15")).
+				Background(lipgloss.Color("52"))
+	// runtimeUnreachableBadge marks a runtime probe that could not
+	// complete (timeout or cancellation). The amber background matches
+	// the stale badge and reads as "state unknown, action pending".
+	runtimeUnreachableBadge = lipgloss.NewStyle().
+				Bold(true).
+				Padding(0, 1).
+				Foreground(lipgloss.Color("0")).
+				Background(lipgloss.Color("214"))
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203")).
 			Padding(0, 1)

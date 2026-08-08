@@ -9,14 +9,19 @@
 // (--caddy-path; http://localhost:2019 by default), the r keybinding
 // reloads the configuration through the Admin API — never implicitly,
 // always after a validated, saved configuration and a confirmation
-// prompt. The operator is always in control of when format, validate,
-// save and reload run.
+// prompt. At startup a runtime probe queries the configured caddy binary
+// for its version and checks the Admin API, so the header can report the
+// detected capabilities; every probe failure degrades to an explicit
+// unknown/stopped state and the TUI remains fully browsable read-only.
+// The operator is always in control of when format, validate, save and
+// reload run.
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -48,6 +53,11 @@ func main() {
 			}
 
 			loader := app.NewLoader(settings, os.ReadFile)
+			// The Admin API client is shared by the reloader and the
+			// startup runtime probe; it is created unconditionally so the
+			// probe can report on the API even when no caddy binary is
+			// configured.
+			client := runtime.NewAdminClient(settings.AdminEndpoint, settings.AdminTimeout)
 			var formatter app.Formatter
 			var reloader app.Reloader
 			if settings.BinaryPath != "" {
@@ -64,7 +74,6 @@ func main() {
 				// real config path) and posts the JSON to the Admin API.
 				// Without a binary it stays nil and the r keybinding is
 				// disabled.
-				client := runtime.NewAdminClient(settings.AdminEndpoint, settings.AdminTimeout)
 				reloader = app.NewReloader(settings.AdminEndpoint, client, v, os.ReadFile)
 			}
 			var saver app.Saver
@@ -75,7 +84,21 @@ func main() {
 				}
 				saver = app.NewSaver(creator, os.ReadFile)
 			}
-			model := ui.New(loader, formatter, saver, reloader)
+			// The startup runtime probe queries the configured caddy
+			// binary for its version and checks the Admin API, feeding
+			// the header's capability badges. Failures degrade to
+			// explicit unknown/stopped states; the TUI never blocks on
+			// the probe (each step carries its own timeout).
+			detector := runtime.NewDetector(runtime.Options{
+				Binary:         settings.BinaryPath,
+				Runner:         validator.ExecRunner{},
+				Admin:          client,
+				Writable:       !settings.ReadOnly,
+				VersionTimeout: settings.ValidatorTimeout,
+				AdminTimeout:   5 * time.Second,
+			})
+			runtimeStatus := app.RuntimeStatusFunc(detector.Probe)
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
