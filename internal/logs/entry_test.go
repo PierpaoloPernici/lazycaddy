@@ -40,6 +40,9 @@ func TestParseEntry_AccessLogExample(t *testing.T) {
 	if e.Host != "example.com" {
 		t.Errorf("Host = %q, want %q", e.Host, "example.com")
 	}
+	if !e.Parsed {
+		t.Error("Parsed = false, want true for a valid JSON line")
+	}
 }
 
 func TestParseEntry_NumericTSAccuracy(t *testing.T) {
@@ -73,6 +76,9 @@ func TestParseEntry_GeneralLog(t *testing.T) {
 	want := time.Unix(1646861401, 500000000).UTC()
 	if !e.Timestamp.Equal(want) {
 		t.Errorf("Timestamp = %v, want %v", e.Timestamp, want)
+	}
+	if !e.Parsed {
+		t.Error("Parsed = false, want true for a valid JSON line")
 	}
 }
 

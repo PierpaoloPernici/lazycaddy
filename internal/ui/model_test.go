@@ -2601,7 +2601,13 @@ func TestModelRuntimeProbe_UnknownHidesBadge(t *testing.T) {
 
 // logEntry builds a structured entry with the given message for tests.
 func logEntry(msg string) logs.Entry {
-	return logs.Entry{Raw: []byte(`{"level":"info","msg":"` + msg + `"}`), Msg: msg, Status: -1}
+	return logs.Entry{
+		Raw:    []byte(`{"level":"info","msg":"` + msg + `"}`),
+		Parsed: true,
+		Level:  "info",
+		Msg:    msg,
+		Status: -1,
+	}
 }
 
 // logStateFor returns a loaded state whose settings carry a log path, so
@@ -2900,9 +2906,234 @@ func TestModelLogView_Footer(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	m = updated.(*Model)
 	view := m.View()
-	for _, want := range []string{"f follow", "p pause/resume", "Esc close", "q quit"} {
+	for _, want := range []string{"Enter detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
 		}
+	}
+}
+
+// seededLogSource returns a LogSource whose history holds count entries.
+func seededLogSource(count int) app.LogSourceFunc {
+	return app.LogSourceFunc{
+		NextFn: func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry {
+			entries := make([]logs.Entry, 0, count)
+			for i := 0; i < count; i++ {
+				entries = append(entries, logEntry(fmt.Sprintf("e-%d", i)))
+			}
+			return entries
+		},
+	}
+}
+
+// TestModelLogCursor_MovesAndReveals verifies the row cursor starts on the
+// newest entry and moves with up/down, turning follow off on up.
+func TestModelLogCursor_MovesAndReveals(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(10))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if m.logCursor != 9 {
+		t.Fatalf("logCursor = %d, want 9 (newest) on open", m.logCursor)
+	}
+	// Up turns follow off and moves the cursor.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.logFollow {
+		t.Error("logFollow = true after up, want false")
+	}
+	if m.logCursor != 8 {
+		t.Errorf("logCursor = %d after up, want 8", m.logCursor)
+	}
+	// Down moves back toward the newest.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.logCursor != 9 {
+		t.Errorf("logCursor = %d after down, want 9", m.logCursor)
+	}
+}
+
+// TestModelLogCursor_FollowKeepsNewest verifies that new entries keep the
+// cursor on the newest line while follow is on.
+func TestModelLogCursor_FollowKeepsNewest(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(2))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(logTailMsg{Entries: []logs.Entry{logEntry("a"), logEntry("b")}})
+	m = updated.(*Model)
+	if !m.logFollow {
+		t.Fatal("logFollow = false, want true")
+	}
+	if m.logCursor != len(m.logLines)-1 {
+		t.Errorf("logCursor = %d, want the newest (%d) while following", m.logCursor, len(m.logLines)-1)
+	}
+}
+
+// TestModelLogCursor_AdjustsAfterTrim verifies the cursor stays valid and
+// stable when the bounded trim drops entries from the front.
+func TestModelLogCursor_AdjustsAfterTrim(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(logMaxLines))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if m.logCursor != logMaxLines-1 {
+		t.Fatalf("logCursor = %d, want %d on open", m.logCursor, logMaxLines-1)
+	}
+	// Deliver enough entries to force a trim while following.
+	feed := make([]logs.Entry, 60)
+	for i := range feed {
+		feed[i] = logEntry(fmt.Sprintf("new-%d", i))
+	}
+	updated, _ = m.Update(logTailMsg{Entries: feed})
+	m = updated.(*Model)
+	if len(m.logLines) != logMaxLines {
+		t.Fatalf("logLines = %d, want %d after trim", len(m.logLines), logMaxLines)
+	}
+	if m.logCursor != len(m.logLines)-1 {
+		t.Errorf("logCursor = %d, want the newest (%d) while following after trim", m.logCursor, len(m.logLines)-1)
+	}
+	// Turn follow off, then trim again: the cursor subtracts the dropped
+	// count so it keeps pointing at the same entry.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp}) // follow off, cursor 998
+	if m.logFollow {
+		t.Fatal("logFollow = true after up, want false")
+	}
+	before := m.logCursor
+	updated, _ = m.Update(logTailMsg{Entries: feed})
+	m = updated.(*Model)
+	want := before - 60
+	if want < 0 {
+		want = 0
+	}
+	if m.logCursor != want {
+		t.Errorf("logCursor = %d after trim with follow off, want %d", m.logCursor, want)
+	}
+	if m.logCursor < 0 || m.logCursor >= len(m.logLines) {
+		t.Errorf("logCursor = %d out of range for %d entries", m.logCursor, len(m.logLines))
+	}
+}
+
+// TestModelLogDetail_EnterOpensEscCloses verifies Enter opens the detail
+// modal for the selected entry and Esc closes it (once to the list, again
+// to the main screen).
+func TestModelLogDetail_EnterOpensEscCloses(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(3))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	// Move from index 2 (newest) to index 1.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.logCursor != 1 {
+		t.Fatalf("logCursor = %d, want 1", m.logCursor)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.logDetailOpen {
+		t.Fatal("logDetailOpen = false after Enter, want true")
+	}
+	if string(m.logDetailEntry.Raw) != string(m.logLines[1].Raw) {
+		t.Errorf("logDetailEntry.Raw = %q, want the selected entry %q", m.logDetailEntry.Raw, m.logLines[1].Raw)
+	}
+	// Esc closes the detail but keeps the log view open.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.logDetailOpen {
+		t.Error("logDetailOpen = true after Esc, want false")
+	}
+	if !m.showLogs {
+		t.Error("showLogs = false after Esc from detail, want true")
+	}
+	// Esc again closes the log view.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showLogs {
+		t.Error("showLogs = true after second Esc, want false")
+	}
+}
+
+// TestModelLogDetail_ShowsFullJSON verifies the detail modal renders the
+// full lossless JSON of the selected entry and the footer shows the detail
+// keys.
+func TestModelLogDetail_ShowsFullJSON(t *testing.T) {
+	state := logStateFor(t)
+	raw := `{"level":"info","ts":1760000000.5,"logger":"http.log.access","msg":"handled request","request":{"method":"GET","host":"localhost","uri":"/api/config"},"status":200}`
+	entry, err := logs.ParseEntry([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseEntry: %v", err)
+	}
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{entry} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.logDetailOpen {
+		t.Fatal("detail modal not open")
+	}
+	view := m.View()
+	visible := stripANSI(view)
+	if !strings.Contains(visible, `"request"`) || !strings.Contains(visible, "/api/config") {
+		t.Errorf("detail modal missing the full JSON:\n%s", visible)
+	}
+	if !strings.Contains(view, "Esc back") {
+		t.Errorf("footer missing the detail hint 'Esc back':\n%s", view)
+	}
+}
+
+// TestModelLogDetail_NonJSONEntry verifies the detail modal shows the raw
+// line verbatim for a non-JSON entry.
+func TestModelLogDetail_NonJSONEntry(t *testing.T) {
+	state := logStateFor(t)
+	raw := "2026/08/08 12:00:00 INFO something happened"
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{{Raw: []byte(raw), Status: -1}} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.logDetailOpen {
+		t.Fatal("detail modal not open")
+	}
+	if !strings.Contains(stripANSI(m.View()), raw) {
+		t.Errorf("detail modal missing the raw line:\n%s", m.View())
+	}
+}
+
+// TestModelLogView_CompactLines verifies the log list renders the compact
+// human-readable layout (not the raw JSON blob).
+func TestModelLogView_CompactLines(t *testing.T) {
+	state := logStateFor(t)
+	raw := `{"level":"info","ts":1760000000.5,"logger":"http.log.access","msg":"handled request","request":{"method":"GET","host":"localhost","uri":"/api/config"},"status":200}`
+	entry, err := logs.ParseEntry([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseEntry: %v", err)
+	}
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{entry} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	visible := stripANSI(m.View())
+	for _, want := range []string{"—", "GET", "/api/config", "200", "handled request"} {
+		if !strings.Contains(visible, want) {
+			t.Errorf("compact log view missing %q:\n%s", want, visible)
+		}
+	}
+	// The raw JSON structure must be gone from the list view.
+	if strings.Contains(visible, `"request":{`) {
+		t.Errorf("compact log view still shows the raw JSON blob:\n%s", visible)
 	}
 }

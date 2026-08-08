@@ -303,34 +303,89 @@ func logStyleForKey(key int) lipgloss.Style {
 	}
 }
 
-// renderLogLine renders one log line with JSON syntax highlighting,
-// truncated to at most maxW cells. The raw text is truncated BEFORE
-// styling so an ANSI escape sequence can never be split by the cut
-// (matching truncateToWidth's plain-text contract). A line that fits is
-// returned highlighted; when truncation makes the line no longer valid
-// JSON (the ellipsis or a mid-token cut breaks it), the truncated plain
-// text is returned verbatim. The entry is passed whole so callers can
-// fall back to plain rendering without re-parsing; renderLogLine uses
-// logs.HighlightJSON whose spans are already relative to the line. The
-// line is gated on json.Valid because HighlightJSON can return partial
-// spans for a line whose tokenization failed midway (e.g. a console line
-// that merely starts with digits).
-func renderLogLine(entry logs.Entry, maxW int) string {
-	line := truncateToWidth(string(entry.Raw), maxW)
-	if line == "" {
-		return ""
+// renderLogDetail renders the FULL raw log line (lossless, no truncation)
+// as a highlighted, wrapped block suitable for a detail viewport. Long
+// lines are wrapped at maxW cells AFTER highlighting, wrapping on plain
+// text so no ANSI sequence is split. Non-JSON lines (Parsed false) are
+// returned verbatim (wrapped). The returned slice has one string per
+// wrapped visual line; concatenating them with "" reproduces the raw line
+// byte-for-byte (modulo ANSI styling).
+func renderLogDetail(entry logs.Entry, maxW int) []string {
+	if len(entry.Raw) == 0 {
+		return nil
 	}
-	raw := []byte(line)
-	if !json.Valid(raw) {
-		return line
+	// Non-JSON (or, defensively, invalid JSON): wrap the raw line
+	// verbatim, lossless.
+	if !entry.Parsed || !json.Valid(entry.Raw) {
+		out := make([]string, 0, 4)
+		for _, r := range wrapBytes(entry.Raw, maxW) {
+			out = append(out, string(entry.Raw[r[0]:r[1]]))
+		}
+		return out
 	}
-	spans := logs.HighlightJSON(raw)
-	if len(spans) == 0 {
-		return line
+	spans := logs.HighlightJSON(entry.Raw)
+	out := make([]string, 0, 4)
+	for _, r := range wrapBytes(entry.Raw, maxW) {
+		ls, le := r[0], r[1]
+		wrapped := string(entry.Raw[ls:le])
+		// Emit only the spans intersecting this wrapped line's byte
+		// range, translated to the line and clamped.
+		var styled []styledSpan
+		for _, sp := range spans {
+			if sp.End <= ls || sp.Start >= le {
+				continue
+			}
+			s := sp.Start - ls
+			if s < 0 {
+				s = 0
+			}
+			e := sp.End - ls
+			if e > le-ls {
+				e = le - ls
+			}
+			if s >= e {
+				continue
+			}
+			styled = append(styled, styledSpan{start: s, end: e, key: logStyleKeyFor(sp.Kind)})
+		}
+		if len(styled) == 0 {
+			out = append(out, wrapped)
+		} else {
+			out = append(out, renderStyledLine(wrapped, styled, logStyleForKey))
+		}
 	}
-	styled := make([]styledSpan, 0, len(spans))
-	for _, sp := range spans {
-		styled = append(styled, styledSpan{start: sp.Start, end: sp.End, key: logStyleKeyFor(sp.Kind)})
+	return out
+}
+
+// wrapBytes wraps plain text at maxW display cells, returning the byte
+// range [start,end) of each wrapped line. Tabs count as one cell. Wide
+// runes are not split. A single rune wider than maxW still occupies its
+// own line (overflow is acceptable; it cannot be split). Every byte of s
+// belongs to exactly one line and ordering is preserved — lossless.
+func wrapBytes(s []byte, maxW int) [][2]int {
+	if len(s) == 0 {
+		return nil
 	}
-	return renderStyledLine(line, styled, logStyleForKey)
+	if maxW < 1 {
+		maxW = 1
+	}
+	var out [][2]int
+	lineStart := 0
+	lineW := 0
+	for off, r := range string(s) {
+		rw := lipgloss.Width(string(r))
+		if rw < 1 {
+			rw = 1
+		}
+		if lineW > 0 && lineW+rw > maxW {
+			out = append(out, [2]int{lineStart, off})
+			lineStart = off
+			lineW = 0
+		}
+		lineW += rw
+	}
+	if lineStart < len(s) {
+		out = append(out, [2]int{lineStart, len(s)})
+	}
+	return out
 }

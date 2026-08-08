@@ -246,6 +246,9 @@ func TestTailer_NonJSONLines(t *testing.T) {
 	if e.Status != -1 {
 		t.Errorf("Status = %d, want -1 for a non-JSON line", e.Status)
 	}
+	if e.Parsed {
+		t.Error("Parsed = true, want false for a non-JSON line")
+	}
 }
 
 func TestTailer_MaxLines(t *testing.T) {

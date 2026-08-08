@@ -226,6 +226,14 @@ type Model struct {
 	logPaused bool
 	// logErr is the last polling error, shown in the log view header.
 	logErr error
+	// logCursor is the index into logLines of the selected log entry.
+	logCursor int
+	// logDetailOpen is true when the log detail modal is shown.
+	logDetailOpen bool
+	// logDetailEntry is a copy of the entry shown in the detail modal.
+	logDetailEntry logs.Entry
+	// logDetailViewport renders the detail modal body.
+	logDetailViewport viewport.Model
 }
 
 // New returns a Model that will load its state through loader, run
@@ -239,18 +247,19 @@ type Model struct {
 // Load before starting the program.
 func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource) *Model {
 	return &Model{
-		loader:         loader,
-		formatter:      formatter,
-		saver:          saver,
-		reloader:       reloader,
-		runtime:        runtimeStatus,
-		logSource:      logSource,
-		collapsed:      map[string]bool{},
-		viewport:       viewport.New(1, 1),
-		detailViewport: viewport.New(1, 1),
-		diffViewport:   viewport.New(1, 1),
-		logViewport:    viewport.New(1, 1),
-		logFollow:      true,
+		loader:            loader,
+		formatter:         formatter,
+		saver:             saver,
+		reloader:          reloader,
+		runtime:           runtimeStatus,
+		logSource:         logSource,
+		collapsed:         map[string]bool{},
+		viewport:          viewport.New(1, 1),
+		detailViewport:    viewport.New(1, 1),
+		diffViewport:      viewport.New(1, 1),
+		logViewport:       viewport.New(1, 1),
+		logDetailViewport: viewport.New(1, 1),
+		logFollow:         true,
 	}
 }
 
@@ -388,8 +397,23 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 	}
 	if len(msg.Entries) > 0 {
 		m.logLines = append(m.logLines, msg.Entries...)
+		dropped := 0
 		if len(m.logLines) > logMaxLines {
+			dropped = len(m.logLines) - logMaxLines
 			m.logLines = m.logLines[len(m.logLines)-logMaxLines:]
+		}
+		if m.logFollow {
+			m.logCursor = len(m.logLines) - 1
+		} else {
+			// Keep the selection stable across the bounded trim: the
+			// dropped front entries shift every index down by `dropped`.
+			m.logCursor -= dropped
+			if m.logCursor < 0 {
+				m.logCursor = 0
+			}
+			if m.logCursor > len(m.logLines)-1 {
+				m.logCursor = len(m.logLines) - 1
+			}
 		}
 	}
 	if !m.showLogs || m.logPaused {
@@ -416,6 +440,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The diagnostics modal takes precedence over every other key.
 	if m.showDiagnostics {
 		return m.updateDiagnosticsKey(msg)
+	}
+	// The log detail modal takes precedence over the log view keys.
+	if m.logDetailOpen {
+		return m.updateLogDetailKey(msg)
 	}
 	// The log view is a full screen, not a modal: its keys take precedence
 	// over the main keymap once it is open.
@@ -473,14 +501,17 @@ func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
 	m.logFollow = true
 	m.logPaused = false
 	m.logErr = nil
+	m.logCursor = len(m.logLines) - 1 // newest, since follow starts on
+	m.logDetailOpen = false
 	m.showLogs = true
 	return m, m.logPollCmd()
 }
 
 // updateLogKey handles keys while the log view is open. The arrow keys
-// scroll the viewport and up/pgup turn follow off (the operator takes
-// control); f toggles follow, p pauses/resumes polling, Esc closes the
-// view and q/ctrl+c quits the program.
+// move the row cursor (up/pgup also turn follow off — the operator takes
+// control); Enter opens the detail modal for the selected entry; f toggles
+// follow, p pauses/resumes polling, Esc closes the view and q/ctrl+c quits
+// the program.
 func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -491,23 +522,52 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quit = true
 		return m, tea.Quit
 	case "up", "k":
-		m.logFollow = false
-		m.statusMessage = "log follow off"
-		m.logViewport.LineUp(1)
+		if m.logFollow {
+			m.logFollow = false
+			m.statusMessage = "log follow off"
+			m.logCursor = len(m.logLines) - 1
+		}
+		if m.logCursor > 0 {
+			m.logCursor--
+		}
+		m.revealLogCursor()
 	case "down", "j":
-		m.logViewport.LineDown(1)
+		if m.logCursor < len(m.logLines)-1 {
+			m.logCursor++
+		}
+		m.revealLogCursor()
 	case "pgup":
-		m.logFollow = false
-		m.statusMessage = "log follow off"
-		m.logViewport.PageUp()
+		if m.logFollow {
+			m.logFollow = false
+			m.statusMessage = "log follow off"
+			m.logCursor = len(m.logLines) - 1
+		}
+		m.logCursor -= m.logViewport.Height
+		if m.logCursor < 0 {
+			m.logCursor = 0
+		}
+		m.revealLogCursor()
 	case "pgdown":
-		m.logViewport.PageDown()
+		m.logCursor += m.logViewport.Height
+		if m.logCursor > len(m.logLines)-1 {
+			m.logCursor = len(m.logLines) - 1
+		}
+		m.revealLogCursor()
+	case "enter":
+		if m.logCursor >= 0 && m.logCursor < len(m.logLines) {
+			m.logDetailEntry = m.logLines[m.logCursor] // copy
+			m.logDetailOpen = true
+			m.syncLogDetailContent(m.width, m.paneHeight())
+			m.logDetailViewport.GotoTop()
+			return m, nil
+		}
 	case "f":
 		if m.logFollow {
 			m.logFollow = false
 			m.statusMessage = "log follow off"
 		} else {
 			m.logFollow = true
+			m.logCursor = len(m.logLines) - 1
 			m.logViewport.GotoBottom()
 			m.statusMessage = "log follow on"
 		}
@@ -522,6 +582,38 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil // stops the poll: no reschedule
 	}
 	return m, nil
+}
+
+// updateLogDetailKey handles keys while the log detail modal is open.
+// Esc closes it (back to the log list); the arrow keys and PgUp/PgDown
+// scroll the wrapped JSON; q/ctrl+c quits.
+func (m *Model) updateLogDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.logDetailOpen = false
+	case "q", "ctrl+c":
+		m.quit = true
+		return m, tea.Quit
+	case "up", "k":
+		m.logDetailViewport.LineUp(1)
+	case "down", "j":
+		m.logDetailViewport.LineDown(1)
+	case "pgup":
+		m.logDetailViewport.PageUp()
+	case "pgdown":
+		m.logDetailViewport.PageDown()
+	}
+	return m, nil
+}
+
+// revealLogCursor scrolls the log viewport just enough so that the cursor
+// row is visible, mirroring revealRange for the source pane.
+func (m *Model) revealLogCursor() {
+	if m.logCursor < m.logViewport.YOffset {
+		m.logViewport.SetYOffset(m.logCursor)
+	} else if m.logCursor >= m.logViewport.YOffset+m.logViewport.Height {
+		m.logViewport.SetYOffset(m.logCursor - m.logViewport.Height + 1)
+	}
 }
 
 func (m *Model) updateDiagnosticsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1209,6 +1301,11 @@ func (m *Model) View() string {
 		// tree/source panes but stays below the modal layering above.
 		b.WriteString(m.logView(width, paneH))
 		b.WriteString("\n")
+		if m.logDetailOpen {
+			// The detail modal layers over the log view.
+			b.WriteString(m.logDetailView(width, paneH))
+			b.WriteString("\n")
+		}
 	} else {
 		treeW := width * 2 / 5
 		// Both panes carry a left and right border; subtract the full
@@ -1503,10 +1600,15 @@ func (m *Model) syncLogViewport(width, height int) {
 	if len(m.logLines) == 0 {
 		content.WriteString(dimStyle.Render("no log entries yet — waiting for the first poll"))
 	} else {
-		for _, entry := range m.logLines {
-			// renderLogLine truncates the raw text before styling, so a
-			// long line can never cut an ANSI escape sequence in half.
-			content.WriteString(renderLogLine(entry, contentW))
+		for i, entry := range m.logLines {
+			gutter := "  "
+			if i == m.logCursor {
+				gutter = cursorStyle.Render("▸ ")
+			}
+			// renderCompactLogLine truncates the plain text before
+			// styling, so a long line can never cut an ANSI escape
+			// sequence in half.
+			content.WriteString(gutter + renderCompactLogLine(entry, contentW-2))
 			content.WriteString("\n")
 		}
 	}
@@ -1520,6 +1622,68 @@ func (m *Model) syncLogViewport(width, height int) {
 		// Restore the manual position, clamped to the new content.
 		m.logViewport.SetYOffset(offset)
 	}
+}
+
+// logDetailView renders the full lossless JSON of the selected entry as a
+// modal layered over the log view. The content is only rebuilt when the
+// body size changes (SetContent resets the viewport scroll), mirroring the
+// diagnostics detail view.
+func (m *Model) logDetailView(width, height int) string {
+	title := "Log detail"
+	if summary := logDetailSummary(m.logDetailEntry); summary != "" {
+		title += " · " + summary
+	}
+	title += " · Esc back"
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	if m.logDetailViewport.Height != bodyH {
+		m.syncLogDetailContent(width, height)
+	}
+	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.logDetailViewport.View())
+}
+
+// syncLogDetailContent sizes the log detail viewport and rebuilds its
+// content from the current entry. width/height are the window pane
+// dimensions (the same values logDetailView receives).
+func (m *Model) syncLogDetailContent(width, height int) {
+	contentW := width - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
+	contentH := height - 3 // border (2) + title (1)
+	if contentH < 1 {
+		contentH = 1
+	}
+	m.logDetailViewport.Width = contentW
+	m.logDetailViewport.Height = contentH
+	m.logDetailViewport.SetContent(strings.Join(renderLogDetail(m.logDetailEntry, contentW), "\n"))
+}
+
+// logDetailSummary builds a short descriptor for the detail modal title:
+// timestamp + logger + message truncated to 30 cells, or "raw line" for
+// non-JSON entries.
+func logDetailSummary(entry logs.Entry) string {
+	if !entry.Parsed {
+		return "raw line"
+	}
+	ts := "--:--:--.---"
+	if !entry.Timestamp.IsZero() {
+		ts = entry.Timestamp.Local().Format("15:04:05.000")
+	}
+	parts := []string{ts}
+	if entry.Logger != "" {
+		parts = append(parts, entry.Logger)
+	}
+	if entry.Msg != "" {
+		parts = append(parts, entry.Msg)
+	}
+	return truncateToWidth(strings.Join(parts, " "), 30)
 }
 
 func (m *Model) footer(width int) string {
@@ -1549,8 +1713,10 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
 	case m.showDiagnostics:
 		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
+	case m.logDetailOpen:
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back · q quit"
 	case m.showLogs:
-		keys = "↑/↓ scroll · PgUp/PgDown page · f follow (on/off) · p pause/resume · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · Enter detail · f follow (on/off) · p pause/resume · Esc close · q quit"
 	case m.state != nil && m.state.Graph != nil:
 		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s · s save%s · q quit · %d items", reloadSuffix, logSuffix, len(m.items))
 	default:

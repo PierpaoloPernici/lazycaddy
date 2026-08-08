@@ -8,10 +8,16 @@ import (
 	"time"
 )
 
-// Entry is one parsed structured log line.
+// Entry is one parsed structured log line, or one raw line that was not
+// valid JSON. Parsed distinguishes the two so the UI can render the
+// structured fields compactly and fall back to showing the raw line
+// verbatim for console-encoded output.
 type Entry struct {
 	// Raw is the original line bytes WITHOUT the trailing newline.
 	Raw []byte
+	// Parsed is true when the line was valid JSON and ParseEntry
+	// succeeded; false for non-JSON lines (which the UI shows verbatim).
+	Parsed bool
 	// Timestamp parsed from the "ts" field (numeric unix seconds or a
 	// string layout); time.Time{} when absent or unparseable.
 	Timestamp time.Time
@@ -72,6 +78,7 @@ func ParseEntry(line []byte) (Entry, error) {
 	}
 	e := Entry{
 		Raw:       line,
+		Parsed:    true,
 		Level:     je.Level,
 		Logger:    je.Logger,
 		Msg:       je.Msg,
