@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 )
 
 // renderWithANSI renders through highlightSource with ANSI output forced on,
@@ -161,5 +163,74 @@ func TestHighlightSourceANSIChunksSelfClose(t *testing.T) {
 		if n := len(re.FindAllString(line, -1)); n%2 != 0 {
 			t.Errorf("line %d has %d ANSI sequences, want an even number (balanced chunks):\n%s", i+1, n, line)
 		}
+	}
+}
+
+// renderLogDetailANSI renders one entry's detail with ANSI output forced
+// on, then restores the terminal-agnostic profile, mirroring renderWithANSI.
+func renderLogDetailANSI(entry logs.Entry, maxW int) []string {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	return renderLogDetail(entry, maxW)
+}
+
+// accessLogSample is a realistic Caddy access log JSON line used by the
+// detail renderer tests.
+const accessLogSample = `{"level":"info","ts":1592833155.86084,"logger":"http.log.access","msg":"handled request","request":{"remote_ip":"127.0.0.1","remote_port":"50786","proto":"HTTP/2.0","method":"GET","host":"localhost","uri":"/api/config"},"bytes_read":0,"user_id":"","duration":0.000571055,"size":1259,"status":200}`
+
+// TestRenderLogDetail_LosslessJSON verifies that wrapping a narrow JSON
+// line into multiple visual lines loses no bytes: concatenating the
+// rendered lines reproduces the raw line exactly (modulo ANSI).
+func TestRenderLogDetail_LosslessJSON(t *testing.T) {
+	entry := logs.Entry{Raw: []byte(accessLogSample), Parsed: true, Status: 200}
+	lines := renderLogDetailANSI(entry, 30)
+	if len(lines) <= 1 {
+		t.Fatalf("got %d lines at width 30, want the line wrapped into several", len(lines))
+	}
+	if got := stripANSI(strings.Join(lines, "")); got != accessLogSample {
+		t.Errorf("concatenated detail is not lossless:\n got %q\nwant %q", got, accessLogSample)
+	}
+}
+
+// TestRenderLogDetail_Highlighted verifies that a line within the width is
+// returned as one highlighted line with ANSI styling and no data loss.
+func TestRenderLogDetail_Highlighted(t *testing.T) {
+	entry := logs.Entry{Raw: []byte(accessLogSample), Parsed: true, Status: 200}
+	lines := renderLogDetailANSI(entry, 400)
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines at width 400, want 1", len(lines))
+	}
+	got := lines[0]
+	if got == stripANSI(got) {
+		t.Errorf("fitted detail must be styled, got no ANSI:\n%s", got)
+	}
+	if stripANSI(got) != accessLogSample {
+		t.Errorf("stripped detail = %q, want the raw line", stripANSI(got))
+	}
+}
+
+// TestRenderLogDetail_NonJSONVerbatim verifies a non-JSON entry is wrapped
+// and returned without any ANSI styling, byte-for-byte.
+func TestRenderLogDetail_NonJSONVerbatim(t *testing.T) {
+	raw := "2026/08/08 12:00:00 INFO something happened in the access log"
+	entry := logs.Entry{Raw: []byte(raw), Status: -1} // Parsed false
+	lines := renderLogDetailANSI(entry, 20)
+	if len(lines) <= 1 {
+		t.Fatalf("got %d lines at width 20, want the line wrapped", len(lines))
+	}
+	if got := stripANSI(strings.Join(lines, "")); got != raw {
+		t.Errorf("concatenated detail = %q, want %q", got, raw)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "\x1b[") {
+			t.Errorf("non-JSON detail line must not be styled, got:\n%s", line)
+		}
+	}
+}
+
+// TestRenderLogDetail_Empty verifies an empty raw line renders nil.
+func TestRenderLogDetail_Empty(t *testing.T) {
+	if got := renderLogDetailANSI(logs.Entry{Raw: nil}, 200); got != nil {
+		t.Errorf("empty detail rendered %v, want nil", got)
 	}
 }

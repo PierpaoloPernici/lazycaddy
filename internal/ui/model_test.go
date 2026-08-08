@@ -15,6 +15,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
+	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
@@ -118,15 +119,16 @@ func writableStateFor(t *testing.T, path, backupDir string, readFile app.FileRea
 }
 
 // newLoadedModel builds a Model from loader with optional formatter,
-// saver, reloader and runtime probe. The variadic options accept an
-// app.Formatter, an app.Saver, an app.Reloader, an app.RuntimeStatus,
-// any combination, or none.
+// saver, reloader, runtime probe and log source. The variadic options
+// accept an app.Formatter, an app.Saver, an app.Reloader, an
+// app.RuntimeStatus, an app.LogSource, any combination, or none.
 func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	t.Helper()
 	var f app.Formatter
 	var s app.Saver
 	var r app.Reloader
 	var rt app.RuntimeStatus
+	var ls app.LogSource
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		case app.Formatter:
@@ -137,9 +139,11 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 			r = v
 		case app.RuntimeStatus:
 			rt = v
+		case app.LogSource:
+			ls = v
 		}
 	}
-	m := New(loader, f, s, r, rt)
+	m := New(loader, f, s, r, rt, ls)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -324,7 +328,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -658,7 +662,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -2592,5 +2596,544 @@ func TestModelRuntimeProbe_UnknownHidesBadge(t *testing.T) {
 	view := m.View()
 	if strings.Contains(view, " RUNNING ") || strings.Contains(view, " STOPPED ") || strings.Contains(view, " caddy v") {
 		t.Errorf("unknown probe rendered runtime state in the header:\n%s", view)
+	}
+}
+
+// logEntry builds a structured entry with the given message for tests.
+func logEntry(msg string) logs.Entry {
+	return logs.Entry{
+		Raw:    []byte(`{"level":"info","msg":"` + msg + `"}`),
+		Parsed: true,
+		Level:  "info",
+		Msg:    msg,
+		Status: -1,
+	}
+}
+
+// logStateFor returns a loaded state whose settings carry a log path, so
+// the log view title and footer assertions can exercise the path text.
+func logStateFor(t *testing.T) *app.State {
+	t.Helper()
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	state.Settings.LogPath = "logs/access.log"
+	return state
+}
+
+// TestModelLogView_UnavailableWithoutSource verifies that pressing l
+// without a configured log source surfaces a hint and opens nothing.
+func TestModelLogView_UnavailableWithoutSource(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}) // no log source
+	m = resize(m, 120, 30)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Errorf("expected nil cmd without a log source, got %v", cmd)
+	}
+	if m.showLogs {
+		t.Error("showLogs = true without a log source, want false")
+	}
+	if !strings.Contains(m.statusMessage, "no log source configured") {
+		t.Errorf("statusMessage = %q, want a no-log-source hint", m.statusMessage)
+	}
+}
+
+// TestModelLogView_OpenSeedsHistory verifies that opening the log view
+// seeds the scrollback from the source history, starts the polling tick
+// and renders the log pane with the followed path and entries.
+func TestModelLogView_OpenSeedsHistory(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{logEntry("handled request"), logEntry("second line")} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("opening the log view must return a poll command")
+	}
+	if !m.showLogs {
+		t.Fatal("showLogs = false after l, want true")
+	}
+	if len(m.logLines) != 2 {
+		t.Fatalf("logLines = %d, want 2 (seeded from history)", len(m.logLines))
+	}
+	view := m.View()
+	if !strings.Contains(view, "Logs · logs/access.log") {
+		t.Errorf("View missing the log pane title:\n%s", view)
+	}
+	visible := stripANSI(view)
+	if !strings.Contains(visible, "handled request") || !strings.Contains(visible, "second line") {
+		t.Errorf("View missing the seeded entry text:\n%s", visible)
+	}
+}
+
+// TestModelLogTail_AppendsAndReschedules verifies that a delivered poll
+// result appends entries and reschedules the next poll, and that an empty
+// result keeps polling.
+func TestModelLogTail_AppendsAndReschedules(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+
+	// A non-empty poll appends and reschedules.
+	updated, cmd := m.Update(logTailMsg{Entries: []logs.Entry{logEntry("first")}})
+	m = updated.(*Model)
+	if len(m.logLines) != 1 {
+		t.Fatalf("logLines = %d, want 1 after a poll", len(m.logLines))
+	}
+	if cmd == nil {
+		t.Error("poll with new entries must reschedule (non-nil cmd)")
+	}
+	// An empty poll still reschedules.
+	updated, cmd = m.Update(logTailMsg{Entries: nil})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Error("empty poll must reschedule (non-nil cmd)")
+	}
+	if m.logErr != nil {
+		t.Errorf("logErr = %v, want nil after a clean poll", m.logErr)
+	}
+}
+
+// TestModelLogTail_PauseStopsPolling verifies that p suspends polling
+// (nil reschedule) and a second p resumes it.
+func TestModelLogTail_PauseStopsPolling(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = updated.(*Model)
+	if !m.logPaused {
+		t.Fatal("logPaused = false after p, want true")
+	}
+	if cmd != nil {
+		t.Errorf("p must stop the poll (nil cmd), got %v", cmd)
+	}
+	// A poll delivered while paused must not reschedule.
+	updated, cmd = m.Update(logTailMsg{Entries: []logs.Entry{logEntry("late")}})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Errorf("paused poll must not reschedule, got %v", cmd)
+	}
+	if len(m.logLines) != 1 {
+		t.Errorf("logLines = %d, want 1 (entries still appended while paused)", len(m.logLines))
+	}
+	// Resuming restarts the poll.
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = updated.(*Model)
+	if m.logPaused {
+		t.Error("logPaused = true after second p, want false")
+	}
+	if cmd == nil {
+		t.Error("resume must restart the poll (non-nil cmd)")
+	}
+}
+
+// TestModelLogTail_FollowToggle verifies that f toggles follow and that
+// scrolling up turns follow off (the operator takes control).
+func TestModelLogTail_FollowToggle(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if !m.logFollow {
+		t.Fatal("logFollow = false on open, want true")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if m.logFollow {
+		t.Error("logFollow = true after f, want false")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if !m.logFollow {
+		t.Error("logFollow = false after second f, want true")
+	}
+	// Pressing up hands control back to the operator.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.logFollow {
+		t.Error("logFollow = true after up, want false")
+	}
+	if !strings.Contains(m.statusMessage, "follow off") {
+		t.Errorf("statusMessage = %q, want follow-off hint", m.statusMessage)
+	}
+}
+
+// TestModelLogTail_EscCloses verifies that Esc closes the log view and
+// that a poll delivered afterwards is not rescheduled.
+func TestModelLogTail_EscCloses(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if !m.showLogs {
+		t.Fatal("log view not open")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*Model)
+	if m.showLogs {
+		t.Error("showLogs = true after Esc, want false")
+	}
+	if cmd != nil {
+		t.Errorf("Esc must stop the poll (nil cmd), got %v", cmd)
+	}
+	// A late poll result must not reschedule after the view is closed.
+	updated, cmd = m.Update(logTailMsg{Entries: []logs.Entry{logEntry("late")}})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Errorf("poll after close must not reschedule, got %v", cmd)
+	}
+}
+
+// TestModelLogTail_ClearsStaleError verifies that a successful poll clears
+// the "log poll failed" status line left by a previous failed poll, while
+// leaving status messages set by other actions untouched.
+func TestModelLogTail_ClearsStaleError(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+
+	// A failing poll sets the error status line.
+	updated, _ = m.Update(logTailMsg{Err: errors.New("boom")})
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "log poll failed") {
+		t.Fatalf("statusMessage = %q, want a poll-failure message", m.statusMessage)
+	}
+	if m.logErr == nil {
+		t.Fatal("logErr = nil after a failed poll, want the error")
+	}
+
+	// A successful poll clears it.
+	updated, _ = m.Update(logTailMsg{Entries: []logs.Entry{{Raw: []byte("x"), Status: -1}}})
+	m = updated.(*Model)
+	if m.statusMessage != "" {
+		t.Errorf("statusMessage = %q, want cleared after a successful poll", m.statusMessage)
+	}
+	if m.logErr != nil {
+		t.Errorf("logErr = %v, want nil after a successful poll", m.logErr)
+	}
+
+	// Status messages owned by other actions are NOT cleared by a poll.
+	m.statusMessage = "log follow on"
+	updated, _ = m.Update(logTailMsg{Entries: nil})
+	m = updated.(*Model)
+	if m.statusMessage != "log follow on" {
+		t.Errorf("statusMessage = %q, want it untouched (only poll failures are cleared)", m.statusMessage)
+	}
+}
+
+// TestModelLogTail_Bounded verifies the UI-side scrollback stays capped at
+// logMaxLines and keeps the tail.
+func TestModelLogTail_Bounded(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+
+	feed := make([]logs.Entry, 0, logMaxLines+50)
+	for i := 0; i < logMaxLines+50; i++ {
+		feed = append(feed, logEntry(fmt.Sprintf("line-%d", i)))
+	}
+	updated, _ = m.Update(logTailMsg{Entries: feed})
+	m = updated.(*Model)
+	if len(m.logLines) != logMaxLines {
+		t.Fatalf("logLines = %d, want %d", len(m.logLines), logMaxLines)
+	}
+	// The tail is preserved: the newest entry survives.
+	if m.logLines[len(m.logLines)-1].Msg != "line-1049" {
+		t.Errorf("last entry = %q, want line-1049 (tail preserved)", m.logLines[len(m.logLines)-1].Msg)
+	}
+}
+
+// TestModelLogView_Footer verifies the footer lists the l key only when a
+// log source is configured and shows the log-view keys while it is open.
+func TestModelLogView_Footer(t *testing.T) {
+	state := logStateFor(t)
+	// Without a log source the l key is absent.
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	if strings.Contains(m.View(), "l logs") {
+		t.Errorf("footer shows 'l logs' without a log source:\n%s", m.View())
+	}
+	// With a log source the l key appears.
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m = newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	if !strings.Contains(m.View(), "l logs") {
+		t.Errorf("footer missing 'l logs' with a log source:\n%s", m.View())
+	}
+	// While the log view is open the footer shows the log-view key hints.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	view := m.View()
+	for _, want := range []string{"Enter detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
+		}
+	}
+}
+
+// seededLogSource returns a LogSource whose history holds count entries.
+func seededLogSource(count int) app.LogSourceFunc {
+	return app.LogSourceFunc{
+		NextFn: func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry {
+			entries := make([]logs.Entry, 0, count)
+			for i := 0; i < count; i++ {
+				entries = append(entries, logEntry(fmt.Sprintf("e-%d", i)))
+			}
+			return entries
+		},
+	}
+}
+
+// TestModelLogCursor_MovesAndReveals verifies the row cursor starts on the
+// newest entry and moves with up/down, turning follow off on up.
+func TestModelLogCursor_MovesAndReveals(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(10))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if m.logCursor != 9 {
+		t.Fatalf("logCursor = %d, want 9 (newest) on open", m.logCursor)
+	}
+	// Up turns follow off and moves the cursor.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.logFollow {
+		t.Error("logFollow = true after up, want false")
+	}
+	if m.logCursor != 8 {
+		t.Errorf("logCursor = %d after up, want 8", m.logCursor)
+	}
+	// Down moves back toward the newest.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.logCursor != 9 {
+		t.Errorf("logCursor = %d after down, want 9", m.logCursor)
+	}
+}
+
+// TestModelLogCursor_FollowKeepsNewest verifies that new entries keep the
+// cursor on the newest line while follow is on.
+func TestModelLogCursor_FollowKeepsNewest(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(2))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(logTailMsg{Entries: []logs.Entry{logEntry("a"), logEntry("b")}})
+	m = updated.(*Model)
+	if !m.logFollow {
+		t.Fatal("logFollow = false, want true")
+	}
+	if m.logCursor != len(m.logLines)-1 {
+		t.Errorf("logCursor = %d, want the newest (%d) while following", m.logCursor, len(m.logLines)-1)
+	}
+}
+
+// TestModelLogCursor_AdjustsAfterTrim verifies the cursor stays valid and
+// stable when the bounded trim drops entries from the front.
+func TestModelLogCursor_AdjustsAfterTrim(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(logMaxLines))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if m.logCursor != logMaxLines-1 {
+		t.Fatalf("logCursor = %d, want %d on open", m.logCursor, logMaxLines-1)
+	}
+	// Deliver enough entries to force a trim while following.
+	feed := make([]logs.Entry, 60)
+	for i := range feed {
+		feed[i] = logEntry(fmt.Sprintf("new-%d", i))
+	}
+	updated, _ = m.Update(logTailMsg{Entries: feed})
+	m = updated.(*Model)
+	if len(m.logLines) != logMaxLines {
+		t.Fatalf("logLines = %d, want %d after trim", len(m.logLines), logMaxLines)
+	}
+	if m.logCursor != len(m.logLines)-1 {
+		t.Errorf("logCursor = %d, want the newest (%d) while following after trim", m.logCursor, len(m.logLines)-1)
+	}
+	// Turn follow off, then trim again: the cursor subtracts the dropped
+	// count so it keeps pointing at the same entry.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp}) // follow off, cursor 998
+	if m.logFollow {
+		t.Fatal("logFollow = true after up, want false")
+	}
+	before := m.logCursor
+	updated, _ = m.Update(logTailMsg{Entries: feed})
+	m = updated.(*Model)
+	want := before - 60
+	if want < 0 {
+		want = 0
+	}
+	if m.logCursor != want {
+		t.Errorf("logCursor = %d after trim with follow off, want %d", m.logCursor, want)
+	}
+	if m.logCursor < 0 || m.logCursor >= len(m.logLines) {
+		t.Errorf("logCursor = %d out of range for %d entries", m.logCursor, len(m.logLines))
+	}
+}
+
+// TestModelLogDetail_EnterOpensEscCloses verifies Enter opens the detail
+// modal for the selected entry and Esc closes it (once to the list, again
+// to the main screen).
+func TestModelLogDetail_EnterOpensEscCloses(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state}, seededLogSource(3))
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	// Move from index 2 (newest) to index 1.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.logCursor != 1 {
+		t.Fatalf("logCursor = %d, want 1", m.logCursor)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.logDetailOpen {
+		t.Fatal("logDetailOpen = false after Enter, want true")
+	}
+	if string(m.logDetailEntry.Raw) != string(m.logLines[1].Raw) {
+		t.Errorf("logDetailEntry.Raw = %q, want the selected entry %q", m.logDetailEntry.Raw, m.logLines[1].Raw)
+	}
+	// Esc closes the detail but keeps the log view open.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.logDetailOpen {
+		t.Error("logDetailOpen = true after Esc, want false")
+	}
+	if !m.showLogs {
+		t.Error("showLogs = false after Esc from detail, want true")
+	}
+	// Esc again closes the log view.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.showLogs {
+		t.Error("showLogs = true after second Esc, want false")
+	}
+}
+
+// TestModelLogDetail_ShowsFullJSON verifies the detail modal renders the
+// full lossless JSON of the selected entry and the footer shows the detail
+// keys.
+func TestModelLogDetail_ShowsFullJSON(t *testing.T) {
+	state := logStateFor(t)
+	raw := `{"level":"info","ts":1760000000.5,"logger":"http.log.access","msg":"handled request","request":{"method":"GET","host":"localhost","uri":"/api/config"},"status":200}`
+	entry, err := logs.ParseEntry([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseEntry: %v", err)
+	}
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{entry} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.logDetailOpen {
+		t.Fatal("detail modal not open")
+	}
+	view := m.View()
+	visible := stripANSI(view)
+	if !strings.Contains(visible, `"request"`) || !strings.Contains(visible, "/api/config") {
+		t.Errorf("detail modal missing the full JSON:\n%s", visible)
+	}
+	if !strings.Contains(view, "Esc back") {
+		t.Errorf("footer missing the detail hint 'Esc back':\n%s", view)
+	}
+}
+
+// TestModelLogDetail_NonJSONEntry verifies the detail modal shows the raw
+// line verbatim for a non-JSON entry.
+func TestModelLogDetail_NonJSONEntry(t *testing.T) {
+	state := logStateFor(t)
+	raw := "2026/08/08 12:00:00 INFO something happened"
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{{Raw: []byte(raw), Status: -1}} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.logDetailOpen {
+		t.Fatal("detail modal not open")
+	}
+	if !strings.Contains(stripANSI(m.View()), raw) {
+		t.Errorf("detail modal missing the raw line:\n%s", m.View())
+	}
+}
+
+// TestModelLogView_CompactLines verifies the log list renders the compact
+// human-readable layout (not the raw JSON blob).
+func TestModelLogView_CompactLines(t *testing.T) {
+	state := logStateFor(t)
+	raw := `{"level":"info","ts":1760000000.5,"logger":"http.log.access","msg":"handled request","request":{"method":"GET","host":"localhost","uri":"/api/config"},"status":200}`
+	entry, err := logs.ParseEntry([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseEntry: %v", err)
+	}
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return []logs.Entry{entry} },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	visible := stripANSI(m.View())
+	for _, want := range []string{"—", "GET", "/api/config", "200", "handled request"} {
+		if !strings.Contains(visible, want) {
+			t.Errorf("compact log view missing %q:\n%s", want, visible)
+		}
+	}
+	// The raw JSON structure must be gone from the list view.
+	if strings.Contains(visible, `"request":{`) {
+		t.Errorf("compact log view still shows the raw JSON blob:\n%s", visible)
 	}
 }

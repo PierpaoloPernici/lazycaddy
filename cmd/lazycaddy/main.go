@@ -13,6 +13,9 @@
 // for its version and checks the Admin API, so the header can report the
 // detected capabilities; every probe failure degrades to an explicit
 // unknown/stopped state and the TUI remains fully browsable read-only.
+// With --log-file, the l keybinding opens a read-only log view that
+// follows the Caddy log file (polling, rotation-aware) and highlights
+// each line's JSON structure; without it the log view is disabled.
 // The operator is always in control of when format, validate, save and
 // reload run.
 package main
@@ -29,6 +32,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
+	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
@@ -98,7 +102,14 @@ func main() {
 				AdminTimeout:   5 * time.Second,
 			})
 			runtimeStatus := app.RuntimeStatusFunc(detector.Probe)
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus)
+			// The log view is opt-in: without --log-file the source stays
+			// nil and the l keybinding is disabled, so the TUI never
+			// ticks or touches the filesystem.
+			var logSource app.LogSource
+			if settings.LogPath != "" {
+				logSource = app.NewLogSource(logs.NewTailer(logs.Options{Path: settings.LogPath}))
+			}
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
@@ -125,6 +136,8 @@ func main() {
 		"base URL of the local Caddy Admin API used for reloads (default: http://localhost:2019)")
 	rootCmd.Flags().DurationVar(&settings.AdminTimeout, "admin-timeout", settings.AdminTimeout,
 		"per-request timeout for Admin API calls such as reload (default: 30s)")
+	rootCmd.Flags().StringVar(&settings.LogPath, "log-file", "",
+		"path of a Caddy log file to follow in the log view (default: empty; the log view is disabled)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
