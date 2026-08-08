@@ -75,6 +75,20 @@ func (f *fakeSaver) Save(ctx context.Context, path string, original, working []b
 	return f.result, f.err
 }
 
+// diskSaver is a fakeSaver that also writes the working bytes into the
+// fake filesystem on Save, modeling the atomic write so a subsequent loader
+// reload picks up the new content.
+type diskSaver struct {
+	fakeSaver
+	fs map[string]string
+}
+
+func (s *diskSaver) Save(ctx context.Context, path string, original, working []byte) (app.SaveResult, error) {
+	s.fakeSaver.Save(ctx, path, original, working)
+	s.fs[path] = string(working)
+	return s.fakeSaver.result, s.fakeSaver.err
+}
+
 // fakeReloader is a programmable app.Reloader for tests. It records the
 // path and saved bytes of the last Reload call.
 type fakeReloader struct {
@@ -3365,18 +3379,22 @@ func TestEditorKey_DisabledWithoutEditor(t *testing.T) {
 func TestEditorFlow_ValidAppliesToDocument(t *testing.T) {
 	importedSrc := "a.example.test {\n\trespond ok\n}\n"
 	editedSrc := "a.example.test {\n\trespond ok\n\tencode gzip\n}\n"
-	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+	fs := map[string]string{
 		"config/Caddyfile":     "import sites/a.caddy\n",
 		"config/sites/a.caddy": importedSrc,
-	}))
+	}
+	// The loader reads through the mutable fs so the post-save structural
+	// refresh picks up the content the diskSaver wrote.
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(fs))
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
 	editor := &fakeEditor{result: app.EditResult{
 		Original:     []byte(importedSrc),
 		Content:      []byte(editedSrc),
 		Changed:      true,
 		SnapshotPath: "snap-1",
 	}}
-	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}
-	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
 	m = resize(m, 120, 30)
 
 	// items: root doc, a.caddy doc, a.example.test node.
@@ -3888,18 +3906,21 @@ func TestModelSave_KeepsSourceRevealed(t *testing.T) {
 	editedSrc := "top.example.test {\n\trespond top\n}\n" +
 		strings.Repeat("# padding\n", 70) +
 		"target.example.test {\n\trespond edited\n}\n"
-	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+	fs := map[string]string{
 		"config/Caddyfile":     "import sites/a.caddy\n",
 		"config/sites/a.caddy": importedSrc,
-	}))
+	}
+	// The loader reads through the mutable fs so the post-save structural
+	// refresh picks up the content the diskSaver wrote.
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
 	editor := &fakeEditor{result: app.EditResult{
 		Original:     []byte(importedSrc),
 		Content:      []byte(editedSrc),
 		Changed:      true,
 		SnapshotPath: "snap-1",
 	}}
-	saver := &fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}
-	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
 	// A short window so the target node (line 74) starts below the first
 	// screen: a correct reveal produces YOffset > 0, while the bug leaves
 	// the viewport pinned at the top.
@@ -4471,5 +4492,204 @@ func TestSearch_CollapsedDocumentStillSearched(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(m.viewport.View()), "target.example.test {") {
 		t.Errorf("source pane does not show the revealed node:\n%s", m.viewport.View())
+	}
+}
+
+// itemLabels returns the labels of all items joined, for readable test
+// failures.
+func itemLabels(items []item) string {
+	labels := make([]string, len(items))
+	for i, it := range items {
+		labels[i] = it.label
+	}
+	return strings.Join(labels, ", ")
+}
+
+// runEditorSave drives the full editor round-trip to a delivered saveResultMsg
+// against the model under test and returns it for the caller to deliver.
+func runEditorSave(t *testing.T, m *Model) saveResultMsg {
+	t.Helper()
+	done := pressEditorKey(t, m)
+	m.Update(done) // the edit diff opens
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("enter")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("Enter in the edit diff must return a command")
+	}
+	resMsg := cmd()
+	res, ok := resMsg.(saveResultMsg)
+	if !ok {
+		t.Fatalf("got %T, want saveResultMsg", resMsg)
+	}
+	return res
+}
+
+// TestEditorSave_AddsSiteToRoot verifies that after a successful editor
+// save that adds a site to the root document, the tree is rebuilt with the
+// new node row, the graph source carries the new site, the selection is
+// re-anchored and the source pane shows the new content. Without the fix
+// the new node never appears in m.items.
+func TestEditorSave_AddsSiteToRoot(t *testing.T) {
+	fs := map[string]string{
+		"config/Caddyfile": "a.example.test {\n\trespond ok\n}\n",
+	}
+	edited := "a.example.test {\n\trespond ok\n}\nnew.example.test {\n\trespond new\n}\n"
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(fs["config/Caddyfile"]),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+
+	// items: root doc, a.example.test node.
+	if len(m.items) != 2 {
+		t.Fatalf("items = %d, want 2", len(m.items))
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
+	if !m.selectedItem().hasNode {
+		t.Fatal("precondition: the node row must be selected")
+	}
+
+	res := runEditorSave(t, m)
+	updated, _ := m.Update(res)
+	m = updated.(*Model)
+
+	// The tree now contains the new site row.
+	if len(m.items) != 3 {
+		t.Errorf("items = %d after save, want 3 (root + a + new); items = %v", len(m.items), itemLabels(m.items))
+	}
+	foundNew := false
+	for _, it := range m.items {
+		if it.hasNode && it.node.Name == "new.example.test" {
+			foundNew = true
+		}
+	}
+	if !foundNew {
+		t.Errorf("tree missing the new site row; items = %v", itemLabels(m.items))
+	}
+	// The graph source carries the new site.
+	if !strings.Contains(string(m.state.Graph.Root.Source), "new.example.test") {
+		t.Errorf("root Source = %q, want it to contain the new site", m.state.Graph.Root.Source)
+	}
+	// The selection is re-anchored on the edited node.
+	sel := m.selectedItem()
+	if sel == nil || !sel.hasNode || sel.node.Name != "a.example.test" {
+		t.Errorf("selection = %+v, want the edited node row", sel)
+	}
+	// After a render the source pane shows the new structure.
+	m.View()
+	if !strings.Contains(stripANSI(m.viewport.View()), "new.example.test") {
+		t.Errorf("source pane does not show the new site:\n%s", m.viewport.View())
+	}
+}
+
+// TestEditorSave_AddsSectionToImported verifies that a successful editor
+// save that adds a section to an imported file rebuilds the tree with the
+// new node of the imported document, keeps the root intact and shows the
+// new content in the source pane.
+func TestEditorSave_AddsSectionToImported(t *testing.T) {
+	importedSrc := "a.example.test {\n\trespond ok\n}\n"
+	edited := "a.example.test {\n\trespond ok\n}\nb.example.test {\n\trespond b\n}\n"
+	fs := map[string]string{
+		"config/Caddyfile":     "import sites/a.caddy\n",
+		"config/sites/a.caddy": importedSrc,
+	}
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(importedSrc),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/a.caddy.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+
+	// items: root doc, a.caddy doc, a.example.test node.
+	if len(m.items) != 3 {
+		t.Fatalf("items = %d, want 3", len(m.items))
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
+
+	res := runEditorSave(t, m)
+	updated, _ := m.Update(res)
+	m = updated.(*Model)
+
+	// The tree contains the new site of the imported file.
+	if len(m.items) != 4 {
+		t.Errorf("items = %d after save, want 4 (root + a.caddy + a + b); items = %v", len(m.items), itemLabels(m.items))
+	}
+	foundNew := false
+	for _, it := range m.items {
+		if it.hasNode && it.node.Name == "b.example.test" && it.doc != nil && it.doc.Path == "config/sites/a.caddy" {
+			foundNew = true
+		}
+	}
+	if !foundNew {
+		t.Errorf("tree missing the new imported site; items = %v", itemLabels(m.items))
+	}
+	// The imported document carries the new content and the root is intact.
+	var importedDoc *caddyfile.Document
+	for _, d := range m.state.Graph.Documents {
+		if d.Path == "config/sites/a.caddy" {
+			importedDoc = d
+		}
+	}
+	if importedDoc == nil {
+		t.Fatal("imported document not found after the reload")
+	}
+	if string(importedDoc.Source) != edited {
+		t.Errorf("imported doc Source = %q, want %q", importedDoc.Source, edited)
+	}
+	if string(m.state.Graph.Root.Source) != "import sites/a.caddy\n" {
+		t.Errorf("root Source = %q, want it untouched", m.state.Graph.Root.Source)
+	}
+	// After a render the source pane shows the new structure.
+	m.View()
+	if !strings.Contains(stripANSI(m.viewport.View()), "b.example.test") {
+		t.Errorf("source pane does not show the new site:\n%s", m.viewport.View())
+	}
+}
+
+// TestEditorSave_TreeAndSourceUpdated pins the post-save structural sync
+// explicitly: both the item count and the rendered source pane must reflect
+// the new tree after an editor save that adds a section to the root.
+func TestEditorSave_TreeAndSourceUpdated(t *testing.T) {
+	fs := map[string]string{
+		"config/Caddyfile": "one.example.test {\n\trespond one\n}\n",
+	}
+	edited := "one.example.test {\n\trespond one\n}\ntwo.example.test {\n\trespond two\n}\n"
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups"}, fsReader(fs))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(fs["config/Caddyfile"]),
+		Content:      []byte(edited),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}}}
+	m := newLoadedModel(t, loader, saver, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // one.example.test node
+
+	before := len(m.items)
+	if before != 2 {
+		t.Fatalf("items = %d before save, want 2", before)
+	}
+	res := runEditorSave(t, m)
+	updated, _ := m.Update(res)
+	m = updated.(*Model)
+
+	if len(m.items) != before+1 {
+		t.Errorf("items = %d after save, want %d (one more node row)", len(m.items), before+1)
+	}
+	m.View()
+	visible := stripANSI(m.viewport.View())
+	if !strings.Contains(visible, "one.example.test") || !strings.Contains(visible, "two.example.test") {
+		t.Errorf("source pane does not show the full new structure:\n%s", visible)
 	}
 }

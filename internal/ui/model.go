@@ -129,12 +129,15 @@ type editorErrorMsg struct {
 // pendingEdit holds a validated, recomposed document that came out of an
 // $EDITOR round-trip and is awaiting the diff review and the save
 // confirmation. path may be an imported file; it is the exact document the
-// edit targets.
+// edit targets. nodeName and startLine carry the identity of the edited
+// node so the tree can re-anchor the selection after a structural save.
 type pendingEdit struct {
 	path         string
 	original     []byte
 	content      []byte
 	snapshotPath string
+	nodeName     string
+	startLine    int
 }
 
 // Model is the inspector screen: a document tree on the left, the raw
@@ -916,11 +919,22 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ editor session missing a result"
 		return m, nil
 	}
+	// During the editor flow the tree selection is still the edited node;
+	// capture its identity so the post-save tree refresh can re-anchor the
+	// selection even when the edit added or removed sections above it.
+	nodeName := ""
+	startLine := 0
+	if sel := m.selectedItem(); sel != nil && sel.hasNode {
+		nodeName = sel.node.Name
+		startLine = sel.node.Range.StartLine
+	}
 	m.pendingEdit = &pendingEdit{
 		path:         session.DocPath,
 		original:     result.Original,
 		content:      result.Content,
 		snapshotPath: result.SnapshotPath,
+		nodeName:     nodeName,
+		startLine:    startLine,
 	}
 	lines, err := diff.Unified(result.Original, result.Content, session.DocPath, session.DocPath+" (edited)")
 	if err != nil {
@@ -1517,8 +1531,17 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 		// the running config no longer matches it.
 		m.loaded = loadedStale
 		m.loadedAt = time.Time{}
+		status := "✓ saved (backup: " + msg.Result.BackupPath + ")"
+		if m.pendingEdit != nil {
+			// An editor edit can add or remove sections: rebuild the tree
+			// from the freshly written file so the new structure, the
+			// selection range and the source pane stay in sync.
+			if !m.refreshAfterStructuralSave(path) {
+				status += " · tree refresh failed"
+			}
+		}
 		m.pendingEdit = nil
-		m.statusMessage = "✓ saved (backup: " + msg.Result.BackupPath + ")"
+		m.statusMessage = status
 		return m, nil
 	}
 	if errors.Is(msg.Err, app.ErrConflict) {
@@ -1535,6 +1558,66 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 	m.statusMessage = "✗ save failed: " + msg.Err.Error()
 	m.reopenEditDiff()
 	return m, nil
+}
+
+// refreshAfterStructuralSave reloads the graph through the loader after an
+// editor save and rebuilds the tree, because an edit can add or remove
+// nodes: updating doc.Source in place alone leaves the tree, the selection
+// range and the source pane on the pre-edit structure. The file was
+// already written atomically by the saver, so the loader re-reads the new
+// content and resolves the imports again. It reports whether the reload
+// succeeded; the caller keeps the saved-state message either way. The
+// runtime loaded state stays stale (file saved but not reloaded in Caddy).
+func (m *Model) refreshAfterStructuralSave(path string) bool {
+	if m.loader == nil {
+		return false
+	}
+	state, err := m.loader.LoadState()
+	if err != nil || state == nil || state.Graph == nil {
+		// The file is saved and the raw source view still shows the new
+		// bytes via the in-place update; only the tree is stale. Surface
+		// it and keep the saved state.
+		return false
+	}
+	m.state.Graph = state.Graph
+	m.items = buildItems(state.Graph, m.collapsed)
+
+	pe := m.pendingEdit
+	cleanPath := filepath.Clean(path)
+	idx := -1
+	if pe != nil && pe.nodeName != "" {
+		// Prefer the edited node: same name in the saved document.
+		for i := range m.items {
+			it := &m.items[i]
+			if it.doc != nil && filepath.Clean(it.doc.Path) == cleanPath && it.hasNode && it.node.Name == pe.nodeName {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		// Fall back to the document row of the saved document.
+		for i := range m.items {
+			it := &m.items[i]
+			if it.doc != nil && !it.hasNode && filepath.Clean(it.doc.Path) == cleanPath {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx >= 0 {
+		m.cursor = idx
+	}
+	if pe != nil && pe.startLine > 0 {
+		m.sourceRevealLine = pe.startLine
+	}
+	// Keep the root snapshots aligned with what is now on disk.
+	if filepath.Clean(path) == filepath.Clean(m.state.Settings.ConfigPath) {
+		m.loadedBytes = append([]byte(nil), state.Graph.Root.Source...)
+		m.workingBytes = append([]byte(nil), state.Graph.Root.Source...)
+	}
+	m.sourceRefresh = true
+	return true
 }
 
 // reopenEditDiff reopens the diff modal for the pending editor edit after
