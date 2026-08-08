@@ -34,5 +34,17 @@ checksum:
 snapshot:
   version_template: '{{ incpatch .Version }}-next'
 
+release:
+  header: |
+    {{- if eq .Version "0.1.0" }}
+    The first public release of lazycaddy is here: a read-only-by-default terminal UI for safely inspecting and editing Caddyfiles.
+
+    This release establishes the core safety workflow: source preservation, validation, diff review, backups, atomic writes, and explicit Caddy reloads.
+    {{- else }}
+    lazycaddy {{ .Version }} is now available.
+
+    This release continues the safe, reviewable workflow for inspecting and editing Caddyfiles.
+    {{- end }}
+
 changelog:
   use: github-native

@@ -19,6 +19,9 @@ goreleaser --version
 - The binary reports its version, commit and build date through `--version`.
 - The default binary remains read-only; a release does not change the safety
   defaults of the application.
+- Every release starts with the header defined in `.goreleaser.yml`. It uses
+  first-release wording for `v0.1.0` and a reusable introduction for later
+  versions, followed by GitHub's generated categorized changelog.
 - Windows and package-manager publishing are deferred until the release
   process and platform behavior are stable.
 
@@ -58,7 +61,8 @@ gh api --method POST \
 
 The preview uses merged pull requests and their labels. The first release has
 no previous tag, so it may include the project's full history; review the
-generated body before publishing.
+generated body before publishing. The API preview does not include GoReleaser's
+configured release header; GoReleaser prepends it when creating the release.
 
 ## Publishing
 
