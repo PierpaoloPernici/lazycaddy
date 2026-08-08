@@ -11,23 +11,19 @@ changelog:
     - title: "Features ✨"
       labels:
         - enhancement
-        - feature
 
     - title: "Fixes 🔧"
       labels:
         - bug
-        - fix
 
     - title: "Maintenance ⚙️"
       labels:
-        - maintenance
         - dependencies
-        - chore
+        - github_actions
 
     - title: "Documentation 📖"
       labels:
         - documentation
-        - docs
 
     - title: "Other Changes"
       labels:
