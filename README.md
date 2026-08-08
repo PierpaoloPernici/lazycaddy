@@ -34,6 +34,14 @@ Run checks:
 make check
 ~~~
 
+Show build information:
+
+~~~sh
+go run ./cmd/lazycaddy --version
+~~~
+
+The release process is documented in [docs/releasing.md](docs/releasing.md).
+
 ## Current status
 
 The lossless Caddyfile parser and patcher are complete. The current vertical

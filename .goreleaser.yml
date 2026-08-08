@@ -1,0 +1,38 @@
+version: 2
+
+project_name: lazycaddy
+
+builds:
+  - id: lazycaddy
+    main: ./cmd/lazycaddy
+    binary: lazycaddy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - >-
+        -s -w
+        -X main.version={{ .Version }}
+        -X main.commit={{ .FullCommit }}
+        -X main.date={{ .Date }}
+
+archives:
+  - id: archives
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  use: github-native

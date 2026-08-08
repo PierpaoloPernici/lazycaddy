@@ -47,8 +47,9 @@ func main() {
 	var write bool
 
 	rootCmd := &cobra.Command{
-		Use:   "lazycaddy",
-		Short: "A keyboard-first terminal UI for inspecting and managing Caddy",
+		Use:     "lazycaddy",
+		Short:   "A keyboard-first terminal UI for inspecting and managing Caddy",
+		Version: version,
 		Long: "lazycaddy inspects a Caddyfile and its imports in the terminal.\n" +
 			"The inspector is read-only by default; --write enables backups and atomic saves, and format/validate are opt-in via --caddy-path.",
 		Args: cobra.NoArgs,
@@ -145,6 +146,7 @@ func main() {
 			return nil
 		},
 	}
+	rootCmd.SetVersionTemplate(versionOutput())
 
 	rootCmd.Flags().StringVar(&settings.ConfigPath, "config", config.DefaultConfigPath(),
 		"path to the Caddyfile to inspect (default: ./Caddyfile)")

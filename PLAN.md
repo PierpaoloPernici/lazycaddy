@@ -77,7 +77,7 @@ Completed:
   the backup. The TUI gates saving on a validated working copy, a
   confirmation modal that names the target and backup directory, and
   the opt-in `--write` mode (read-only by default).
-- A test suite of 454 test functions covering the lossless-editing
+- A test suite of 455 test functions covering the lossless-editing
   contract, import resolution, validation, diagnostics, unified
   diffs, atomic writes, backups, the save workflow, the reload
   workflow and the TUI. Tests use fakes and require no installed
@@ -198,7 +198,27 @@ product decisions:
 - preserve user-authored Caddyfiles as lazycaddy's source of truth; generated
   configuration ownership remains a separate, explicitly scoped integration.
 
-Initial local platform support targets Linux and macOS. Windows is deferred until its file replacement, permissions, process and terminal semantics are designed and tested explicitly. Distribution should use versioned single-binary release artifacts with checksums; package-manager support such as Homebrew may follow after the release process is stable.
+Initial local platform support targets Linux and macOS. Windows is deferred until its file replacement, permissions, process and terminal semantics are designed and tested explicitly.
+
+## Release and distribution
+
+The first public release target is `v0.1.0`. Release artifacts are produced
+by GoReleaser from a tag-triggered GitHub Actions workflow:
+
+- Linux and macOS `amd64` and `arm64` builds are published as versioned
+  `.tar.gz` archives;
+- every release includes a `checksums.txt` SHA-256 manifest;
+- `--version` reports the release version, source commit and build date;
+- releases run `make check` before publishing;
+- GitHub generates categorized release notes from merged pull requests using
+  `.github/release.yml`;
+- the binary remains read-only by default in release builds;
+- Windows and package-manager publishing are deferred until the release
+  process and platform behavior are stable.
+
+The operational procedure lives in
+[docs/releasing.md](docs/releasing.md). Do not reuse or move a published tag;
+release corrections use a new patch version.
 
 ## UX and safety rules
 
