@@ -152,7 +152,15 @@ product decisions:
 - defer Tree-sitter integration until structured editing or incremental parsing
   demonstrates a concrete need;
 - keep formatting and validation delegated to Caddy through the existing
-  cancellable application boundary.
+  cancellable application boundary;
+- use the official Caddy parser, formatter and compatibility tests as the
+  reference for supported-version reviews, imports, heredocs and reload
+  behavior;
+- keep future Admin API, log, TLS and generated-configuration integrations
+  behind explicit adapters with read-only defaults and capability checks;
+- use bounded buffers and cancellation for any future runtime or log view;
+- preserve user-authored Caddyfiles as lazycaddy's source of truth; generated
+  configuration ownership remains a separate, explicitly scoped integration.
 
 Initial local platform support targets Linux and macOS. Windows is deferred until its file replacement, permissions, process and terminal semantics are designed and tested explicitly. Distribution should use versioned single-binary release artifacts with checksums; package-manager support such as Homebrew may follow after the release process is stable.
 

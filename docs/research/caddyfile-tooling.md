@@ -7,7 +7,7 @@ principles belong in `VISION.md`.
 
 ## Review record
 
-Reviewed on 2026-08-07. The repository revisions below were inspected locally:
+Reviewed on 2026-08-08. The repository revisions below were inspected locally:
 
 | Project | Revision | Purpose |
 | --- | --- | --- |
@@ -15,6 +15,13 @@ Reviewed on 2026-08-07. The repository revisions below were inspected locally:
 | [vscode-caddyfile](https://github.com/caddyserver/vscode-caddyfile) | `9ba30fcec02e257776188ca66ed47fc210e86b26` | VS Code syntax support, formatting and a basic language server |
 | [caddyfile-zed](https://github.com/nusnewob/caddyfile-zed) | `6631b10fe3c1b6c92173ce3d80a48f739d57cd89` | Zed integration using Tree-sitter queries |
 | [tree-sitter-caddyfile](https://github.com/caddyserver/tree-sitter-caddyfile) | `b00e432eed3628f0f417865da9e9f601cb9f7fb85f` | Shared Tree-sitter grammar and parser corpus |
+| [caddy](https://github.com/caddyserver/caddy) | `64b64c61ebc40ea37280b2baa1a7a492cc1156c5` | Official parser, formatter, import graph, Admin API commands and compatibility tests |
+| [ember](https://github.com/alexandre-daubois/ember) | `b6e82fcce42f7bfd420924debad0ee2ad3de8aff` | Read-only Admin API dashboard, logs, certificates and runtime observability |
+| [caddy-docker-proxy](https://github.com/lucaslorentz/caddy-docker-proxy) | `d246679c72e1c3d2ef0e610503e1c2f74581978b` | Label-to-Caddyfile generation, autosave and reload coordination |
+| [clog](https://github.com/hellotimking/clog) | `c0d05846665a354aa7c664a14d42da241de660b8` | Lightweight Caddy JSON access-log viewer and dashboard |
+| [caddy-analyzer](https://github.com/L9Lenny/caddy-analyzer) | `457977f36f60c95e15417f1fa3a3563fd68bc4b2` | Caddy JSON log parsing, metrics, threat analysis and TUI workflows |
+| [certmagic](https://github.com/caddyserver/certmagic) | `d93662a04b9232e986ce76d657b016e58a8e69b3` | TLS automation, storage abstraction, locking and atomic file persistence |
+| [caddyfile-rs](https://github.com/LeakIX/caddyfile-rs) | `61fed68e691ddf36330c89c889e4ad65ad2958a9` | Typed Caddyfile AST, spans, formatter and CLI validation workflow |
 
 The official [Caddyfile concepts documentation](https://caddyserver.com/docs/caddyfile/concepts),
 [global options documentation](https://caddyserver.com/docs/caddyfile/options),
@@ -178,6 +185,161 @@ not introduce Tree-sitter as a second source of truth during the lossless
 editing milestones. Reconsider it when incremental parsing or structured
 editing becomes a demonstrated bottleneck.
 
+## Official Caddy implementation
+
+Sources: [Caddy repository](https://github.com/caddyserver/caddy),
+[Caddyfile parser](https://github.com/caddyserver/caddy/blob/master/caddyconfig/caddyfile/parse.go),
+[formatter](https://github.com/caddyserver/caddy/blob/master/caddyconfig/caddyfile/formatter.go),
+[import graph](https://github.com/caddyserver/caddy/blob/master/caddyconfig/caddyfile/importgraph.go),
+[commands](https://github.com/caddyserver/caddy/blob/master/cmd/commands.go),
+[parser tests](https://github.com/caddyserver/caddy/blob/master/caddyconfig/caddyfile/parse_test.go),
+and [formatter tests](https://github.com/caddyserver/caddy/blob/master/caddyconfig/caddyfile/formatter_test.go).
+
+### Confirmed practices
+
+- Caddy's parser is the compatibility reference for tokenization, server
+  blocks, imports, snippets, named routes, environment substitution, heredocs
+  and brace-related edge cases.
+- The official formatter is a separate rune-oriented pass. It is useful as the
+  delegated formatting implementation, but it is not a lossless editor model.
+- Import resolution has explicit graph and cycle-detection behavior that
+  should remain represented in lazycaddy's document model rather than hidden
+  inside a flat buffer.
+- The parser and formatter tests provide a high-value compatibility corpus,
+  including imports, globs, cycles, quoted braces, brace-less sites, heredocs
+  and escaped input.
+- `caddy reload` adapts a Caddyfile and loads it through the Admin API, while
+  `list-modules` exposes runtime capability information. These are useful
+  boundaries for validation, reload and capability detection.
+
+### Lazycaddy decision
+
+Track the official parser, formatter and tests during compatibility reviews.
+Reuse Caddy for formatting, adaptation and reload where the workflow requires
+semantic validation. Keep lazycaddy's lossless source model and exact-file
+patching because the official parser is not a replacement for source edits.
+
+## Runtime dashboard and observability projects
+
+Sources: [Ember README](https://github.com/alexandre-daubois/ember),
+[dashboard documentation](https://github.com/alexandre-daubois/ember/blob/main/docs/caddy-dashboard.md),
+[logs documentation](https://github.com/alexandre-daubois/ember/blob/main/docs/logs.md),
+[plugins documentation](https://github.com/alexandre-daubois/ember/blob/main/docs/plugins.md),
+[clog](https://github.com/hellotimking/clog), and
+[caddy-analyzer](https://github.com/L9Lenny/caddy-analyzer).
+
+### Useful ideas
+
+- Ember separates read-only Admin API fetchers from TUI models and presents
+  live configuration, certificates, logs, route traffic, latency percentiles
+  and status-code summaries as separate views.
+- Ember's restart detection, multi-instance support and transient log sinks
+  are useful references for a future runtime/operations surface.
+- Clog demonstrates a deliberately small access-log workflow: tail structured
+  JSON, keep a bounded history, filter by host/status/text, and aggregate
+  status classes in a compact dashboard.
+- Caddy-analyzer demonstrates reusable boundaries for Caddy's nested JSON log
+  schema, multiple sources, top-N metrics, comparisons, bounded state and
+  security-oriented analysis. Its dual-pass URI handling is a useful warning
+  that decoding decisions affect detection semantics.
+
+### Compatibility and safety limits
+
+These projects assume a log-analysis or operations product, not a source-first
+Caddyfile editor. Their firewall blocking, threat detection, HTML reporting,
+Docker/Kubernetes ingestion and runtime log streaming must not silently become
+lazycaddy features. Any future log view should use explicit source adapters,
+bounded buffers and read-only defaults.
+
+### Lazycaddy decision
+
+Use Ember's separation of fetchers, models and views as an architectural
+reference for a future optional runtime tab. Use clog and caddy-analyzer as
+fixtures and UX references for structured access-log summaries. Do not add a
+runtime or security-analysis dependency until the configuration workflow is
+stable and the required interfaces are defined.
+
+## Generated configuration and reload coordination
+
+Source: [caddy-docker-proxy README](https://github.com/lucaslorentz/caddy-docker-proxy),
+[generator](https://github.com/lucaslorentz/caddy-docker-proxy/blob/master/generator/generator.go),
+[loader](https://github.com/lucaslorentz/caddy-docker-proxy/blob/master/loader.go),
+and [label conversion](https://github.com/lucaslorentz/caddy-docker-proxy/blob/master/caddyfile/fromlabels.go).
+
+### Useful ideas
+
+- Generated configuration should have an explicit ownership boundary and a
+  visible generated artifact for troubleshooting.
+- Regeneration can be throttled and compared byte-for-byte before triggering
+  a reload, avoiding unnecessary runtime changes.
+- Autosave through a same-directory temporary file and rename provides a
+  practical baseline for generated artifacts.
+- Label conversion needs deterministic ordering and isolated handling of
+  global blocks, server blocks, matchers and raw configuration fragments.
+
+### Lazycaddy decision
+
+Adopt the generated-versus-user-authored distinction, change detection and
+reload coordination as future integration guidance. Lazycaddy remains the
+owner of user-authored Caddyfiles; generator ownership, label discovery and
+automatic reload loops are out of scope.
+
+## TLS storage and certificate lifecycle
+
+Sources: [CertMagic README](https://github.com/caddyserver/certmagic),
+[storage interfaces](https://github.com/caddyserver/certmagic/blob/master/storage.go),
+[file storage](https://github.com/caddyserver/certmagic/blob/master/filestorage.go),
+and [atomic file helper](https://github.com/caddyserver/certmagic/tree/master/internal/atomicfile).
+
+### Useful ideas
+
+- TLS state is best exposed through an abstraction that can list, inspect and
+  coordinate certificate resources without coupling the UI to one storage
+  layout.
+- Concurrent certificate operations need locking, stale-lock handling and
+  cancellation-aware storage interfaces.
+- File persistence should use restrictive permissions and atomic replacement.
+- Certificate metadata, renewal state and OCSP state are distinct concerns and
+  should not be inferred from a single file read.
+
+### Lazycaddy decision
+
+Use CertMagic as a reference for future certificate inspection interfaces and
+storage safety. Do not treat CertMagic's file paths as Caddy's public layout
+contract, and do not make the TUI read private TLS storage directly.
+
+## Cross-language AST and CI reference
+
+Sources: [caddyfile-rs](https://github.com/LeakIX/caddyfile-rs),
+[AST](https://github.com/LeakIX/caddyfile-rs/blob/main/src/ast.rs),
+[lexer](https://github.com/LeakIX/caddyfile-rs/blob/main/src/lexer.rs),
+[parser](https://github.com/LeakIX/caddyfile-rs/blob/main/src/parser.rs),
+[formatter](https://github.com/LeakIX/caddyfile-rs/blob/main/src/formatter.rs),
+and [validation workflow](https://github.com/LeakIX/caddyfile-rs/blob/main/.github/workflows/validate-caddyfile.yaml).
+
+### Useful ideas
+
+- A typed vocabulary for global options, snippets, named routes, site blocks,
+  addresses, directives, matchers and argument forms makes editor features
+  easier to reason about.
+- Lexer spans with line and column information are useful for diagnostics and
+  test output, even when a project also needs byte offsets for patching.
+- A CLI with `validate`, `fmt` and `check`, backed by CI fixtures, is a useful
+  project hygiene pattern.
+
+### Compatibility limits
+
+The project is round-trip-oriented, but its canonical AST and formatter are
+not a guarantee that every original byte, comment position or whitespace
+choice survives. It is therefore a reference for taxonomy and tests, not a
+reason to introduce a second parser into lazycaddy.
+
+### Lazycaddy decision
+
+Borrow the typed terminology, span assertions and validation/check workflow
+where they improve Go tests and documentation. Keep byte offsets, raw tokens
+and source ranges in the existing Go parser as the editing authority.
+
 ## Cross-project practices worth retaining
 
 1. **Open-world syntax support:** unknown directives remain visible and useful.
@@ -196,6 +358,12 @@ editing becomes a demonstrated bottleneck.
    Caddy binary in a cancellable, testable boundary.
 8. **Optional language injection:** embedded content is a later enhancement,
    not a reason to compromise the base parser.
+9. **Compatibility from the source project:** official Caddy parser and
+   formatter tests should anchor behavior reviews for supported versions.
+10. **Explicit integration boundaries:** Admin API, logs, TLS storage and
+    generated configuration need separate adapters and capability checks.
+11. **Bounded operational state:** runtime views and log summaries should use
+    bounded buffers, cancellation and read-only defaults.
 
 ## Explicit non-adoptions
 
@@ -220,3 +388,10 @@ commitments:
 - add a directive metadata catalog with documentation links and optional
   version/module information;
 - add heredoc and CEL injection only after the base semantic layer is stable.
+- track official Caddy parser/formatter fixtures when compatibility work
+  changes;
+- define optional Admin API, log and certificate adapters before adding runtime
+  views;
+- add generated-configuration ownership and reload coordination only for an
+  explicitly scoped integration;
+- consider a small `validate`/`check` developer workflow backed by fixtures.
