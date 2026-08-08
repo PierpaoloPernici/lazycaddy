@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -116,13 +117,15 @@ func NewDetector(opts Options) *Detector {
 //
 //   - the binary version query (when Binary and Runner are configured)
 //     sets Binary, Version and Validation on success and clears them on
-//     failure;
+//     failure; a timed-out query is tracked so it can still steer the
+//     status below;
 //   - the Admin API probe (when Admin is configured) sets AdminAPI and
 //     Readable on success and clears them on failure;
 //   - Reload is Binary AND AdminAPI;
 //   - Status: AdminAPI -> StatusRunning; Binary without AdminAPI ->
-//     StatusStopped; otherwise StatusUnreachable when the caller context
-//     or the admin probe was cancelled or expired, else StatusUnknown.
+//     StatusStopped; otherwise StatusUnreachable when the version query
+//     timed out, the caller context was cancelled or expired, or the
+//     admin probe was cancelled or expired, else StatusUnknown.
 func (d *Detector) Probe(ctx context.Context) Report {
 	rep := Report{
 		Status:       StatusUnknown,
@@ -130,11 +133,16 @@ func (d *Detector) Probe(ctx context.Context) Report {
 		ProbedAt:     time.Now(),
 	}
 
+	var versionTimedOut bool
 	if d.binary != "" && d.runner != nil {
-		if version, err := QueryVersion(ctx, d.runner, d.binary, d.versionTimeout); err == nil {
+		version, err := QueryVersion(ctx, d.runner, d.binary, d.versionTimeout)
+		switch {
+		case err == nil:
 			rep.Capabilities.Binary = true
 			rep.Capabilities.Version = version
 			rep.Capabilities.Validation = true
+		case errors.Is(err, ErrVersionTimeout):
+			versionTimedOut = true
 		}
 	}
 
@@ -159,7 +167,7 @@ func (d *Detector) Probe(ctx context.Context) Report {
 		rep.Status = StatusRunning
 	case rep.Capabilities.Binary:
 		rep.Status = StatusStopped
-	case ctx.Err() != nil || (adminCtx != nil && adminCtx.Err() != nil):
+	case versionTimedOut || ctx.Err() != nil || (adminCtx != nil && adminCtx.Err() != nil):
 		rep.Status = StatusUnreachable
 	default:
 		rep.Status = StatusUnknown

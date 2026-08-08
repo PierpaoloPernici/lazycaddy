@@ -3,11 +3,14 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
 // fakeRunner is a programmable runtime.CommandRunner. When runFn is set it
@@ -184,6 +187,58 @@ func TestQueryVersion_ExplicitTimeoutExpiry(t *testing.T) {
 		return nil, nil, -1, ctx.Err()
 	}}
 	_, err := QueryVersion(context.Background(), runner, "caddy", 30*time.Millisecond)
+	if !errors.Is(err, ErrVersionTimeout) {
+		t.Fatalf("expected ErrVersionTimeout, got %v", err)
+	}
+}
+
+// TestQueryVersion_TimeoutKillNonDeadlineError verifies that a runner
+// which blocks until the deadline and then reports the kill as a plain
+// error that does NOT wrap context.DeadlineExceeded still maps to
+// ErrVersionTimeout. This simulates validator.ExecRunner, whose timeout
+// path returns an error wrapping its own ErrTimeout sentinel.
+func TestQueryVersion_TimeoutKillNonDeadlineError(t *testing.T) {
+	runner := fakeRunner{runFn: func(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
+		<-ctx.Done()
+		return nil, nil, -1, errors.New("signal: killed")
+	}}
+	_, err := QueryVersion(context.Background(), runner, "caddy", 30*time.Millisecond)
+	if !errors.Is(err, ErrVersionTimeout) {
+		t.Fatalf("expected ErrVersionTimeout, got %v", err)
+	}
+}
+
+// TestQueryVersion_TimeoutOwnSentinelError verifies the same contract
+// when the runner wraps the deadline in its own sentinel (the shape
+// validator.ExecRunner uses with validator.ErrTimeout): the expired
+// query context, not the runner's error, is the authoritative timeout
+// signal.
+func TestQueryVersion_TimeoutOwnSentinelError(t *testing.T) {
+	errTimeout := errors.New("caddy command timed out")
+	runner := fakeRunner{runFn: func(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
+		<-ctx.Done()
+		return nil, nil, -1, fmt.Errorf("%w: %s", errTimeout, name)
+	}}
+	_, err := QueryVersion(context.Background(), runner, "caddy", 30*time.Millisecond)
+	if !errors.Is(err, ErrVersionTimeout) {
+		t.Fatalf("expected ErrVersionTimeout, got %v", err)
+	}
+}
+
+// TestQueryVersion_WithValidatorExecRunner is the interop test with the
+// real subprocess runner used by main.go. QueryVersion hardcodes the
+// "version" argument, so the binary must be a real command that ignores
+// its arguments and blocks until killed; `yes` fits (present on macOS
+// and Linux). `sleep` is not usable here because `sleep version` fails
+// immediately instead of blocking. The deadline kills the process and
+// ExecRunner reports validator.ErrTimeout, which must still surface as
+// ErrVersionTimeout via the expired query context.
+func TestQueryVersion_WithValidatorExecRunner(t *testing.T) {
+	start := time.Now()
+	_, err := QueryVersion(context.Background(), validator.ExecRunner{}, "yes", 50*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("QueryVersion took %s, want it bounded by the timeout", elapsed)
+	}
 	if !errors.Is(err, ErrVersionTimeout) {
 		t.Fatalf("expected ErrVersionTimeout, got %v", err)
 	}

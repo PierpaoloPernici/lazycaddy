@@ -41,6 +41,11 @@ var (
 // formatting artifact.
 //
 // Error mapping:
+//   - the query's own context has expired -> ErrVersionTimeout (wrapped).
+//     This check runs first and is authoritative: a runner (e.g.
+//     validator.ExecRunner) may report the deadline wrapped in its own
+//     sentinel instead of context.DeadlineExceeded, so the expired
+//     context is the reliable timeout signal.
 //   - runner error wrapping context.DeadlineExceeded -> ErrVersionTimeout (wrapped)
 //   - runner error wrapping exec.ErrNotFound or os.ErrNotExist -> ErrBinaryMissing (wrapped)
 //   - runner error wrapping context.Canceled -> passed through as-is (NOT a sentinel)
@@ -57,6 +62,15 @@ func QueryVersion(ctx context.Context, runner CommandRunner, binary string, time
 		defer cancel()
 	}
 	stdout, stderr, exitCode, err := runner.Run(ctx, binary, "version")
+	// The query's own context is the authoritative timeout signal: a
+	// runner that obeys its context (killing the process on deadline)
+	// may surface the failure as its own sentinel that does not wrap
+	// context.DeadlineExceeded. When the deadline we applied (or the
+	// caller's) has fired, the query could not complete in time no
+	// matter how the runner reported it.
+	if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("%w: %v", ErrVersionTimeout, ctx.Err())
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):

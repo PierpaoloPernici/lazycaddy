@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -150,5 +151,66 @@ func TestProbe_CancelledContextUnreachable(t *testing.T) {
 	rep := d.Probe(ctx)
 	if rep.Status != StatusUnreachable {
 		t.Errorf("Status = %v, want StatusUnreachable when the caller context is done", rep.Status)
+	}
+}
+
+// versionKillRunner simulates validator.ExecRunner's timeout path: it
+// blocks until the context deadline and then reports the kill as a plain
+// error that does not wrap context.DeadlineExceeded.
+func versionKillRunner(ctx context.Context, name string, args ...string) ([]byte, []byte, int, error) {
+	<-ctx.Done()
+	return nil, nil, -1, errors.New("signal: killed")
+}
+
+// TestProbe_VersionTimeoutAdminDown verifies that a version query killed
+// by its own timeout (with the Admin API absent) degrades to
+// StatusUnreachable instead of the previous StatusUnknown, and that the
+// probe returns within a bounded time.
+func TestProbe_VersionTimeoutAdminDown(t *testing.T) {
+	d := NewDetector(Options{
+		Binary:         "caddy",
+		Runner:         fakeRunner{runFn: versionKillRunner},
+		Admin:          nil,
+		VersionTimeout: 30 * time.Millisecond,
+	})
+	start := time.Now()
+	rep := d.Probe(context.Background())
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Probe took %s, want it bounded by the version timeout", elapsed)
+	}
+	if rep.Status != StatusUnreachable {
+		t.Errorf("Status = %v, want StatusUnreachable after a timed-out version query", rep.Status)
+	}
+	if rep.Capabilities.Binary || rep.Capabilities.Validation {
+		t.Errorf("Binary/Validation = %v/%v, want false/false after a timed-out version query", rep.Capabilities.Binary, rep.Capabilities.Validation)
+	}
+}
+
+// TestProbe_VersionTimeoutAdminUp verifies that a timed-out version query
+// still yields StatusRunning when the Admin API is reachable: the admin
+// probe is the authoritative liveness signal, so the runtime status wins
+// over the unproven binary.
+func TestProbe_VersionTimeoutAdminUp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("null"))
+	}))
+	defer srv.Close()
+
+	d := NewDetector(Options{
+		Binary:         "caddy",
+		Runner:         fakeRunner{runFn: versionKillRunner},
+		Admin:          NewAdminClient(srv.URL, time.Second),
+		AdminTimeout:   time.Second,
+		VersionTimeout: 30 * time.Millisecond,
+	})
+	rep := d.Probe(context.Background())
+	if rep.Status != StatusRunning {
+		t.Errorf("Status = %v, want StatusRunning (admin probe wins)", rep.Status)
+	}
+	if !rep.Capabilities.AdminAPI || !rep.Capabilities.Readable {
+		t.Errorf("AdminAPI/Readable = %v/%v, want true/true", rep.Capabilities.AdminAPI, rep.Capabilities.Readable)
+	}
+	if rep.Capabilities.Binary {
+		t.Error("Binary = true, want false after a timed-out version query")
 	}
 }
