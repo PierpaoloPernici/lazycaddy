@@ -1237,6 +1237,10 @@ func (m *Model) syncSource(srcW, paneH int) {
 		m.lastSel = key
 		if key.hasNode {
 			m.revealRange(key.start, key.end)
+		} else {
+			// Returning to a document row: reset the source view to the top
+			// (the "home" position) instead of keeping a stale node reveal.
+			m.viewport.GotoTop()
 		}
 	}
 }
@@ -1492,8 +1496,8 @@ func wrapText(text string, width int) string {
 
 // buildItems flattens the graph into the visible tree: one row per
 // document (root first, then imported files in resolution order),
-// with site blocks, snippets and named routes nested under their
-// document.
+// with site blocks, global options, snippets and named routes nested
+// under their document.
 func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 	var items []item
 	for _, doc := range g.Documents {
@@ -1507,6 +1511,10 @@ func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 		}
 		for _, n := range doc.Nodes {
 			switch n.Kind {
+			case caddyfile.KindGlobalOptions:
+				// The global options block has no header, so it renders
+				// under a fixed label rather than a name.
+				items = append(items, item{label: "global options", depth: 1, doc: doc, node: n, hasNode: true})
 			case caddyfile.KindSite:
 				items = append(items, item{label: n.Name, depth: 1, doc: doc, node: n, hasNode: true})
 			case caddyfile.KindSnippet:
