@@ -239,6 +239,7 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	var clip app.Clipboard
 	var monitor app.ChangeMonitor
 	var rollbacker app.Rollbacker
+	var readFile app.FileReader
 	searcher := app.NewSearcher()
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -262,9 +263,11 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 			rollbacker = v
 		case app.Searcher:
 			searcher = v
+		case app.FileReader:
+			readFile = v
 		}
 	}
-	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion, monitor, rollbacker, clip)
+	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion, monitor, rollbacker, readFile, clip)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -286,7 +289,7 @@ func keyPress(t *testing.T, m *Model, msg tea.Msg) *Model {
 // ...any slot matches no type-switch case), so this constructs New directly.
 func newLoadedModelWithoutSearcher(t *testing.T, loader app.Loader) *Model {
 	t.Helper()
-	m := New(loader, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
+	m := New(loader, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil, nil)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -911,6 +914,9 @@ func TestModelUnknownDirectivePreserved(t *testing.T) {
 	}
 }
 
+// TestModelQuit verifies that q with no unsaved edits quits immediately
+// (the unsaved guard only intercepts genuine exit requests when edits are
+// pending — see the quit-guard tests in quit_guard_test.go).
 func TestModelQuit(t *testing.T) {
 	readFile := func(p string) ([]byte, error) { return []byte("example.test {\n}\n"), nil }
 	state := stateFor(t, "config/Caddyfile", readFile)
@@ -920,13 +926,16 @@ func TestModelQuit(t *testing.T) {
 	if !m.quit {
 		t.Errorf("quit = false, want true after q")
 	}
+	if m.showUnsavedConfirm {
+		t.Error("unsaved prompt opened without unsaved edits")
+	}
 	if cmd == nil || cmd() == nil {
 		t.Errorf("expected tea.Quit command")
 	}
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -1299,7 +1308,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil, nil, testVersion, nil, nil, nil)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -3444,7 +3453,7 @@ func TestModelViewFits_StatusMessage(t *testing.T) {
 }
 
 func TestModelViewFits_ErrorAndStatus(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil, nil)
 	m.Load()
 	m.statusMessage = "✓ caddy v2.11.4 · running"
 	assertFits(t, m, 80, 24)

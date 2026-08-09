@@ -63,6 +63,15 @@ var (
 			Padding(0, 1).
 			Foreground(badgeMutedForeground).
 			Background(mutedColor)
+	// unsavedBadge marks in-memory edits that are not yet on disk. It
+	// carries an explicit UNSAVED label (never color alone) and uses the
+	// amber warning palette so it reads as "action pending", mirroring
+	// the stale badge.
+	unsavedBadge = lipgloss.NewStyle().
+			Bold(true).
+			Padding(0, 1).
+			Foreground(badgeWarningForeground).
+			Background(warningColor)
 	// runtimeRunningBadge marks a Caddy daemon reachable through the
 	// Admin API.
 	runtimeRunningBadge = lipgloss.NewStyle().

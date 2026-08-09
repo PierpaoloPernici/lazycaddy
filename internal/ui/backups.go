@@ -56,6 +56,7 @@ func (m *Model) handleBackupList(msg backupListMsg) (tea.Model, tea.Cmd) {
 	m.backupsLoading = false
 	if msg.Err != nil {
 		m.statusMessage = "✗ backups unavailable: " + msg.Err.Error()
+		m.recordError("backups", msg.Err.Error(), "verify the backup directory is readable")
 		return m, nil
 	}
 	m.backups = msg.Entries
@@ -76,10 +77,11 @@ func (m *Model) handleBackupList(msg backupListMsg) (tea.Model, tea.Cmd) {
 func (m *Model) updateBackupsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
+		// q closes the backup modal; it is navigation, not an exit, so
+		// the unsaved guard never fires here.
 		m.closeBackups()
 	case "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	case "up", "k":
 		if m.backupCursor > 0 {
 			m.backupCursor--
@@ -137,15 +139,15 @@ func (m *Model) handleBackupCompare(msg backupCompareMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.Err != nil {
 		m.statusMessage = "✗ backup comparison failed: " + msg.Err.Error()
+		m.recordError("backup comparison", msg.Err.Error(), "verify the backup file is readable and retry")
 		return m, nil
 	}
 	lines, err := diff.Unified(msg.Current, msg.Backup, msg.Path+" (on disk)", msg.Path+" ← "+filepath.Base(msg.BackupPath))
 	if err != nil {
 		m.statusMessage = "✗ diff failed: " + err.Error()
+		m.recordError("backup comparison", err.Error(), "retry the comparison")
 		return m, nil
 	}
-	m.diffLines = lines
-	m.diffTitle = "Compare backup · " + msg.Path
 	if m.canRollback() {
 		m.pendingRollback = &pendingRollback{
 			path:         msg.Path,
@@ -153,10 +155,8 @@ func (m *Model) handleBackupCompare(msg backupCompareMsg) (tea.Model, tea.Cmd) {
 			currentBytes: append([]byte(nil), msg.Current...),
 		}
 	}
+	m.showDiffModal(lines, "Compare backup · "+msg.Path)
 	m.backupComparing = true
-	m.showDiff = true
-	m.syncDiffContent()
-	m.diffViewport.GotoTop()
 	return m, nil
 }
 
@@ -186,12 +186,13 @@ func (m *Model) revealBackupCursor() {
 func (m *Model) updateRollbackConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
+		// q cancels the rollback; it is not an exit, so the unsaved
+		// guard never fires here.
 		m.closeRollbackConfirm()
 		m.pendingRollback = nil
 		m.statusMessage = "rollback cancelled"
 	case "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	case "enter":
 		if m.pendingRollback == nil {
 			return m, nil
@@ -247,6 +248,7 @@ func (m *Model) handleRollbackResult(msg rollbackResultMsg) (tea.Model, tea.Cmd)
 		status := "✓ rolled back " + targetPath + " to " + msg.Result.RestoredFrom + " (pre-rollback backup: " + msg.Result.BackupPath + ")"
 		if msg.Result.RetentionErr != nil {
 			status += " · ✗ retention cleanup failed: " + msg.Result.RetentionErr.Error()
+			m.recordError("rollback retention", msg.Result.RetentionErr.Error(), "remove old backups manually or lower --backup-retention")
 		}
 		m.loaded = loadedUnknown
 		m.loadedAt = time.Time{}
@@ -267,14 +269,18 @@ func (m *Model) handleRollbackResult(msg rollbackResultMsg) (tea.Model, tea.Cmd)
 	switch {
 	case errors.Is(msg.Err, app.ErrRollbackConflict):
 		m.statusMessage = "✗ file changed on disk — rollback aborted, nothing changed"
+		m.recordError("rollback", "file changed on disk", "reload the file from disk before retrying the rollback")
 	case errors.Is(msg.Err, app.ErrRollbackInvalid):
 		m.statusMessage = "✗ backup does not validate as a Caddyfile — rollback aborted"
+		m.recordError("rollback", "backup does not validate as a Caddyfile", "choose a different backup or fix the configuration")
 	default:
 		var rbErr *app.RollbackError
 		if errors.As(msg.Err, &rbErr) {
-			m.statusMessage = "✗ rollback failed (pre-rollback backup: " + rbErr.BackupPath + "): " + rbErr.Err.Error()
+			m.statusMessage = "✗ rollback failed (pre-rollback backup: " + rbErr.BackupPath + "): " + rbErr.Err.Error() + " · press B to compare the pre-rollback backup"
+			m.recordError("rollback", rbErr.Err.Error(), "press B on the document to compare the pre-rollback backup: "+rbErr.BackupPath)
 		} else {
 			m.statusMessage = "✗ rollback failed: " + msg.Err.Error()
+			m.recordError("rollback", msg.Err.Error(), "inspect the backup list with B and retry")
 		}
 	}
 	// The backup-history modal stayed open underneath; leave it open so

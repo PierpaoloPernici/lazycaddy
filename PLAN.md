@@ -226,7 +226,7 @@ release corrections use a new patch version.
 - Browsing must not require elevated privileges. Missing write or reload permissions disable only the affected actions and explain how to proceed safely.
 - Do not require the entire TUI to run as `root`. Any future privilege boundary must be explicit, narrowly scoped to one confirmed operation and implemented behind a dedicated adapter.
 - Enable actions from detected capabilities rather than assumptions about the host environment or service manager.
-- Unsaved changes are clearly marked and block accidental navigation or quit until discarded or saved.
+- Unsaved changes are clearly marked by an explicit UNSAVED header badge and block only genuine application exit (a quit prompt with `s` save, `d` discard & quit, `Esc` cancel); navigation — cursor movement, search, log view, raw source, document switching — never prompts because it never abandons the document. `pendingEdit`/`pendingDelete` survive navigation and are cleared only by a reload-from-disk, an explicit discard, a save-cancel or a successful save.
 - `r` means validate and reload only after a valid, saved configuration and a confirmation prompt; `s` saves without reloading.
 - A failed validation never writes the source file and never calls reload.
 - A failed reload leaves the saved file and backup intact and reports the command/API error.
@@ -278,8 +278,11 @@ d          Delete selected node (confirmation via diff; never on document rows o
 v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
-D          Diff current changes
+D          Diff current changes (selected document; root uses the working copy, imports and the root fallback use on-disk bytes)
+n/N        Jump to the next/previous diff hunk (inside the diff modal)
+h/l        Shift the diff horizontally for long lines (inside the diff modal)
 B          Open backup history for the selected document (compare, then rollback in writable mode)
+H          Open the error history (recorded failures with safe next actions)
 l          Logs
 t          TLS
 /          Search
@@ -614,7 +617,22 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   cursor continuity, journal and path-discovery failures, exact source bytes
   copied without panel decorations, OSC 52 unavailable/fallback clipboard
   behavior, and the related read-only permission paths.
-- Improve diff review, unsaved-state prompts and error recovery.
+- [x] Improve diff review, unsaved-state prompts and error recovery. `D` now
+  diffs the currently selected document: the root keeps the working-copy
+  diff after `v`, while imported documents (and the root without a working
+  copy) are diffed against their current on-disk bytes read through an
+  injected reader. The shared diff modal adds `n`/`N` hunk navigation,
+  `h`/`l` horizontal scrolling for long lines (with a truncated
+  indicator), and a change summary (`N hunks · +A −R`) in the title. An
+  UNSAVED header badge and a dedicated quit-confirmation modal guard every
+  real application exit when unsaved edits exist — `s` saves (and stays in
+  the app), `d` discards and quits, `Esc` cancels — while pure navigation
+  (cursor, search, log toggle, document switching) never prompts. Errors
+  are now recoverable: a bounded 50-entry error history (`H`) records each
+  failure with a safe next action, save retention failures are surfaced,
+  monitor failures are recorded instead of silently disabling, and failed
+  saves/rollbacks point the operator at the recovery backup via `B` while
+  cancelled editor edits surface their recovery snapshot path.
 - [x] Detect external changes with `fsnotify` and provide reload/compare/keep actions.
 - [x] Add backup comparison, rollback and configurable retention. The `B`
   keybinding opens the backup history of the selected document, newest

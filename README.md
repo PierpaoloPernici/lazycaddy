@@ -103,7 +103,20 @@ The inspector also provides:
   to an available local clipboard command (`pbcopy`, `wl-copy`, `xclip`,
   `xsel` or `clip`);
 - exact-range node deletion (`d`) with diff confirmation and post-save tree
-  rebuilding.
+  rebuilding;
+- per-document diff review (`D`): the root diffs the validated working
+  copy, while imported documents (and the root without a working copy) are
+  diffed against their current on-disk bytes; the diff modal supports hunk
+  navigation (`n`/`N`), horizontal scrolling for long lines (`h`/`l`) and
+  a change summary in the title;
+- an unsaved-changes guard: the header shows an explicit `UNSAVED` badge
+  while edits are pending, and quitting with unsaved edits opens a prompt
+  (`s` save and stay, `d` discard and quit, `Esc` cancel) — navigation
+  never prompts;
+- a bounded error history (`H`) that records every failure with a safe
+  next action, including save/rollback/reload failures, monitor failures
+  and retention failures, and recovery hints that point you at the
+  recovery backup (`B`) or the editor's pre-edit snapshot.
 
 The v0.1 vertical slice is complete. The v0.2 milestone has landed
 journal-backed logs and sensible path defaults: lazycaddy now discovers
@@ -168,6 +181,25 @@ undoing the completed operation.
 Reloads use the local Admin API at `http://localhost:2019` by default;
 override the endpoint with `--admin-endpoint` and the per-request timeout
 with `--admin-timeout`. A reload never happens implicitly.
+
+`D` diffs the currently selected document: the root compares the
+validated working copy against the original after `v`, and any document
+(imported files included, plus the root before `v`) is compared against
+its current on-disk bytes. Inside the diff modal, `n`/`N` jump between
+`@@` hunks, `h`/`l` scroll long lines horizontally, and the title shows
+the change summary (`N hunks · +A −R`).
+
+Quitting with unsaved edits opens a confirmation instead of exiting:
+`s` saves (asynchronously, staying in the app), `d` discards and quits,
+`Esc` cancels. The header shows an `UNSAVED` badge while edits are
+pending; moving the cursor, searching, opening the log view or switching
+documents never prompts.
+
+Failures are recorded in a bounded error history opened with `H`, each
+entry naming the failed operation and a safe next action. After a failed
+save or rollback the status line points you at the recovery backup
+(`B` on the affected document), and a cancelled editor edit surfaces its
+pre-edit recovery snapshot path.
 
 ### Log sources
 
