@@ -26,6 +26,13 @@ make test         # Run all unit and integration tests
 make vet          # Run baseline static checks
 make check        # Run formatting, tests and vet
 make run          # Run locally
+make build        # Build a local binary in bin/
+make dist         # Build local GoReleaser snapshot artifacts
+make clean        # Remove generated local artifacts
+make coverage     # Generate coverage.out and print the summary
+make fmt-check    # Verify formatting without changing files
+make release-check # Validate the GoReleaser configuration
+make test-race    # Run tests with the race detector
 ```
 
 The equivalent direct commands are `gofmt -w .`, `go test ./...`, `go vet ./...`, and `go run ./cmd/lazycaddy`.

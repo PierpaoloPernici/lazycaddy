@@ -39,12 +39,16 @@ Run the complete local verification from a clean working tree:
 
 ```sh
 make check
-goreleaser check
-goreleaser release --snapshot --clean
+make release-check
+make dist
 ```
 
-Inspect the generated `dist/` archives and verify that each archive contains
-the `lazycaddy` binary. Verify the checksums before publishing:
+`make dist` runs GoReleaser in snapshot mode and creates local archives for the
+configured target matrix without creating a tag or publishing a release.
+Install or copy an archive to a production-like machine to exercise the
+artifact before publishing. Inspect the generated `dist/` archives and verify
+that each archive contains the `lazycaddy` binary. Verify the checksums before
+publishing:
 
 ```sh
 cd dist

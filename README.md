@@ -34,6 +34,24 @@ Run checks:
 make check
 ~~~
 
+Run `make` without a target to list the available development commands.
+
+Build a local binary, check the release configuration or run additional
+quality checks with `make build`, `make release-check`, `make fmt-check`,
+`make test-race` and `make coverage`.
+
+Build local release artifacts for installation and testing on another machine:
+
+~~~sh
+make dist
+~~~
+
+Remove generated local artifacts (`bin/`, `dist/` and coverage files):
+
+~~~sh
+make clean
+~~~
+
 Show build information:
 
 ~~~sh
