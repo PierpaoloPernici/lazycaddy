@@ -628,7 +628,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // closing stops the poll (no tick is rescheduled).
 func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
 	if m.logSource == nil {
-		m.statusMessage = "✗ log view unavailable: no log source configured (use --log-file)"
+		m.statusMessage = "✗ log view unavailable: no log source configured (use --log-file <path> or --log-journal-unit <unit>)"
 		return m, nil
 	}
 	if m.showLogs {
@@ -2380,12 +2380,18 @@ func (m *Model) statusLine(width int) string {
 }
 
 // logView renders the full-screen log scrollback inside a bordered pane.
-// The title names the followed log file and the current follow/pause
-// state, so those modes never rely on color alone.
+// The title names the log source (the followed log file path or the
+// followed systemd journal unit) and the current follow/pause state, so
+// those modes never rely on color alone.
 func (m *Model) logView(width, height int) string {
 	title := "Logs"
-	if m.state != nil && m.state.Settings.LogPath != "" {
-		title += " · " + m.state.Settings.LogPath
+	if m.state != nil {
+		switch {
+		case m.state.Settings.LogPath != "":
+			title += " · " + m.state.Settings.LogPath
+		case m.state.Settings.JournalUnit != "":
+			title += " · unit " + m.state.Settings.JournalUnit
+		}
 	}
 	if m.logFollow {
 		title += " · FOLLOW"

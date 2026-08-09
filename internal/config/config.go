@@ -34,8 +34,14 @@ type Settings struct {
 	AdminTimeout time.Duration
 	// LogPath is the path of a Caddy log file to follow in the log view.
 	// Empty means "no log source configured": the l keybinding is disabled
-	// and the TUI stays fully browsable.
+	// and the TUI stays fully browsable. Mutually exclusive with
+	// JournalUnit.
 	LogPath string
+	// JournalUnit is the systemd journal unit to follow in the log view
+	// (for example "caddy.service"). Empty means "no log source
+	// configured": the l keybinding is disabled and the TUI stays fully
+	// browsable. Mutually exclusive with LogPath.
+	JournalUnit string
 }
 
 // DefaultConfigPath is the Caddyfile path used when --config is not given.

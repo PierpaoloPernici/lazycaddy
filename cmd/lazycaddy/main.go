@@ -13,13 +13,14 @@
 // for its version and checks the Admin API, so the header can report the
 // detected capabilities; every probe failure degrades to an explicit
 // unknown/stopped state and the TUI remains fully browsable read-only.
-// With --log-file, the l keybinding opens a read-only log view that
-// follows the Caddy log file (polling, rotation-aware) and highlights
-// each line's JSON structure; without it the log view is disabled. The /
-// and Ctrl-F keybindings open a read-only, case-insensitive substring
-// search across site/node labels, document paths and content (imported
-// files included) and the loaded log history; Enter jumps to the hit and
-// Esc closes without side effects.
+// With --log-file or --log-journal-unit (mutually exclusive), the l
+// keybinding opens a read-only log view that follows the Caddy log file
+// (polling, rotation-aware) or a systemd journal unit, and highlights
+// each line's JSON structure; without either the log view is disabled.
+// The / and Ctrl-F keybindings open a read-only, case-insensitive
+// substring search across site/node labels, document paths and content
+// (imported files included) and the loaded log history; Enter jumps to
+// the hit and Esc closes without side effects.
 // The operator is always in control of when format, validate, save and
 // reload run.
 package main
@@ -45,7 +46,16 @@ import (
 func main() {
 	settings := config.DefaultSettings()
 	var write bool
+	rootCmd := newRootCommand(&settings, &write)
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
 
+// newRootCommand builds the lazycaddy cobra command. The flags are bound to
+// the provided settings and write pointers so tests can drive flag parsing
+// without executing the application.
+func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:     "lazycaddy",
 		Short:   "A keyboard-first terminal UI for inspecting and managing Caddy",
@@ -54,14 +64,14 @@ func main() {
 			"The inspector is read-only by default; --write enables backups and atomic saves, and format/validate are opt-in via --caddy-path.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if write {
+			if *write {
 				settings.ReadOnly = false
 			}
 			if settings.BackupDir == "" {
 				settings.BackupDir = filepath.Join(filepath.Dir(settings.ConfigPath), ".lazycaddy", "backups")
 			}
 
-			loader := app.NewLoader(settings, os.ReadFile)
+			loader := app.NewLoader(*settings, os.ReadFile)
 			// The Admin API client is shared by the reloader and the
 			// startup runtime probe; it is created unconditionally so the
 			// probe can report on the API even when no caddy binary is
@@ -123,12 +133,15 @@ func main() {
 				AdminTimeout:   5 * time.Second,
 			})
 			runtimeStatus := app.RuntimeStatusFunc(detector.Probe)
-			// The log view is opt-in: without --log-file the source stays
-			// nil and the l keybinding is disabled, so the TUI never
-			// ticks or touches the filesystem.
-			var logSource app.LogSource
-			if settings.LogPath != "" {
-				logSource = app.NewLogSource(logs.NewTailer(logs.Options{Path: settings.LogPath}))
+			// The log view is opt-in: without --log-file or
+			// --log-journal-unit the source stays nil and the l keybinding
+			// is disabled, so the TUI never ticks or touches the
+			// filesystem or the journal. The two options are mutually
+			// exclusive; buildLogSource validates that before constructing
+			// anything.
+			logSource, err := buildLogSource(*settings)
+			if err != nil {
+				return err
 			}
 			// Search is always available and read-only: it matches node
 			// labels, document paths and content lines (imports included)
@@ -140,8 +153,8 @@ func main() {
 			// or unreadable config file is surfaced as the top-level error.
 			model.Load()
 			program := tea.NewProgram(model, tea.WithAltScreen())
-			if _, err := program.Run(); err != nil {
-				return fmt.Errorf("run TUI: %w", err)
+			if err := runTUI(func() (tea.Model, error) { return program.Run() }, logSource); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -154,7 +167,7 @@ func main() {
 		"path to the caddy binary (default: empty; format and validate are disabled)")
 	rootCmd.Flags().DurationVar(&settings.ValidatorTimeout, "validator-timeout", 0,
 		"per-invocation timeout for caddy fmt and caddy validate (default: 5s, the validator package default)")
-	rootCmd.Flags().BoolVar(&write, "write", false,
+	rootCmd.Flags().BoolVar(write, "write", false,
 		"enable writable mode (save creates backups and writes the file); default is read-only")
 	rootCmd.Flags().StringVar(&settings.BackupDir, "backup-dir", "",
 		"directory for pre-save backups (default: <config-dir>/.lazycaddy/backups)")
@@ -164,8 +177,52 @@ func main() {
 		"per-request timeout for Admin API calls such as reload (default: 30s)")
 	rootCmd.Flags().StringVar(&settings.LogPath, "log-file", "",
 		"path of a Caddy log file to follow in the log view (default: empty; the log view is disabled)")
+	rootCmd.Flags().StringVar(&settings.JournalUnit, "log-journal-unit", "",
+		"systemd journal unit to follow in the log view (e.g. caddy.service); default: empty; the log view then reads the journal")
 
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	return rootCmd
+}
+
+// buildLogSource validates and constructs the configured read-only log
+// source. --log-file and --log-journal-unit are mutually exclusive; when
+// neither is set the source is nil and the log view stays disabled.
+func buildLogSource(settings config.Settings) (app.LogSource, error) {
+	if settings.LogPath != "" && settings.JournalUnit != "" {
+		return nil, fmt.Errorf("--log-file and --log-journal-unit are mutually exclusive: choose one log source")
+	}
+	if settings.JournalUnit != "" {
+		return app.NewJournalLogSource(logs.NewJournalSource(journalOptions(settings))), nil
+	}
+	if settings.LogPath != "" {
+		return app.NewLogSource(logs.NewTailer(logs.Options{Path: settings.LogPath})), nil
+	}
+	return nil, nil
+}
+
+// journalOptions maps the resolved settings onto the journal source options.
+func journalOptions(settings config.Settings) logs.JournalOptions {
+	return logs.JournalOptions{Unit: settings.JournalUnit}
+}
+
+// runTUI runs the Bubble Tea program and then closes the configured log
+// source. The log source owns its process lifetime — the journal source
+// spawns a supervisor goroutine around journalctl that must be released on
+// exit — so every path out of the program closes it exactly once. Closing
+// is best-effort: a Close error must never mask a Run error nor turn a
+// successful run into a failure.
+func runTUI(run func() (tea.Model, error), logSource app.LogSource) error {
+	if _, err := run(); err != nil {
+		closeLogSource(logSource)
+		return fmt.Errorf("run TUI: %w", err)
+	}
+	closeLogSource(logSource)
+	return nil
+}
+
+// closeLogSource closes logSource when non-nil, ignoring the error:
+// shutdown is best-effort and every LogSource implementation is idempotent.
+func closeLogSource(logSource app.LogSource) {
+	if logSource != nil {
+		_ = logSource.Close()
 	}
 }

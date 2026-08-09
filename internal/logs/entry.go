@@ -36,6 +36,11 @@ type Entry struct {
 	URI string
 	// Host is request.host for access logs.
 	Host string
+	// Metadata is an optional set of journald metadata fields (for example
+	// PRIORITY, _PID, _SYSTEMD_UNIT) attached by the systemd journal
+	// source. It is nil when none of the curated fields were present and
+	// is left untouched by ParseEntry and the file Tailer.
+	Metadata map[string]string
 }
 
 // jsonEntry is the tolerant decode target for one log line. Pointer fields

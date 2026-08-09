@@ -86,7 +86,7 @@ The inspector also provides:
 
 - Caddy version, Admin API reachability and capability status in the header;
 - an opt-in, rotation-aware log view with bounded history and JSON
-  highlighting (`--log-file`, `l`);
+  highlighting (`--log-file` or `--log-journal-unit`, `l`);
 - `$EDITOR` editing for a selected node (`e`) or an entire document (`E`),
   including imported files, with validation, diff review and the same backup
   and atomic-save pipeline;
@@ -126,6 +126,31 @@ running with its Admin API enabled and reachable at the configured endpoint.
 Reloads use the local Admin API at `http://localhost:2019` by default;
 override the endpoint with `--admin-endpoint` and the per-request timeout
 with `--admin-timeout`. A reload never happens implicitly.
+
+### Log sources
+
+The log view (`l`) is opt-in and strictly read-only. Choose exactly one
+source:
+
+- `--log-file <path>` follows a Caddy log file (polling, rotation-aware),
+  for example:
+
+  ~~~sh
+  go run ./cmd/lazycaddy --log-file /var/log/caddy/access.log
+  ~~~
+
+- `--log-journal-unit <unit>` follows a systemd journal unit, for example:
+
+  ~~~sh
+  go run ./cmd/lazycaddy --log-journal-unit caddy.service
+  ~~~
+
+The journal source consumes `journalctl --output=json` without a shell,
+keeps the journal cursor between the bounded initial history and follow
+phases, and surfaces journal errors through the log view's poll status line
+while the rest of the TUI stays browsable. `--log-file` and
+`--log-journal-unit` are mutually exclusive; passing both is an error.
+Without either option the log view is disabled.
 
 ## Project disclaimer
 
