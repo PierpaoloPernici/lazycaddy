@@ -25,18 +25,30 @@ goreleaser --version
 - Windows and package-manager publishing are deferred until the release
   process and platform behavior are stable.
 
+## Release-ready history
+
+All pull requests and commits must already satisfy the release-ready change
+contract in [AGENTS.md](../AGENTS.md) before tagging. Check the PR title,
+Conventional Commit subjects, release disposition label and changelog decision
+before merging. Release preparation must not rename or rewrite published
+history; correct a release problem with a new patch version.
+
 ## Before tagging
 
 Run the complete local verification from a clean working tree:
 
 ```sh
 make check
-goreleaser check
-goreleaser release --snapshot --clean
+make release-check
+make dist
 ```
 
-Inspect the generated `dist/` archives and verify that each archive contains
-the `lazycaddy` binary. Verify the checksums before publishing:
+`make dist` runs GoReleaser in snapshot mode and creates local archives for the
+configured target matrix without creating a tag or publishing a release.
+Install or copy an archive to a production-like machine to exercise the
+artifact before publishing. Inspect the generated `dist/` archives and verify
+that each archive contains the `lazycaddy` binary. Verify the checksums before
+publishing:
 
 ```sh
 cd dist
