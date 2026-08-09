@@ -328,6 +328,11 @@ func TestErrorHistory_RecordedAndOpened(t *testing.T) {
 	if !strings.Contains(view, "→") {
 		t.Errorf("history view missing the next-action hint:\n%s", view)
 	}
+
+	// Esc closes the history view and clears its viewport content.
+	if updated, cmd := m.updateErrorHistoryKey(tea.KeyMsg{Type: tea.KeyEscape}); cmd != nil || updated.(*Model).showErrorHistory {
+		t.Fatalf("Esc did not close error history: show=%v cmd=%v", updated.(*Model).showErrorHistory, cmd)
+	}
 }
 
 // TestErrorHistory_Bounded verifies the history is capped at

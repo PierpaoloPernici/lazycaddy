@@ -51,6 +51,28 @@ func checkHighlight(t *testing.T, src []byte, want [][]Span) {
 	}
 }
 
+func TestSpanKindString(t *testing.T) {
+	tests := []struct {
+		kind SpanKind
+		want string
+	}{
+		{SpanWord, "word"},
+		{SpanString, "string"},
+		{SpanHeredoc, "heredoc"},
+		{SpanComment, "comment"},
+		{SpanOpenBrace, "{"},
+		{SpanCloseBrace, "}"},
+		{SpanPlaceholder, "placeholder"},
+		{SpanKind(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.kind.String(); got != tt.want {
+			t.Errorf("SpanKind(%d).String() = %q, want %q", tt.kind, got, tt.want)
+		}
+	}
+}
+
 // TestHighlightBraceSite covers a simple braced site: word + brace on the
 // header line, directive on the next, close brace on the last.
 func TestHighlightBraceSite(t *testing.T) {
