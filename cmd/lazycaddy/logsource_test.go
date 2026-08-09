@@ -52,12 +52,15 @@ func TestBuildLogSource_MutuallyExclusive(t *testing.T) {
 
 // TestNewRootCommand_RejectsBothLogSources drives the cobra command end to
 // end: both log-source flags produce the documented error from RunE without
-// constructing or running anything (no journalctl, no file tailer).
+// constructing or running anything (no journalctl, no file tailer). The
+// explicit --config bypasses v0.2 path discovery so the command fails on the
+// mutual-exclusion check itself rather than on config discovery.
 func TestNewRootCommand_RejectsBothLogSources(t *testing.T) {
 	settings := config.DefaultSettings()
 	var write bool
 	cmd := newRootCommand(&settings, &write)
-	cmd.SetArgs([]string{"--log-file", "access.log", "--log-journal-unit", "caddy.service"})
+	cmd.SetArgs([]string{"--config", "/nonexistent/Caddyfile",
+		"--log-file", "access.log", "--log-journal-unit", "caddy.service"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("Execute with both log sources: expected an error, got nil")
