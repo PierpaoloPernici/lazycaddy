@@ -2821,6 +2821,72 @@ func TestModelLogView_OpenSeedsHistory(t *testing.T) {
 	}
 }
 
+// TestModelLogView_JournalUnitTitle verifies that when the configured source
+// is a systemd journal unit, the log view title identifies the unit.
+func TestModelLogView_JournalUnitTitle(t *testing.T) {
+	state := logStateFor(t)
+	state.Settings.LogPath = ""
+	state.Settings.JournalUnit = "caddy.service"
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("opening the log view must return a poll command")
+	}
+	if !strings.Contains(m.View(), "Logs · unit caddy.service") {
+		t.Errorf("View missing the journal unit title:\n%s", m.View())
+	}
+}
+
+// TestModelLogView_JournalPollErrorKeepsBrowsing verifies that a failing
+// journal source surfaces through the existing poll-error status line while
+// the rest of the TUI stays browsable: the error is reported, the log view
+// stays open, and tree navigation still works.
+func TestModelLogView_JournalPollErrorKeepsBrowsing(t *testing.T) {
+	state := logStateFor(t)
+	state.Settings.LogPath = ""
+	state.Settings.JournalUnit = "caddy.service"
+	pollErr := errors.New("journalctl unavailable")
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, pollErr },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+
+	// Open the log view: the first poll surfaces the source error.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("opening the log view must return a poll command")
+	}
+	updated, _ = m.Update(logTailMsg{Err: pollErr})
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "✗ log poll failed") {
+		t.Errorf("statusMessage = %q, want the poll-failure message", m.statusMessage)
+	}
+	if !errors.Is(m.logErr, pollErr) {
+		t.Errorf("logErr = %v, want the sentinel poll error", m.logErr)
+	}
+
+	// Browsing still works: close the log view (Esc) and navigate the tree.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*Model)
+	if m.showLogs {
+		t.Error("showLogs = true after closing, want false")
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(*Model)
+	if m.cursor != 1 {
+		t.Errorf("cursor = %d after navigating, want 1 (tree still navigable)", m.cursor)
+	}
+}
+
 // TestModelLogTail_AppendsAndReschedules verifies that a delivered poll
 // result appends entries and reschedules the next poll, and that an empty
 // result keeps polling.
