@@ -56,13 +56,40 @@ func newQuitProgram() *tea.Program {
 // a clean quit and verifies the source is closed exactly once.
 func TestRunTUI_ClosesLogSourceOnSuccess(t *testing.T) {
 	src, closes := closingLogSource(nil)
+	monitor, monitorCloses := closingMonitor()
 	program := newQuitProgram()
-	if err := runTUI(func() (tea.Model, error) { return program.Run() }, src); err != nil {
+	if err := runTUI(func() (tea.Model, error) { return program.Run() }, src, monitor); err != nil {
 		t.Fatalf("runTUI: %v", err)
 	}
 	if *closes != 1 {
 		t.Fatalf("log source closed %d times, want exactly 1", *closes)
 	}
+	if *monitorCloses != 1 {
+		t.Fatalf("change monitor closed %d times, want exactly 1", *monitorCloses)
+	}
+}
+
+// closingMonitor returns an app.ChangeMonitor whose Close increments the
+// returned counter, modeling the fsnotify watcher release.
+func closingMonitor() (app.ChangeMonitor, *int) {
+	closes := new(int)
+	return &countingMonitor{closes: closes}, closes
+}
+
+// countingMonitor is a minimal app.ChangeMonitor that only counts Close
+// calls; Next blocks forever so a leaked watch goroutine would hang the
+// test instead of silently passing.
+type countingMonitor struct {
+	closes *int
+}
+
+func (c *countingMonitor) Update([]app.ChangeTarget) error { return nil }
+func (c *countingMonitor) Next(context.Context) (app.ExternalChange, error) {
+	select {}
+}
+func (c *countingMonitor) Close() error {
+	*c.closes++
+	return nil
 }
 
 // TestRunTUI_ClosesLogSourceOnError verifies the shutdown path still closes
@@ -71,12 +98,16 @@ func TestRunTUI_ClosesLogSourceOnSuccess(t *testing.T) {
 // error (documented fallback).
 func TestRunTUI_ClosesLogSourceOnError(t *testing.T) {
 	src, closes := closingLogSource(nil)
-	err := runTUI(func() (tea.Model, error) { return nil, errSentinelRun }, src)
+	monitor, monitorCloses := closingMonitor()
+	err := runTUI(func() (tea.Model, error) { return nil, errSentinelRun }, src, monitor)
 	if !errors.Is(err, errSentinelRun) {
 		t.Fatalf("runTUI = %v, want the sentinel run error", err)
 	}
 	if *closes != 1 {
 		t.Fatalf("log source closed %d times, want exactly 1", *closes)
+	}
+	if *monitorCloses != 1 {
+		t.Fatalf("change monitor closed %d times, want exactly 1", *monitorCloses)
 	}
 }
 
@@ -84,7 +115,7 @@ func TestRunTUI_ClosesLogSourceOnError(t *testing.T) {
 // source (the default; the log view is then disabled).
 func TestRunTUI_NilLogSource(t *testing.T) {
 	program := newQuitProgram()
-	if err := runTUI(func() (tea.Model, error) { return program.Run() }, nil); err != nil {
+	if err := runTUI(func() (tea.Model, error) { return program.Run() }, nil, nil); err != nil {
 		t.Fatalf("runTUI: %v", err)
 	}
 }
@@ -97,14 +128,14 @@ func TestRunTUI_CloseErrorNeverMasksOrFails(t *testing.T) {
 
 	// Run fails and Close fails: the run error is returned, not masked.
 	src, _ := closingLogSource(closeErr)
-	if err := runTUI(func() (tea.Model, error) { return nil, errSentinelRun }, src); !errors.Is(err, errSentinelRun) {
+	if err := runTUI(func() (tea.Model, error) { return nil, errSentinelRun }, src, nil); !errors.Is(err, errSentinelRun) {
 		t.Fatalf("runTUI = %v, want the sentinel run error (Close must not mask it)", err)
 	}
 
 	// Run succeeds and Close fails: the run still succeeds.
 	src2, _ := closingLogSource(closeErr)
 	program := newQuitProgram()
-	if err := runTUI(func() (tea.Model, error) { return program.Run() }, src2); err != nil {
+	if err := runTUI(func() (tea.Model, error) { return program.Run() }, src2, nil); err != nil {
 		t.Fatalf("runTUI with failing Close = %v, want nil (Close must not fail a successful run)", err)
 	}
 }

@@ -105,6 +105,15 @@ type copyResultMsg struct {
 	err  error
 }
 
+// externalChangeMsg is delivered when the change monitor detects an
+// external modification of a watched document. err is nil exactly when
+// change carries a meaningful detection; a non-nil err reports a monitor
+// failure (for example ErrChangeClosed or an unreadable directory).
+type externalChangeMsg struct {
+	change app.ExternalChange
+	err    error
+}
+
 // editorReadyMsg is delivered when the injected app.Editor finishes
 // Prepare: the session holds the snapshot, the range bytes temp file and
 // the argv to run, and the model hands it to the Bubble Tea exec pipeline.
@@ -163,6 +172,15 @@ type pendingDelete struct {
 	path     string
 	original []byte
 	content  []byte
+}
+
+// pendingChange holds a detected external change while the conflict
+// modal is open. inMem is a copy of the affected document's in-memory
+// source taken at detection time, so the compare diff stays stable even
+// if the graph changes underneath.
+type pendingChange struct {
+	change app.ExternalChange
+	inMem  []byte
 }
 
 // Model is the inspector screen: a document tree on the left, the raw
@@ -361,6 +379,21 @@ type Model struct {
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard
+
+	// monitor detects external changes to the resolved configuration
+	// documents (root and imports) and feeds the conflict modal; nil
+	// disables the feature. The existing synchronous conflict guards
+	// (saver, editor and reloader) remain the final safety net.
+	monitor app.ChangeMonitor
+	// showChangeConflict is true while the external-change conflict
+	// modal is open. It takes precedence over every other modal.
+	showChangeConflict bool
+	// changeCompare is true while the conflict flow is showing the
+	// compare diff (in-memory vs on-disk) inside the shared diff modal.
+	changeCompare bool
+	// pendingChange holds the change awaiting the operator decision
+	// while the conflict modal is open.
+	pendingChange *pendingChange
 }
 
 // New returns a Model that will load its state through loader, run
@@ -377,7 +410,10 @@ type Model struct {
 // version (e.g. "dev" or "v1.2.3") shown in the header brand label. An
 // optional clipboard may be supplied; omitting it keeps the model read-only
 // with respect to clipboard integration and disables the y keybinding.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, clipboards ...app.Clipboard) *Model {
+// monitor detects external changes to the resolved documents; omitting
+// it disables the watch feature (the synchronous conflict guards stay
+// active).
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, clipboards ...app.Clipboard) *Model {
 	var clipboard app.Clipboard
 	if len(clipboards) > 0 {
 		clipboard = clipboards[0]
@@ -401,6 +437,7 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		searchViewport:    viewport.New(1, 1),
 		logFollow:         true,
 		clipboard:         clipboard,
+		monitor:           monitor,
 	}
 }
 
@@ -426,18 +463,29 @@ func (m *Model) Load() error {
 		// proves it.
 		m.loaded = loadedUnknown
 		m.loadedAt = time.Time{}
+		// Re-target the change monitor at the freshly resolved documents
+		// (root and imports) so it can detect external modifications.
+		m.syncMonitor()
 	}
 	return err
 }
 
 // Init implements tea.Model. Loading is done synchronously before the
-// program starts, so the only startup command is the async runtime
-// probe (when a probe is configured).
+// program starts, so the only startup commands are the async runtime
+// probe (when a probe is configured) and the external-change watch
+// (when a monitor is wired and a graph is loaded).
 func (m *Model) Init() tea.Cmd {
-	if m.runtime == nil {
+	var cmds []tea.Cmd
+	if m.runtime != nil {
+		cmds = append(cmds, m.runtimeProbeCmd())
+	}
+	if m.monitor != nil && m.state != nil && m.state.Graph != nil {
+		cmds = append(cmds, m.watchCmd())
+	}
+	if len(cmds) == 0 {
 		return nil
 	}
-	return m.runtimeProbeCmd()
+	return tea.Batch(cmds...)
 }
 
 // runtimeProbeCmd returns a tea.Cmd that runs the startup probe in a
@@ -510,6 +558,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = fmt.Sprintf("✓ copied %d bytes", msg.size)
 		}
 		return m, nil
+	case externalChangeMsg:
+		return m.handleExternalChange(msg)
 	case editorReadyMsg:
 		return m.handleEditorReady(msg)
 	case editorExecMsg:
@@ -581,6 +631,16 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The external-change conflict modal takes precedence over every
+	// other modal: it is the most urgent prompt. While its compare diff
+	// is open, the diff keys apply (Esc returns to the conflict
+	// options).
+	if m.showChangeConflict {
+		if m.changeCompare {
+			return m.updateDiffKey(msg)
+		}
+		return m.updateChangeConflictKey(msg)
+	}
 	// The diff modal takes precedence over the main keymap.
 	if m.showDiff {
 		return m.updateDiffKey(msg)
@@ -780,6 +840,258 @@ func (m *Model) startCopy() (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		return copyResultMsg{size: len(content), err: clip.Copy(context.Background(), content)}
 	}
+}
+
+// watchCmd returns a tea.Cmd that blocks on the injected change monitor
+// until an external change is detected or the monitor is closed, then
+// delivers an externalChangeMsg. The handler re-arms the watch by
+// returning this command again; while the conflict modal is open no new
+// watch is armed, and changes detected in the meantime are queued by the
+// monitor (latest-wins) for the next arm.
+func (m *Model) watchCmd() tea.Cmd {
+	mon := m.monitor
+	if mon == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		change, err := mon.Next(context.Background())
+		return externalChangeMsg{change: change, err: err}
+	}
+}
+
+// syncMonitor re-targets the change monitor at the currently resolved
+// documents. An Update failure (for example an unreadable directory)
+// disables the feature with an explicit status message; the synchronous
+// conflict guards remain active either way.
+func (m *Model) syncMonitor() {
+	if m.monitor == nil || m.state == nil || m.state.Graph == nil {
+		return
+	}
+	if err := m.monitor.Update(app.ChangeTargets(m.state.Graph.Documents)); err != nil {
+		m.monitor = nil
+		m.statusMessage = "✗ external change watching unavailable: " + err.Error()
+	}
+}
+
+// handleExternalChange is invoked when the change monitor delivers a
+// detection. Monitor failures disable the feature with an explicit
+// status line. Detections are ignored when a mutating workflow is in
+// flight (save, reload, editor, delete — each has its own synchronous
+// conflict guard), when the conflict modal is already open, or when the
+// on-disk bytes already match the in-memory document (for example the
+// notification produced by our own atomic save). Otherwise the conflict
+// modal opens with reload/compare/keep options.
+func (m *Model) handleExternalChange(msg externalChangeMsg) (tea.Model, tea.Cmd) {
+	if m.monitor == nil {
+		// The feature was disabled (or never wired); a stale message
+		// cannot open the conflict modal.
+		return m, nil
+	}
+	if errors.Is(msg.err, app.ErrChangeClosed) {
+		// The monitor was closed: stop watching, keep browsing.
+		m.monitor = nil
+		return m, nil
+	}
+	if msg.err != nil {
+		m.monitor = nil
+		m.statusMessage = "✗ external change watching failed: " + msg.err.Error()
+		return m, nil
+	}
+	if m.inFlightWorkflow() {
+		return m, m.watchCmd()
+	}
+	if m.showChangeConflict {
+		return m, m.watchCmd()
+	}
+	if m.bytesMatchMemory(msg.change) {
+		return m, m.watchCmd()
+	}
+
+	// Snapshot the affected document's in-memory source so the compare
+	// diff is stable for the whole conflict flow.
+	var inMem []byte
+	if m.state != nil && m.state.Graph != nil {
+		cleanPath := filepath.Clean(msg.change.Path)
+		for _, doc := range m.state.Graph.Documents {
+			if doc != nil && filepath.Clean(doc.Path) == cleanPath {
+				inMem = append([]byte(nil), doc.Source...)
+				break
+			}
+		}
+	}
+	m.pendingChange = &pendingChange{change: msg.change, inMem: inMem}
+	m.changeCompare = false
+	m.showChangeConflict = true
+	m.statusMessage = ""
+	return m, nil
+}
+
+// inFlightWorkflow reports whether a mutating workflow with its own
+// synchronous conflict guard is active. The change monitor defers to
+// those guards: reporting the same conflict twice would be noise.
+func (m *Model) inFlightWorkflow() bool {
+	return m.saving || m.reloading || m.editing || m.deleting ||
+		m.pendingEdit != nil || m.pendingDelete != nil
+}
+
+// bytesMatchMemory reports whether the detected change is already
+// reflected in the in-memory graph (the on-disk bytes equal the loaded
+// document source), which makes it a non-event: the file on disk and the
+// state the UI shows agree. This covers the notification produced by
+// lazycaddy's own atomic save, which races the monitor's debounce.
+func (m *Model) bytesMatchMemory(change app.ExternalChange) bool {
+	if change.Missing || m.state == nil || m.state.Graph == nil {
+		return false
+	}
+	cleanPath := filepath.Clean(change.Path)
+	for _, doc := range m.state.Graph.Documents {
+		if doc != nil && filepath.Clean(doc.Path) == cleanPath {
+			return bytes.Equal(change.OnDisk, doc.Source)
+		}
+	}
+	// A path that is no longer part of the graph is stale: nothing to
+	// compare, nothing to reload.
+	return true
+}
+
+// hasUnsavedEdits reports whether the operator has in-memory changes
+// that a graph reload would discard: a pending editor edit or delete, or
+// a working copy that differs from the loaded bytes.
+func (m *Model) hasUnsavedEdits() bool {
+	if m.pendingEdit != nil || m.pendingDelete != nil {
+		return true
+	}
+	return m.workingBytes != nil && !bytes.Equal(m.workingBytes, m.loadedBytes)
+}
+
+// updateChangeConflictKey handles keys while the conflict modal is open.
+// With no unsaved edits, reload is safe and only keep is offered next to
+// it; with unsaved edits, reload explicitly discards them (the modal text
+// names that consequence — choosing it is the confirmation), compare
+// opens the in-memory vs on-disk diff, and keep retains the in-memory
+// version. Esc, q and k always keep; Enter and r always reload; c
+// compares when unsaved edits exist.
+func (m *Model) updateChangeConflictKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "k":
+		return m.resolveChangeKeep()
+	case "enter", "r":
+		return m.resolveChangeReload()
+	case "c":
+		if m.hasUnsavedEdits() {
+			return m.openChangeCompare()
+		}
+	case "ctrl+c":
+		m.quit = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// resolveChangeKeep keeps the in-memory version and resumes watching.
+// The monitor already advanced its snapshot to the on-disk bytes when it
+// reported the change, so only genuinely new changes surface again.
+func (m *Model) resolveChangeKeep() (tea.Model, tea.Cmd) {
+	if pc := m.pendingChange; pc != nil {
+		if pc.change.Missing {
+			m.statusMessage = "kept in-memory version — " + pc.change.Path + " is missing on disk"
+		} else {
+			m.statusMessage = "kept in-memory version — " + pc.change.Path + " differs on disk"
+		}
+	}
+	m.closeChangeConflict()
+	return m, m.watchCmd()
+}
+
+// resolveChangeReload discards the in-memory changes (the modal text
+// names that consequence, so choosing reload is the confirmation) and
+// reloads the whole graph from disk through the injected loader. It
+// never touches the running Caddy configuration: the loaded state is set
+// to unknown until an explicit r reload proves it again.
+func (m *Model) resolveChangeReload() (tea.Model, tea.Cmd) {
+	path := ""
+	if m.pendingChange != nil {
+		path = m.pendingChange.change.Path
+	}
+	m.closeChangeConflict()
+	if m.loader == nil || m.state == nil || m.state.Graph == nil {
+		m.statusMessage = "✗ reload failed: no configuration loaded"
+		return m, m.watchCmd()
+	}
+	state, err := m.loader.LoadState()
+	if err != nil || state == nil || state.Graph == nil {
+		if err != nil {
+			m.statusMessage = "✗ reload failed: " + err.Error()
+		} else {
+			m.statusMessage = "✗ reload failed"
+		}
+		return m, m.watchCmd()
+	}
+	m.state.Graph = state.Graph
+	m.items = buildItems(state.Graph, m.collapsed)
+	if m.cursor >= len(m.items) && len(m.items) > 0 {
+		m.cursor = len(m.items) - 1
+	}
+	// Discard the in-memory working state: the graph now reflects disk.
+	m.loadedBytes = append([]byte(nil), state.Graph.Root.Source...)
+	m.workingBytes = nil
+	m.workingValidated = false
+	m.pendingEdit = nil
+	m.pendingDelete = nil
+	m.showSaveConfirm = false
+	m.showReloadConfirm = false
+	m.sourceRefresh = true
+	// The file changed: the relationship to the running config is
+	// unknown until an explicit reload proves it.
+	m.loaded = loadedUnknown
+	m.loadedAt = time.Time{}
+	m.syncMonitor()
+	if path == "" {
+		m.statusMessage = "✓ reloaded from disk"
+	} else {
+		m.statusMessage = "✓ reloaded " + path + " from disk"
+	}
+	return m, m.watchCmd()
+}
+
+// openChangeCompare opens the shared diff modal with the in-memory vs
+// on-disk diff of the affected document. Esc returns to the conflict
+// options; the conflict modal stays open underneath.
+func (m *Model) openChangeCompare() (tea.Model, tea.Cmd) {
+	pc := m.pendingChange
+	if pc == nil {
+		return m, nil
+	}
+	var lines []diff.Line
+	var err error
+	if pc.change.Missing {
+		lines, err = diff.Unified(pc.inMem, nil, pc.change.Path+" (in memory)", pc.change.Path+" (deleted on disk)")
+	} else {
+		lines, err = diff.Unified(pc.inMem, pc.change.OnDisk, pc.change.Path+" (in memory)", pc.change.Path+" (on disk)")
+	}
+	if err != nil {
+		m.statusMessage = "✗ diff failed: " + err.Error()
+		return m, nil
+	}
+	m.diffLines = lines
+	m.diffTitle = "Compare · " + pc.change.Path
+	m.changeCompare = true
+	m.showDiff = true
+	m.syncDiffContent()
+	m.diffViewport.GotoTop()
+	return m, nil
+}
+
+// closeChangeConflict closes the conflict modal and its compare diff.
+// Callers set the status message afterwards.
+func (m *Model) closeChangeConflict() {
+	m.showChangeConflict = false
+	m.changeCompare = false
+	m.pendingChange = nil
+	m.showDiff = false
+	m.diffLines = nil
+	m.diffTitle = ""
+	m.diffViewport.SetContent("")
 }
 
 // recomputeSearch rebuilds the results for the current query against the
@@ -1615,6 +1927,13 @@ func (m *Model) startDiff() (tea.Model, tea.Cmd) {
 func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
+		if m.showChangeConflict && m.changeCompare {
+			// Esc from the conflict compare returns to the conflict
+			// options; the conflict modal stays open.
+			m.closeDiff()
+			m.changeCompare = false
+			return m, nil
+		}
 		m.closeDiff()
 		if m.pendingEdit != nil {
 			m.pendingEdit = nil
@@ -1799,6 +2118,9 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 				status += " · tree refresh failed"
 			}
 		}
+		// The saved document is now the graph state: re-seed the change
+		// monitor so it compares against the freshly written bytes.
+		m.syncMonitor()
 		m.pendingEdit = nil
 		m.pendingDelete = nil
 		m.statusMessage = status
@@ -2070,6 +2392,51 @@ func (m *Model) reloadConfirmView(width, height int) string {
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
+// changeConflictView renders the external-change conflict modal. It
+// names the exact file that changed (root or imported) and explains the
+// state, so the operator can decide between reload (discarding any
+// unsaved edits — the text names that consequence, choosing reload is
+// the confirmation), compare (diff in-memory vs on-disk) and keep
+// (retain the in-memory version). Without unsaved edits, compare is not
+// offered and reload is safe.
+func (m *Model) changeConflictView(width, height int) string {
+	path := ""
+	missing := false
+	if pc := m.pendingChange; pc != nil {
+		path = pc.change.Path
+		missing = pc.change.Missing
+	}
+	if path == "" {
+		path = "unknown"
+	}
+	title := "External change · " + truncateToWidth(path, width-20)
+	bodyH := height - 3 // border (2) + title (1)
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	paneContentW := width - 2
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	var body strings.Builder
+	body.WriteString(dimStyle.Render("File   ") + truncateToWidth(path, paneContentW-14) + "\n")
+	if missing {
+		body.WriteString(errorStyle.Render("✗ the file was removed or moved on disk") + "\n")
+	} else {
+		body.WriteString(dimStyle.Render("State  ") + "the file changed on disk\n")
+	}
+	body.WriteString("\n")
+	if m.hasUnsavedEdits() {
+		body.WriteString(statusWarningStyle.Render("unsaved edits exist — reload discards them") + "\n")
+		body.WriteString("r reload (discards edits) · c compare · k keep\n")
+	} else {
+		body.WriteString(dimStyle.Render("no unsaved edits — reloading is safe") + "\n")
+		body.WriteString("r reload · Esc keep\n")
+	}
+	body.WriteString(dimStyle.Render("the running Caddy configuration is never reloaded implicitly"))
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+}
+
 // syncDiffContent sets the diff viewport size and content from the
 // current state. The body is rebuilt only when the size changes:
 // rebuilding resets the viewport scroll, so doing it on every render
@@ -2152,7 +2519,16 @@ func (m *Model) View() string {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("✗ %v", m.err)))
 		b.WriteString("\n")
 	}
-	if m.showDiff {
+	if m.showChangeConflict {
+		// The conflict modal layers above every other modal. While its
+		// compare diff is open, the shared diff modal renders instead.
+		if m.changeCompare {
+			b.WriteString(m.diffView(width, paneH))
+		} else {
+			b.WriteString(m.changeConflictView(width, paneH))
+		}
+		b.WriteString("\n")
+	} else if m.showDiff {
 		b.WriteString(m.diffView(width, paneH))
 		b.WriteString("\n")
 	} else if m.showSaveConfirm {
@@ -2699,6 +3075,14 @@ func (m *Model) footer(width int) string {
 	}
 	var keys string
 	switch {
+	case m.showChangeConflict:
+		if m.changeCompare {
+			keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
+		} else if m.hasUnsavedEdits() {
+			keys = "r reload (discards unsaved edits) · c compare · k/Esc keep"
+		} else {
+			keys = "r reload · Esc keep"
+		}
 	case m.showDiff:
 		if m.pendingDelete != nil {
 			keys = "↑/↓ scroll · PgUp/PgDown page · Enter delete · Esc cancel"
