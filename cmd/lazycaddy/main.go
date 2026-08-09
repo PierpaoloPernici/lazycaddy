@@ -140,8 +140,8 @@ func main() {
 			// or unreadable config file is surfaced as the top-level error.
 			model.Load()
 			program := tea.NewProgram(model, tea.WithAltScreen())
-			if _, err := program.Run(); err != nil {
-				return fmt.Errorf("run TUI: %w", err)
+			if err := runTUI(func() (tea.Model, error) { return program.Run() }, logSource); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -167,5 +167,28 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+// runTUI runs the Bubble Tea program and then closes the configured log
+// source. The log source owns its process lifetime — the journal source
+// spawns a supervisor goroutine around journalctl that must be released on
+// exit — so every path out of the program closes it exactly once. Closing
+// is best-effort: a Close error must never mask a Run error nor turn a
+// successful run into a failure.
+func runTUI(run func() (tea.Model, error), logSource app.LogSource) error {
+	if _, err := run(); err != nil {
+		closeLogSource(logSource)
+		return fmt.Errorf("run TUI: %w", err)
+	}
+	closeLogSource(logSource)
+	return nil
+}
+
+// closeLogSource closes logSource when non-nil, ignoring the error:
+// shutdown is best-effort and every LogSource implementation is idempotent.
+func closeLogSource(logSource app.LogSource) {
+	if logSource != nil {
+		_ = logSource.Close()
 	}
 }
