@@ -40,6 +40,19 @@ release:
     The first public release of lazycaddy is here: a read-only-by-default terminal UI for safely inspecting and editing Caddyfiles.
 
     This release establishes the core safety workflow: source preservation, validation, diff review, backups, atomic writes, and explicit Caddy reloads.
+    {{- else if eq .Version "0.2.0" }}
+    lazycaddy {{ .Version }} is now available.
+
+    This release marks an important step for the project: lazycaddy is
+    beginning to take shape as a practical and safe Caddyfile workflow,
+    rather than just an early prototype.
+
+    The application is now usable for day-to-day configuration inspection
+    and maintenance, and is already being used in a real homelab environment.
+
+    Read-only inspection remains fully supported, while the editing workflow
+    is now robust enough for real use, with validation, diff review,
+    external-change detection, backups, rollback and explicit Caddy reloads.
     {{- else }}
     lazycaddy {{ .Version }} is now available.
 

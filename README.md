@@ -79,6 +79,8 @@ diff, edit, save and reload workflow:
 - reload through the local Admin API (`r`) only after a validated, saved
   configuration and a confirmation that names the target, with saved,
   validated and loaded states shown in the header;
+- watch the loaded root and imported files for external changes, offering
+  explicit reload, compare and keep actions without overwriting changes;
 - detect external changes before saving and report a recovery backup if a
   write fails after backup creation;
 - inspect the backup history of any document (`B`), diff a selected backup
@@ -118,15 +120,15 @@ The inspector also provides:
   and retention failures, and recovery hints that point you at the
   recovery backup (`B`) or the editor's pre-edit snapshot.
 
-The v0.1 vertical slice is complete. The v0.2 milestone has landed
-journal-backed logs and sensible path defaults: lazycaddy now discovers
+The v0.1 vertical slice and the v0.2 milestone are complete. The v0.2
+release landed journal-backed logs and sensible path defaults: lazycaddy now discovers
 `./Caddyfile` (falling back to `/etc/caddy/Caddyfile`) and the `caddy`
 binary through `PATH` when they are not given explicitly, and keeps format,
 validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a wrapped contextual footer and exact
-source clipboard copying with OSC 52 and local fallbacks. Persistent UI state
-remains a later v0.2 capability.
+source clipboard copying with OSC 52 and local fallbacks. The next roadmap
+phase is v0.3 structured editing.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing
