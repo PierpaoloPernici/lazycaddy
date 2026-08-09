@@ -220,17 +220,19 @@ func scanString(line []byte, i *int) (string, bool) {
 					return "", false
 				}
 				r := rune(v)
+				consumed := 6
 				if utf16.IsSurrogate(r) {
 					if j+12 <= len(line) && line[j+6] == '\\' && line[j+7] == 'u' {
 						if v2, err := strconv.ParseUint(string(line[j+8:j+12]), 16, 32); err == nil {
 							if dec := utf16.DecodeRune(r, rune(v2)); dec != unicode.ReplacementChar {
 								r = dec
+								consumed = 12
 							}
 						}
 					}
 				}
 				sb.WriteRune(r)
-				j += 6
+				j += consumed
 			default:
 				return "", false
 			}

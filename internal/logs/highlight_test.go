@@ -18,6 +18,64 @@ func checkSpans(t *testing.T, line string, want []Span) {
 	}
 }
 
+func TestScanString(t *testing.T) {
+	tests := []struct {
+		name      string
+		line      string
+		start     int
+		want      string
+		wantIndex int
+		wantOK    bool
+	}{
+		{name: "plain", line: `"hello" tail`, want: "hello", wantIndex: 7, wantOK: true},
+		{name: "escapes", line: `"line\n\t\"quoted\""`, want: "line\n\t\"quoted\"", wantIndex: 20, wantOK: true},
+		{name: "unicode", line: `"\u0041\u00e9"`, want: "Aé", wantIndex: 14, wantOK: true},
+		{name: "surrogate pair", line: `"\ud83d\ude00"`, want: "😀", wantIndex: 14, wantOK: true},
+		{name: "invalid escape", line: `"bad\q"`, wantIndex: 0, wantOK: false},
+		{name: "unterminated", line: `"missing`, wantIndex: 0, wantOK: false},
+		{name: "offset", line: `x "value"`, start: 2, want: "value", wantIndex: 9, wantOK: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			i := tt.start
+			got, ok := scanString([]byte(tt.line), &i)
+			if got != tt.want || ok != tt.wantOK || i != tt.wantIndex {
+				t.Errorf("scanString(%q, start %d) = (%q, %t), index %d; want (%q, %t), index %d", tt.line, tt.start, got, ok, i, tt.want, tt.wantOK, tt.wantIndex)
+			}
+		})
+	}
+}
+
+func TestScanNumber(t *testing.T) {
+	tests := []struct {
+		name      string
+		line      string
+		start     int
+		wantIndex int
+		wantOK    bool
+	}{
+		{name: "integer", line: "42 tail", wantIndex: 2, wantOK: true},
+		{name: "negative fraction exponent", line: "-12.50e+3x", wantIndex: 9, wantOK: true},
+		{name: "negative exponent", line: "6E-2", wantIndex: 4, wantOK: true},
+		{name: "offset", line: "x42", start: 1, wantIndex: 3, wantOK: true},
+		{name: "lone minus", line: "-", wantIndex: 0, wantOK: false},
+		{name: "missing fraction digits", line: "1.", wantIndex: 0, wantOK: false},
+		{name: "missing exponent digits", line: "2e", wantIndex: 0, wantOK: false},
+		{name: "missing integer digits", line: ".5", wantIndex: 0, wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			i := tt.start
+			ok := scanNumber([]byte(tt.line), &i)
+			if ok != tt.wantOK || i != tt.wantIndex {
+				t.Errorf("scanNumber(%q, start %d) = (%t), index %d; want (%t), index %d", tt.line, tt.start, ok, i, tt.wantOK, tt.wantIndex)
+			}
+		})
+	}
+}
+
 // TestHighlightJSON_AccessLogExample locks the exact span set (kinds and byte
 // offsets) for the official Caddy access-log example.
 func TestHighlightJSON_AccessLogExample(t *testing.T) {
