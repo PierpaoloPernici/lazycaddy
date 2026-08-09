@@ -501,7 +501,7 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
 
 ### v0.2 — change safety and navigation
 
-- Add a read-only `journalctl` log source for Caddy installations managed by
+- [x] Add a read-only `journalctl` log source for Caddy installations managed by
   systemd. The log view should support an explicit unit selection (for
   example, `caddy.service`), bounded initial history, follow mode and clean
   cancellation/restart when `journalctl` exits. Consume journal JSON without a
@@ -557,13 +557,13 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
    ↑/↓ move · Enter open · v validate · D diff · / search · ? help
   ```
 
-- Add a simple keyboard-first clipboard action for source content. `y` should
+- [x] Add a simple keyboard-first clipboard action for source content. `y` should
   copy the exact source range represented by the current node selection, while
   a document-row selection may copy the complete current document. Use a
   clipboard adapter with OSC 52 and platform fallbacks where available, show a
   concise success/error notification, and never include tree, pane or footer
   decorations in the copied bytes.
-- Add deterministic coverage for the v0.2 boundaries: journal history/follow
+- [x] Add deterministic coverage for the v0.2 boundaries: journal history/follow
   cursor continuity, journal and path-discovery failures, exact source bytes
   copied without panel decorations, OSC 52 unavailable/fallback clipboard
   behavior, and the related read-only permission paths.
