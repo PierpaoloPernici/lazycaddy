@@ -95,10 +95,14 @@ The inspector also provides:
 - exact-range node deletion (`d`) with diff confirmation and post-save tree
   rebuilding.
 
-The v0.1 vertical slice is complete. The next planned milestone is v0.2,
-focused on change safety, navigation, journal-backed logs, sensible path
-defaults, persistent UI state and clipboard ergonomics. Planned capabilities
-are not available in the current build until implemented and released.
+The v0.1 vertical slice is complete. The v0.2 milestone has landed
+journal-backed logs and sensible path defaults: lazycaddy now discovers
+`./Caddyfile` (falling back to `/etc/caddy/Caddyfile`) and the `caddy`
+binary through `PATH` when they are not given explicitly, and keeps format,
+validate and reload disabled when `caddy` is unavailable. Remaining v0.2
+capabilities — persistent UI state, clipboard ergonomics and the chrome
+redesign — are not available in the current build until implemented and
+released.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing
@@ -111,17 +115,24 @@ load -> edit working copy -> format and validate -> review diff
   -> confirm -> create backup -> atomic save -> optional confirmed reload
 ```
 
-To enable formatting and validation, provide the Caddy binary explicitly:
+Without `--config`, lazycaddy uses `./Caddyfile` when present and falls back
+to `/etc/caddy/Caddyfile`. Without `--caddy-path`, it discovers `caddy`
+through `PATH`; if the binary is unavailable, formatting, validation and
+reload stay disabled. To pin both explicitly:
 
 ~~~sh
 go run ./cmd/lazycaddy --config ./Caddyfile --caddy-path /usr/bin/caddy
 ~~~
 
 To enable saving, add `--write`. The default backup directory is
-`<config-dir>/.lazycaddy/backups`; it can be overridden with `--backup-dir`.
-Formatting, validation and saving use temporary or atomic file operations and
-do not require a running Caddy daemon. Reloading does require Caddy to be
-running with its Admin API enabled and reachable at the configured endpoint.
+`~/.local/state/lazycaddy/backups` (honoring `$XDG_STATE_HOME` when set) —
+a user-state location chosen so system Caddyfiles never force backups next
+to a root-owned config; it can be overridden with `--backup-dir`. The
+default is a location, not a writability guarantee: if the resolved backup
+directory is not writable, the save pipeline reports the failure. Formatting,
+validation and saving use temporary or atomic file operations and do not
+require a running Caddy daemon. Reloading does require Caddy to be running
+with its Admin API enabled and reachable at the configured endpoint.
 
 Reloads use the local Admin API at `http://localhost:2019` by default;
 override the endpoint with `--admin-endpoint` and the per-request timeout

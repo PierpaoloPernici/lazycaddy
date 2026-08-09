@@ -512,7 +512,7 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   file tailer remains available, and the selected source must degrade to a
   clear read-only error when `journalctl`, the unit or journal permissions are
   unavailable.
-- Add path discovery and sensible defaults. When `--config` is not
+- [x] Add path discovery and sensible defaults. When `--config` is not
   supplied, prefer an existing `./Caddyfile`, then an existing
   `/etc/caddy/Caddyfile`, while preserving a clear missing-file error when
   neither exists. When `--caddy-path` is not supplied, discover `caddy` via
@@ -521,7 +521,13 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   configurations (for example `~/.local/state/lazycaddy/backups` or
   `~/.lazycaddy/backups`) while retaining an explicit `--backup-dir` override.
   `--write` remains opt-in; path discovery must never imply automatic
-  privilege escalation or require the entire TUI to run as root.
+  privilege escalation or require the entire TUI to run as root. Implemented
+  in `internal/discover` (injectable filesystem, PATH, home and environment
+  seams) and wired through `cmd/lazycaddy` before the application is built;
+  backup defaults to the user-state location
+  `$XDG_STATE_HOME/lazycaddy/backups` (or `~/.local/state/lazycaddy/backups`)
+  — the default location, not a writability guarantee: the save/backup
+  pipeline reports any writability failure.
 - Improve the persistent application chrome and visual hierarchy. Keep the
   header visible independently from transient notifications, display the
   LazyCaddy version alongside the Caddy version and runtime/configuration

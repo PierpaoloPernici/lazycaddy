@@ -1,7 +1,11 @@
 // Command lazycaddy is a keyboard-first terminal UI for inspecting and
 // managing Caddy. It loads a Caddyfile, resolves imports and renders a
-// document/site tree with a raw source view. An opt-in format and
-// validate workflow (--caddy-path) runs caddy fmt and caddy validate
+// document/site tree with a raw source view. Without an explicit --config
+// it discovers ./Caddyfile (falling back to /etc/caddy/Caddyfile), and
+// without --caddy-path it discovers caddy through PATH while keeping
+// format, validate and reload disabled when the binary is unavailable. An
+// opt-in format and validate workflow (--caddy-path) runs caddy fmt and
+// caddy validate
 // against a temporary working copy and surfaces structured diagnostics.
 // The tool is read-only by default: --write enables writable mode, in
 // which saving creates a backup in --backup-dir and atomically replaces
@@ -37,6 +41,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
+	"github.com/PierpaoloPernici/lazycaddy/internal/discover"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
@@ -61,14 +66,21 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 		Short:   "A keyboard-first terminal UI for inspecting and managing Caddy",
 		Version: version,
 		Long: "lazycaddy inspects a Caddyfile and its imports in the terminal.\n" +
-			"The inspector is read-only by default; --write enables backups and atomic saves, and format/validate are opt-in via --caddy-path.",
+			"The inspector is read-only by default; --write enables backups and atomic saves. " +
+			"Without --caddy-path, caddy is discovered through PATH and format/validate are disabled when it is unavailable.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if *write {
 				settings.ReadOnly = false
 			}
-			if settings.BackupDir == "" {
-				settings.BackupDir = filepath.Join(filepath.Dir(settings.ConfigPath), ".lazycaddy", "backups")
+			// Resolve v0.2 path discovery and sensible defaults before
+			// anything is wired: the effective Caddyfile, the caddy
+			// binary and the backup directory are derived from the
+			// environment when the corresponding flags are absent.
+			// Explicit --config, --caddy-path and --backup-dir values
+			// always take precedence.
+			if err := resolvePaths(cmd.Flags(), settings, discover.DefaultDeps()); err != nil {
+				return err
 			}
 
 			loader := app.NewLoader(*settings, os.ReadFile)
@@ -162,15 +174,15 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 	rootCmd.SetVersionTemplate(versionOutput())
 
 	rootCmd.Flags().StringVar(&settings.ConfigPath, "config", config.DefaultConfigPath(),
-		"path to the Caddyfile to inspect (default: ./Caddyfile)")
+		"path to the Caddyfile to inspect (default: ./Caddyfile when present, else /etc/caddy/Caddyfile)")
 	rootCmd.Flags().StringVar(&settings.BinaryPath, "caddy-path", "",
-		"path to the caddy binary (default: empty; format and validate are disabled)")
+		"path to the caddy binary (default: discover caddy through PATH; format and validate are disabled when it is unavailable)")
 	rootCmd.Flags().DurationVar(&settings.ValidatorTimeout, "validator-timeout", 0,
 		"per-invocation timeout for caddy fmt and caddy validate (default: 5s, the validator package default)")
 	rootCmd.Flags().BoolVar(write, "write", false,
 		"enable writable mode (save creates backups and writes the file); default is read-only")
 	rootCmd.Flags().StringVar(&settings.BackupDir, "backup-dir", "",
-		"directory for pre-save backups (default: <config-dir>/.lazycaddy/backups)")
+		"directory for pre-save backups (default: ~/.local/state/lazycaddy/backups, honoring $XDG_STATE_HOME)")
 	rootCmd.Flags().StringVar(&settings.AdminEndpoint, "admin-endpoint", settings.AdminEndpoint,
 		"base URL of the local Caddy Admin API used for reloads (default: http://localhost:2019)")
 	rootCmd.Flags().DurationVar(&settings.AdminTimeout, "admin-timeout", settings.AdminTimeout,
@@ -181,6 +193,41 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 		"systemd journal unit to follow in the log view (e.g. caddy.service); default: empty; the log view then reads the journal")
 
 	return rootCmd
+}
+
+// flagSet is the subset of *pflag.FlagSet used by resolvePaths, exposed as
+// an interface so tests can drive resolution against a real parsed command.
+type flagSet interface {
+	Changed(name string) bool
+}
+
+// resolvePaths applies v0.2 path discovery and sensible defaults to settings
+// before the application is wired. Explicit --config, --caddy-path and
+// --backup-dir values always take precedence; discovery fills the gaps:
+//
+//   - config: ./Caddyfile when present, else /etc/caddy/Caddyfile, with a
+//     clear missing-file error when neither exists;
+//   - binary: caddy through PATH, leaving the binary empty (format,
+//     validate and reload disabled) when it is unavailable;
+//   - backup: a user-writable XDG state directory, so system Caddyfiles
+//     never force backups into a root-owned config directory.
+//
+// All external lookups go through deps (discover.DefaultDeps in
+// production), keeping the rules deterministic under test.
+func resolvePaths(flags flagSet, settings *config.Settings, deps discover.Deps) error {
+	resolver := discover.Resolver{Deps: deps}
+	configPath, err := resolver.ConfigPath(flags.Changed("config"), settings.ConfigPath)
+	if err != nil {
+		return err
+	}
+	settings.ConfigPath = configPath
+	settings.BinaryPath = resolver.BinaryPath(flags.Changed("caddy-path"), settings.BinaryPath)
+	backupDir, err := resolver.BackupDir(flags.Changed("backup-dir"), settings.BackupDir)
+	if err != nil {
+		return err
+	}
+	settings.BackupDir = backupDir
+	return nil
 }
 
 // buildLogSource validates and constructs the configured read-only log
