@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -566,5 +567,204 @@ func TestValidate_InvokesValidateWithAdapterCaddyfile(t *testing.T) {
 		if got != want[i] {
 			t.Errorf("args[%d] = %q, want %q", i, got, want[i])
 		}
+	}
+}
+
+func TestValidateConfig_MirrorsGraphAndValidatesRoot(t *testing.T) {
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			if len(args) < 3 || args[0] != "validate" || args[1] != "--config" {
+				t.Fatalf("unexpected command: %v", args)
+			}
+			root := args[2]
+			// The mirrored tree must preserve the real layout so relative
+			// imports resolve: the root sits under <tmp>/etc/caddy/.
+			if !strings.HasSuffix(root, "/etc/caddy/Caddyfile") {
+				t.Errorf("validated root = %q, want a mirror of /etc/caddy/Caddyfile", root)
+			}
+			// The mirrored root must hold the exact root bytes.
+			data, err := os.ReadFile(root)
+			if err != nil {
+				t.Fatalf("read mirrored root: %v", err)
+			}
+			if string(data) != "example.test {\n\timport common.conf\n}\n" {
+				t.Errorf("mirrored root content = %q, want the root bytes", data)
+			}
+			// The mirrored sibling must hold its own bytes.
+			sib, err := os.ReadFile(filepath.Join(filepath.Dir(root), "common.conf"))
+			if err != nil {
+				t.Fatalf("read mirrored sibling: %v", err)
+			}
+			if string(sib) != "# common\n" {
+				t.Errorf("mirrored sibling content = %q, want # common\n", sib)
+			}
+			// The mirror must be removed after the call.
+			tmpRoot := root
+			t.Cleanup(func() {
+				if _, err := os.Stat(tmpRoot); err == nil {
+					t.Errorf("mirrored root %s was not cleaned up", tmpRoot)
+				}
+			})
+			return nil, nil, 0, nil
+		},
+	}
+	v := newValidator(t, runner)
+
+	files := []File{
+		{Path: "/etc/caddy/Caddyfile", Source: []byte("example.test {\n\timport common.conf\n}\n")},
+		{Path: "/etc/caddy/common.conf", Source: []byte("# common\n")},
+	}
+	diags, err := v.ValidateConfig(context.Background(), "/etc/caddy/Caddyfile", files)
+	if err != nil {
+		t.Fatalf("ValidateConfig: unexpected error: %v", err)
+	}
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostics, got %d", len(diags))
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner.calls = %d, want 1", len(runner.calls))
+	}
+}
+
+func TestValidateConfig_RelativeRootMirrorsUnderTemp(t *testing.T) {
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			// A relative root (e.g. "Caddyfile") must still validate at a
+			// deterministic mirrored path.
+			if !strings.HasSuffix(args[2], "/Caddyfile") {
+				t.Errorf("validated root = %q, want a mirror ending in /Caddyfile", args[2])
+			}
+			if !strings.Contains(args[2], "lazycaddy-validate-config-") {
+				t.Errorf("validated root = %q, want the temp mirror prefix", args[2])
+			}
+			return nil, nil, 0, nil
+		},
+	}
+	v := newValidator(t, runner)
+
+	diags, err := v.ValidateConfig(context.Background(), "Caddyfile", []File{
+		{Path: "Caddyfile", Source: []byte("example.test {\n}\n")},
+	})
+	if err != nil {
+		t.Fatalf("ValidateConfig: unexpected error: %v", err)
+	}
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostics, got %d", len(diags))
+	}
+}
+
+func TestValidateConfig_InvalidRemapsAllMirroredPaths(t *testing.T) {
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			root := args[2]
+			// caddy reports both the root and the imported sibling by
+			// their mirrored paths.
+			stderr := root + ":3:9: unexpected token\n" +
+				filepath.Join(filepath.Dir(root), "common.conf") + ":1:1: bad directive\n"
+			return nil, []byte(stderr), 1, nil
+		},
+	}
+	v := newValidator(t, runner)
+
+	diags, err := v.ValidateConfig(context.Background(), "/etc/caddy/Caddyfile", []File{
+		{Path: "/etc/caddy/Caddyfile", Source: []byte("example.test {\n}\n")},
+		{Path: "/etc/caddy/common.conf", Source: []byte("bad\n")},
+	})
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *ExitError, got %T", err)
+	}
+	if len(diags) != 2 {
+		t.Fatalf("expected 2 diagnostics, got %d", len(diags))
+	}
+	// Every diagnostic must surface its real path, never a temp path.
+	if diags[0].Path != "/etc/caddy/Caddyfile" {
+		t.Errorf("diags[0].Path = %q, want /etc/caddy/Caddyfile", diags[0].Path)
+	}
+	if diags[1].Path != "/etc/caddy/common.conf" {
+		t.Errorf("diags[1].Path = %q, want /etc/caddy/common.conf", diags[1].Path)
+	}
+	if diags[0].Line != 3 || diags[0].Column != 9 {
+		t.Errorf("diags[0] = %d:%d, want 3:9", diags[0].Line, diags[0].Column)
+	}
+}
+
+func TestValidateConfig_CleansUpOnFailure(t *testing.T) {
+	var mirrorPath string
+	runner := &fakeRunner{
+		fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			mirrorPath = filepath.Dir(args[2])
+			return nil, []byte(args[2] + ":1:1: boom\n"), 1, nil
+		},
+	}
+	v := newValidator(t, runner)
+
+	_, err := v.ValidateConfig(context.Background(), "/etc/caddy/Caddyfile", []File{
+		{Path: "/etc/caddy/Caddyfile", Source: []byte("broken")},
+	})
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *ExitError, got %T", err)
+	}
+	if mirrorPath == "" {
+		t.Fatal("the mirror was never created")
+	}
+	if _, statErr := os.Stat(mirrorPath); statErr == nil {
+		t.Fatalf("mirror directory %s survived a failed validation", mirrorPath)
+	}
+}
+
+// globValidatorTempDirs lists the transient mirror directories that
+// ValidateConfig may currently have on disk, for cleanup assertions.
+func globValidatorTempDirs(t *testing.T) []string {
+	t.Helper()
+	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "lazycaddy-validate-config-*"))
+	return dirs
+}
+
+func TestValidateConfig_EmptyFilesRejected(t *testing.T) {
+	runner := &fakeRunner{}
+	v := newValidator(t, runner)
+
+	_, err := v.ValidateConfig(context.Background(), "Caddyfile", nil)
+	if err == nil {
+		t.Fatal("ValidateConfig succeeded with no documents")
+	}
+	if !strings.Contains(err.Error(), "no documents") {
+		t.Errorf("err = %v, want a no-documents error", err)
+	}
+	// No temp mirror is created and caddy is never invoked for an empty
+	// graph.
+	if len(runner.calls) != 0 {
+		t.Fatalf("runner invoked %d times, want 0", len(runner.calls))
+	}
+	if dirs := globValidatorTempDirs(t); len(dirs) != 0 {
+		t.Errorf("temp mirror dirs leaked for an empty graph: %v", dirs)
+	}
+}
+
+func TestValidateConfig_MirrorEscapeRejected(t *testing.T) {
+	runner := &fakeRunner{}
+	v := newValidator(t, runner)
+	before := globValidatorTempDirs(t)
+
+	// A relative document path with `..` components must never be
+	// mirrored outside the temp directory, and caddy must never validate
+	// the escaping mirror.
+	_, err := v.ValidateConfig(context.Background(), "Caddyfile", []File{
+		{Path: "sub/../../escape.caddy", Source: []byte("x")},
+	})
+	if err == nil {
+		t.Fatal("ValidateConfig succeeded for an escaping relative path")
+	}
+	if !strings.Contains(err.Error(), "escapes temp dir") {
+		t.Errorf("err = %v, want a mirror-escape error", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("runner invoked %d times, want 0 (no validation of an escaping mirror)", len(runner.calls))
+	}
+	// No transient mirror directory survives the rejection.
+	if after := globValidatorTempDirs(t); len(after) != len(before) {
+		t.Errorf("temp mirror dirs leaked after the escape rejection: %v", after)
 	}
 }

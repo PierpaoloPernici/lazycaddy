@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
@@ -112,6 +113,33 @@ type copyResultMsg struct {
 type externalChangeMsg struct {
 	change app.ExternalChange
 	err    error
+}
+
+// backupListMsg is delivered when an asynchronous backup listing
+// completes. Path is the document the listing was requested for;
+// Entries is empty when no backups exist or the directory is missing.
+type backupListMsg struct {
+	Path    string
+	Entries []backup.Entry
+	Err     error
+}
+
+// backupCompareMsg is delivered when the bytes for a backup comparison
+// have been read: the current on-disk bytes of the target document and
+// the selected backup's bytes. Any read failure aborts the comparison.
+type backupCompareMsg struct {
+	Path       string
+	BackupPath string
+	Current    []byte
+	Backup     []byte
+	Err        error
+}
+
+// rollbackResultMsg is delivered after an asynchronous rollback through
+// the injected app.Rollbacker completes.
+type rollbackResultMsg struct {
+	Result app.RollbackResult
+	Err    error
 }
 
 // editorReadyMsg is delivered when the injected app.Editor finishes
@@ -394,6 +422,48 @@ type Model struct {
 	// pendingChange holds the change awaiting the operator decision
 	// while the conflict modal is open.
 	pendingChange *pendingChange
+
+	// rollbacker lists, compares and restores backups through the app
+	// boundary; nil disables the B keybinding. UI models never touch the
+	// backup directory or the filesystem directly.
+	rollbacker app.Rollbacker
+	// showBackups is true while the backup-history modal is open for the
+	// document selected when B was pressed.
+	showBackups bool
+	// backupsLoading is true while a backup listing is in flight; a
+	// second B press is ignored.
+	backupsLoading bool
+	// backups holds the listed entries for backupDocPath, newest first.
+	backups []backup.Entry
+	// backupCursor is the index into backups of the selected entry.
+	backupCursor int
+	// backupViewport renders the backup list.
+	backupViewport viewport.Model
+	// backupDocPath is the exact source path the listed backups belong
+	// to.
+	backupDocPath string
+	// backupComparing is true while the shared diff modal shows a backup
+	// vs current-on-disk comparison.
+	backupComparing bool
+	// showRollbackConfirm is true when the rollback-confirmation modal is
+	// open.
+	showRollbackConfirm bool
+	// pendingRollback holds the backup awaiting the rollback
+	// confirmation. nil means no rollback is pending.
+	pendingRollback *pendingRollback
+	// rollingBack is true while an asynchronous rollback is in flight; a
+	// second confirmation is ignored, mirroring the saving guard.
+	rollingBack bool
+}
+
+// pendingRollback holds the state of a backup selected for rollback:
+// the target document, the backup to restore, and the on-disk bytes
+// captured when the comparison diff was opened (the external-change
+// baseline the rollback re-checks before restoring).
+type pendingRollback struct {
+	path         string
+	backupPath   string
+	currentBytes []byte
 }
 
 // New returns a Model that will load its state through loader, run
@@ -412,8 +482,9 @@ type Model struct {
 // with respect to clipboard integration and disables the y keybinding.
 // monitor detects external changes to the resolved documents; omitting
 // it disables the watch feature (the synchronous conflict guards stay
-// active).
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, clipboards ...app.Clipboard) *Model {
+// active). rollbacker lists and restores backups; omitting it disables
+// the B keybinding.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, rollbacker app.Rollbacker, clipboards ...app.Clipboard) *Model {
 	var clipboard app.Clipboard
 	if len(clipboards) > 0 {
 		clipboard = clipboards[0]
@@ -435,9 +506,11 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		logViewport:       viewport.New(1, 1),
 		logDetailViewport: viewport.New(1, 1),
 		searchViewport:    viewport.New(1, 1),
+		backupViewport:    viewport.New(1, 1),
 		logFollow:         true,
 		clipboard:         clipboard,
 		monitor:           monitor,
+		rollbacker:        rollbacker,
 	}
 }
 
@@ -570,6 +643,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorError(msg)
 	case deleteValidatedMsg:
 		return m.handleDeleteValidated(msg)
+	case backupListMsg:
+		return m.handleBackupList(msg)
+	case backupCompareMsg:
+		return m.handleBackupCompare(msg)
+	case rollbackResultMsg:
+		return m.handleRollbackResult(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	}
@@ -655,6 +734,16 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.showReloadConfirm {
 		return m.updateReloadConfirmKey(msg)
 	}
+	// The rollback-confirmation modal takes precedence over the
+	// diagnostics modal and the main keymap.
+	if m.showRollbackConfirm {
+		return m.updateRollbackConfirmKey(msg)
+	}
+	// The backup-history modal takes precedence over the diagnostics
+	// modal and the main keymap.
+	if m.showBackups {
+		return m.updateBackupsKey(msg)
+	}
 	// The diagnostics modal takes precedence over every other key.
 	if m.showDiagnostics {
 		return m.updateDiagnosticsKey(msg)
@@ -708,6 +797,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startFullEdit()
 	case "d":
 		return m.startDelete()
+	case "B":
+		return m.startBackups()
 	case "y":
 		return m.startCopy()
 	case "/", "ctrl+f":
@@ -930,8 +1021,8 @@ func (m *Model) handleExternalChange(msg externalChangeMsg) (tea.Model, tea.Cmd)
 // synchronous conflict guard is active. The change monitor defers to
 // those guards: reporting the same conflict twice would be noise.
 func (m *Model) inFlightWorkflow() bool {
-	return m.saving || m.reloading || m.editing || m.deleting ||
-		m.pendingEdit != nil || m.pendingDelete != nil
+	return m.saving || m.reloading || m.editing || m.deleting || m.rollingBack ||
+		m.pendingEdit != nil || m.pendingDelete != nil || m.pendingRollback != nil
 }
 
 // bytesMatchMemory reports whether the detected change is already
@@ -1210,7 +1301,7 @@ func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 		m.statusMessage = "read-only mode — start with --write to enable saving"
 		return m, nil
 	}
-	if m.saving || m.editing || m.busy || m.reloading || m.deleting {
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting || m.rollingBack {
 		return m, nil
 	}
 	sel := m.selectedItem()
@@ -1248,7 +1339,7 @@ func (m *Model) startFullEdit() (tea.Model, tea.Cmd) {
 		m.statusMessage = "read-only mode — start with --write to enable saving"
 		return m, nil
 	}
-	if m.saving || m.editing || m.busy || m.reloading || m.deleting {
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting || m.rollingBack {
 		return m, nil
 	}
 	sel := m.selectedItem()
@@ -1421,7 +1512,7 @@ func (m *Model) startDelete() (tea.Model, tea.Cmd) {
 		m.statusMessage = "read-only mode — start with --write to enable saving"
 		return m, nil
 	}
-	if m.saving || m.editing || m.busy || m.reloading || m.deleting {
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting || m.rollingBack {
 		return m, nil
 	}
 	sel := m.selectedItem()
@@ -1920,9 +2011,11 @@ func (m *Model) startDiff() (tea.Model, tea.Cmd) {
 
 // updateDiffKey handles keys when the diff modal is open. Esc and q
 // close the modal; the arrow keys and PgUp/PgDown scroll the viewport.
-// When the diff shows a pending editor edit, the diff is the single
-// confirmation: Enter saves directly and Esc additionally discards the
-// pending edit (nothing is saved). The read-only D flow keeps its
+// When the diff shows a pending editor edit or delete, the diff is the
+// single confirmation: Enter saves directly and Esc additionally
+// discards the pending change. When the diff shows a backup comparison,
+// Enter opens the rollback confirmation (which requires writable mode)
+// and Esc returns to the backup list. The read-only D flow keeps its
 // current behavior.
 func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -1935,7 +2028,12 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.closeDiff()
-		if m.pendingEdit != nil {
+		if m.pendingRollback != nil {
+			// Esc from a backup comparison cancels the rollback and
+			// returns to the backup list; nothing is changed.
+			m.pendingRollback = nil
+			m.backupComparing = false
+		} else if m.pendingEdit != nil {
 			m.pendingEdit = nil
 			m.statusMessage = "edit discarded"
 		} else if m.pendingDelete != nil {
@@ -1943,6 +2041,14 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMessage = "delete cancelled"
 		}
 	case "enter":
+		if m.pendingRollback != nil {
+			// Rollback needs writable mode and validation; the
+			// confirmation modal names the target and the backup.
+			m.closeDiff()
+			m.backupComparing = false
+			m.showRollbackConfirm = true
+			return m, nil
+		}
 		if m.pendingEdit != nil || m.pendingDelete != nil {
 			// The diff is the single confirmation for both an editor
 			// edit and a delete: Enter saves directly (already
@@ -1989,7 +2095,7 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 		m.statusMessage = "read-only mode — start with --write to enable saving"
 		return m, nil
 	}
-	if m.saving {
+	if m.saving || m.rollingBack {
 		return m, nil
 	}
 	if m.reloading {
@@ -2246,7 +2352,7 @@ func (m *Model) startReload() (tea.Model, tea.Cmd) {
 		m.statusMessage = "reload unavailable — needs --caddy-path and a running Admin API"
 		return m, nil
 	}
-	if m.reloading || m.saving {
+	if m.reloading || m.saving || m.rollingBack {
 		return m, nil
 	}
 	if m.workingBytes == nil {
@@ -2536,6 +2642,12 @@ func (m *Model) View() string {
 		b.WriteString("\n")
 	} else if m.showReloadConfirm {
 		b.WriteString(m.reloadConfirmView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showRollbackConfirm {
+		b.WriteString(m.rollbackConfirmView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showBackups {
+		b.WriteString(m.backupView(width, paneH))
 		b.WriteString("\n")
 	} else if m.showDiagnostics {
 		if m.showDetail {
@@ -3073,6 +3185,10 @@ func (m *Model) footer(width int) string {
 	if m.clipboard != nil {
 		copySuffix = " · y copy"
 	}
+	backupSuffix := ""
+	if m.rollbacker != nil {
+		backupSuffix = " · B backups"
+	}
 	var keys string
 	switch {
 	case m.showChangeConflict:
@@ -3084,7 +3200,9 @@ func (m *Model) footer(width int) string {
 			keys = "r reload · Esc keep"
 		}
 	case m.showDiff:
-		if m.pendingDelete != nil {
+		if m.pendingRollback != nil {
+			keys = "↑/↓ scroll · PgUp/PgDown page · Enter rollback · Esc cancel"
+		} else if m.pendingDelete != nil {
 			keys = "↑/↓ scroll · PgUp/PgDown page · Enter delete · Esc cancel"
 		} else if m.pendingEdit != nil {
 			keys = "↑/↓ scroll · PgUp/PgDown page · Enter save · Esc discard"
@@ -3095,6 +3213,14 @@ func (m *Model) footer(width int) string {
 		keys = "Enter save · Esc cancel"
 	case m.showReloadConfirm:
 		keys = "Enter reload · Esc cancel"
+	case m.showRollbackConfirm:
+		keys = "Enter rollback · Esc cancel"
+	case m.showBackups:
+		if m.canRollback() {
+			keys = "↑/↓ move · Enter compare & rollback · Esc close"
+		} else {
+			keys = "↑/↓ move · Enter compare · Esc close"
+		}
 	case m.showDetail:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
 	case m.showDiagnostics:
@@ -3106,11 +3232,20 @@ func (m *Model) footer(width int) string {
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s · q quit · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s%s · q quit · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, backupSuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + " · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + backupSuffix + " · q quit"
 	}
 	return footerStyle.Width(width).Render(renderFooterKeys(keys))
+}
+
+// canRollback reports whether the backup-history modal may offer
+// rollback for the selected backup: writable mode (a saver) plus a
+// validation binary (a formatter). Listing and comparison stay available
+// read-only.
+func (m *Model) canRollback() bool {
+	return m.rollbacker != nil && m.saver != nil && m.formatter != nil &&
+		m.state != nil && !m.state.Settings.ReadOnly
 }
 
 // renderFooterKeys highlights key names with the accent color while
@@ -3230,14 +3365,18 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 // diffView renders the unified diff modal. The content is only rebuilt
 // when the body height changes, so scrolling with PgUp/PgDown is
 // preserved across renders. A diff reviewing an editor edit offers
-// Enter to save and Esc to discard.
+// Enter to save and Esc to discard; a backup comparison offers Enter to
+// roll back and Esc to cancel.
 func (m *Model) diffView(width, height int) string {
 	title := m.diffTitle
-	if m.pendingDelete != nil {
+	switch {
+	case m.pendingRollback != nil:
+		title += " · Enter rollback · Esc cancel"
+	case m.pendingDelete != nil:
 		title += " · Enter delete · Esc cancel"
-	} else if m.pendingEdit != nil {
+	case m.pendingEdit != nil:
 		title += " · Enter save · Esc discard"
-	} else {
+	default:
 		title += " · Esc close"
 	}
 	bodyH := height - 3 // border (2) + title (1)

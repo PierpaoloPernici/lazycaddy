@@ -222,11 +222,12 @@ func writableStateFor(t *testing.T, path, backupDir string, readFile app.FileRea
 
 // newLoadedModel builds a Model from loader with optional formatter,
 // saver, reloader, runtime probe, log source, editor, searcher, change
-// monitor and clipboard. The variadic options accept an app.Formatter, an
-// app.Saver, an app.Reloader, an app.RuntimeStatus, an app.LogSource, an
-// app.Editor, an app.Searcher, an app.ChangeMonitor, an app.Clipboard, any
-// combination, or none. The searcher defaults to app.NewSearcher(); pass a
-// typed nil app.Searcher to disable it.
+// monitor, rollbacker and clipboard. The variadic options accept an
+// app.Formatter, an app.Saver, an app.Reloader, an app.RuntimeStatus, an
+// app.LogSource, an app.Editor, an app.Searcher, an app.ChangeMonitor, an
+// app.Rollbacker, an app.Clipboard, any combination, or none. The
+// searcher defaults to app.NewSearcher(); pass a typed nil app.Searcher
+// to disable it.
 func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	t.Helper()
 	var f app.Formatter
@@ -237,6 +238,7 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	var e app.Editor
 	var clip app.Clipboard
 	var monitor app.ChangeMonitor
+	var rollbacker app.Rollbacker
 	searcher := app.NewSearcher()
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -256,11 +258,13 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 			clip = v
 		case app.ChangeMonitor:
 			monitor = v
+		case app.Rollbacker:
+			rollbacker = v
 		case app.Searcher:
 			searcher = v
 		}
 	}
-	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion, monitor, clip)
+	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion, monitor, rollbacker, clip)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -282,7 +286,7 @@ func keyPress(t *testing.T, m *Model, msg tea.Msg) *Model {
 // ...any slot matches no type-switch case), so this constructs New directly.
 func newLoadedModelWithoutSearcher(t *testing.T, loader app.Loader) *Model {
 	t.Helper()
-	m := New(loader, nil, nil, nil, nil, nil, nil, nil, testVersion, nil)
+	m := New(loader, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -922,7 +926,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -1295,7 +1299,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil, nil, testVersion, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -3440,7 +3444,7 @@ func TestModelViewFits_StatusMessage(t *testing.T) {
 }
 
 func TestModelViewFits_ErrorAndStatus(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion, nil, nil)
 	m.Load()
 	m.statusMessage = "✓ caddy v2.11.4 · running"
 	assertFits(t, m, 80, 24)

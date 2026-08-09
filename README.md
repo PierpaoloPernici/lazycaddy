@@ -80,7 +80,14 @@ diff, edit, save and reload workflow:
   configuration and a confirmation that names the target, with saved,
   validated and loaded states shown in the header;
 - detect external changes before saving and report a recovery backup if a
-  write fails after backup creation.
+  write fails after backup creation;
+- inspect the backup history of any document (`B`), diff a selected backup
+  against the current file, and roll back to it in writable mode — following
+  the same validate, diff, backup and confirmation workflow as a save, never
+  reloading Caddy implicitly and always creating a fresh backup of the current
+  file before the restore;
+- prune old backups with `--backup-retention N` (maximum backups kept per
+  source file; disabled by default).
 
 The inspector also provides:
 
@@ -137,6 +144,26 @@ directory is not writable, the save pipeline reports the failure. Formatting,
 validation and saving use temporary or atomic file operations and do not
 require a running Caddy daemon. Reloading does require Caddy to be running
 with its Admin API enabled and reachable at the configured endpoint.
+
+Backups keep the `<timestamp>-<seq>-<basename>` naming contract and each
+also carries a plain-text `.src` identity sidecar holding its exact source
+path, so backups of imported files that share a basename are never mixed
+up. `B` opens the backup history of the selected document (read-only
+comparison works without `--write`); in writable mode with a caddy binary
+you can review the diff and roll back to a selected backup with an explicit
+confirmation. Rollback validates the restored content in the context of
+the full document graph — every document is mirrored into a temporary tree
+that preserves its real directory layout, so relative imports and imported
+snippet/fragment files resolve exactly as they do on disk — then backs up
+the current file before the restore, never reloads Caddy implicitly, and
+marks the loaded state unknown until you reload explicitly.
+
+Backup retention is disabled by default. `--backup-retention N` keeps at
+most `N` backups per source file, applied only after a successful save or
+rollback; the newest backup and the backup created for the current
+operation are always preserved, identity-less legacy backups and unrelated
+files are never deleted, and any cleanup failure is reported without
+undoing the completed operation.
 
 Reloads use the local Admin API at `http://localhost:2019` by default;
 override the endpoint with `--admin-endpoint` and the per-request timeout

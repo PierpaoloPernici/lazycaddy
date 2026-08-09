@@ -20,6 +20,10 @@ type Settings struct {
 	// is the default location, not a writability guarantee: the
 	// save/backup pipeline reports any writability failure at save time.
 	BackupDir string
+	// BackupRetention is the maximum number of backups kept per source
+	// file, applied after a successful save or rollback. Zero (the
+	// default) disables retention: backups are never auto-removed.
+	BackupRetention int
 	// BinaryPath is the absolute or PATH-relative path to the caddy
 	// binary. Empty means "no binary available": the TUI starts, but
 	// format and validate are disabled. When --caddy-path is not given,
