@@ -768,3 +768,63 @@ func TestValidateConfig_MirrorEscapeRejected(t *testing.T) {
 		t.Errorf("temp mirror dirs leaked after the escape rejection: %v", after)
 	}
 }
+
+// TestWriteTemp_EmptyNameRejected covers the writeTemp guard: an empty
+// name is rejected without touching the filesystem.
+func TestWriteTemp_EmptyNameRejected(t *testing.T) {
+	if _, _, err := writeTemp("", []byte("x")); err == nil {
+		t.Error("writeTemp with an empty name: expected an error, got nil")
+	}
+}
+
+// TestRemapTempPath_NoOp verifies the two early-return branches: an empty
+// display path and a display path equal to the temp path both leave the
+// diagnostics untouched.
+func TestRemapTempPath_NoOp(t *testing.T) {
+	diags := []Diagnostic{{Path: "/tmp/whatever", Severity: SeverityError}}
+	remapTempPath(diags, "/tmp/whatever", "")
+	if diags[0].Path != "/tmp/whatever" {
+		t.Errorf("remapTempPath with an empty display path changed the path to %q", diags[0].Path)
+	}
+	remapTempPath(diags, "/tmp/whatever", "/tmp/whatever")
+	if diags[0].Path != "/tmp/whatever" {
+		t.Errorf("remapTempPath with equal paths changed the path to %q", diags[0].Path)
+	}
+}
+
+// TestSeverityFromString_UnknownFallsBack verifies unknown severity names
+// fall back to SeverityError so findings are never silently downgraded.
+func TestSeverityFromString_UnknownFallsBack(t *testing.T) {
+	if got := severityFromString("nonsense"); got != SeverityError {
+		t.Errorf("severityFromString(nonsense) = %v, want SeverityError", got)
+	}
+	if got := severityFromString(""); got != SeverityError {
+		t.Errorf("severityFromString(empty) = %v, want SeverityError", got)
+	}
+}
+
+// TestExecRunner_ExitWithExpiredContext verifies the runner maps a
+// non-zero exit that coincides with a context deadline to ErrTimeout, and
+// a manual cancellation to context.Canceled.
+func TestExecRunner_ExitWithExpiredContext(t *testing.T) {
+	t.Run("deadline exceeded", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, _, _, err := (ExecRunner{}).Run(ctx, "sh", "-c", "sleep 2; exit 1")
+		if !errors.Is(err, ErrTimeout) {
+			t.Errorf("Run = %v, want ErrTimeout", err)
+		}
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+		_, _, _, err := (ExecRunner{}).Run(ctx, "sh", "-c", "sleep 2; exit 1")
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run = %v, want context.Canceled", err)
+		}
+	})
+}

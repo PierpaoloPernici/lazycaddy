@@ -149,3 +149,59 @@ func TestRenderCompactLogLine_EmptyRaw(t *testing.T) {
 		t.Errorf("empty line rendered %q, want empty", got)
 	}
 }
+
+// TestLogLevelStyleFor_MapsEveryLevel verifies the level class mapping
+// covers all five explicit levels and the fallback.
+func TestLogLevelStyleFor_MapsEveryLevel(t *testing.T) {
+	cases := map[string]lipgloss.Style{
+		"debug": logLevelDebugStyle,
+		"info":  logLevelInfoStyle,
+		"warn":  logLevelWarnStyle,
+		"error": logLevelErrorStyle,
+		"fatal": logLevelOtherStyle,
+		"":      logLevelOtherStyle,
+		"TRACE": logLevelOtherStyle,
+	}
+	for level, want := range cases {
+		if got := sgrOf(logLevelStyleFor(level)); got != sgrOf(want) {
+			t.Errorf("logLevelStyleFor(%q) = %q, want %q", level, got, sgrOf(want))
+		}
+	}
+}
+
+// TestLogStatusStyleFor_MapsEveryRange verifies the HTTP status class
+// mapping covers each century and the fallback.
+func TestLogStatusStyleFor_MapsEveryRange(t *testing.T) {
+	cases := map[int]lipgloss.Style{
+		101: logStatus1xxStyle,
+		204: logStatus2xxStyle,
+		304: logStatus3xxStyle,
+		404: logStatus4xxStyle,
+		503: logStatus5xxStyle,
+		0:   logStatusOtherStyle,
+		99:  logStatusOtherStyle,
+		600: logStatusOtherStyle,
+	}
+	for status, want := range cases {
+		if got := sgrOf(logStatusStyleFor(status)); got != sgrOf(want) {
+			t.Errorf("logStatusStyleFor(%d) = %q, want %q", status, got, sgrOf(want))
+		}
+	}
+}
+
+// TestPadOrTruncate verifies the fixed-width cell padding/truncation
+// helper, including the multibyte-safe truncation branch.
+func TestPadOrTruncate(t *testing.T) {
+	if got := padOrTruncate("ab", 4); got != "ab  " {
+		t.Errorf("padOrTruncate(ab, 4) = %q, want %q", got, "ab  ")
+	}
+	if got := padOrTruncate("abcdef", 4); lipgloss.Width(got) != 4 || !strings.HasSuffix(got, "…") {
+		t.Errorf("padOrTruncate(abcdef, 4) = %q (%d cells), want 4 cells ending in an ellipsis", got, lipgloss.Width(got))
+	}
+	if got := padOrTruncate("héllo", 3); !strings.Contains(got, "…") {
+		t.Errorf("padOrTruncate(héllo, 3) = %q, want a truncated multibyte-safe label", got)
+	}
+	if got := padOrTruncate("", 2); got != "  " {
+		t.Errorf("padOrTruncate(empty, 2) = %q, want two spaces", got)
+	}
+}

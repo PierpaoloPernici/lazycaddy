@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
@@ -215,5 +216,81 @@ func TestSearch_CappedResults(t *testing.T) {
 	got := s.Search("repeat me", scope)
 	if len(got) != maxSearchResults {
 		t.Fatalf("Search = %d results, want the cap %d", len(got), maxSearchResults)
+	}
+}
+
+// TestSearch_EveryCapBranch verifies the result cap applies to each of the
+// three tree branches (node label, document path, document content line)
+// and to the log branch, so a huge scope can never grow the result list
+// past maxSearchResults.
+func TestSearch_EveryCapBranch(t *testing.T) {
+	s := NewSearcher()
+
+	// Node-label hits: 220 matching node rows cap at maxSearchResults.
+	nodes := make([]SearchItem, 0, 220)
+	for i := 0; i < 220; i++ {
+		nodes = append(nodes, SearchItem{Label: "node hit", HasNode: true})
+	}
+	if got := s.Search("node hit", SearchScope{Items: nodes}); len(got) != maxSearchResults {
+		t.Errorf("node hits = %d results, want the cap %d", len(got), maxSearchResults)
+	}
+
+	// Document-path hits: 220 matching paths cap at maxSearchResults.
+	docs := make([]SearchItem, 0, 220)
+	for i := 0; i < 220; i++ {
+		docs = append(docs, SearchItem{Label: "path hit", Doc: searchDoc("path hit", "no content")})
+	}
+	if got := s.Search("path hit", SearchScope{Items: docs}); len(got) != maxSearchResults {
+		t.Errorf("path hits = %d results, want the cap %d", len(got), maxSearchResults)
+	}
+
+	// Log hits: 220 matching entries cap at maxSearchResults.
+	entries := make([]logs.Entry, 0, 220)
+	for i := 0; i < 220; i++ {
+		entries = append(entries, logs.Entry{Raw: []byte("log hit")})
+	}
+	if got := s.Search("log hit", SearchScope{Logs: entries}); len(got) != maxSearchResults {
+		t.Errorf("log hits = %d results, want the cap %d", len(got), maxSearchResults)
+	}
+}
+
+// TestSearch_SkipsNilDocument verifies that a document row without a
+// document (defensive: the UI never builds one) is skipped without
+// touching its label.
+func TestSearch_SkipsNilDocument(t *testing.T) {
+	s := NewSearcher()
+	got := s.Search("anything", SearchScope{Items: []SearchItem{{Label: "no doc", Doc: nil}}})
+	if len(got) != 0 {
+		t.Errorf("Search over a nil document row = %v, want no hits", got)
+	}
+}
+
+// TestSearchLogLabel_Variants covers every searchLogLabel branch: a fully
+// populated parsed entry, a parsed entry with no fields (falls back to the
+// raw line) and a long label that must be truncated.
+func TestSearchLogLabel_Variants(t *testing.T) {
+	full := logs.Entry{
+		Raw:       []byte(`{"level":"warn","msg":"boot","logger":"http"}`),
+		Parsed:    true,
+		Timestamp: time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC),
+		Level:     "warn",
+		Logger:    "http",
+		Msg:       "boot",
+	}
+	if label := searchLogLabel(full); !strings.Contains(label, full.Timestamp.Local().Format("15:04:05.000")) ||
+		!strings.Contains(label, "WARN") ||
+		!strings.Contains(label, "http") ||
+		!strings.Contains(label, "boot") {
+		t.Errorf("searchLogLabel(full) = %q, want timestamp/level/logger/msg", label)
+	}
+
+	bare := logs.Entry{Raw: []byte("raw line"), Parsed: true}
+	if label := searchLogLabel(bare); label != "raw line" {
+		t.Errorf("searchLogLabel(bare) = %q, want the raw line", label)
+	}
+
+	long := strings.Repeat("a", maxSearchLogLabel+10)
+	if label := truncateSearchLabel(long); len([]rune(label)) != maxSearchLogLabel+1 {
+		t.Errorf("truncateSearchLabel = %d runes, want %d (label + ellipsis)", len([]rune(label)), maxSearchLogLabel+1)
 	}
 }

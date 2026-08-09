@@ -241,3 +241,13 @@ func TestWriteAtomic_RenameFailureCleansTemp(t *testing.T) {
 	}
 	assertNoTempFiles(t, dir)
 }
+
+// TestWriteAtomic_MissingDirectory verifies WriteAtomic fails cleanly
+// when the target's directory does not exist (the temp file cannot be
+// created).
+func TestWriteAtomic_MissingDirectoryExtra(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-such-dir", "Caddyfile")
+	if err := WriteAtomic(path, []byte("data")); err == nil {
+		t.Error("WriteAtomic in a missing directory: expected an error, got nil")
+	}
+}

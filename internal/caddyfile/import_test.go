@@ -375,3 +375,18 @@ func TestResolveGlobSkipsHiddenFiles(t *testing.T) {
 		t.Errorf(".* glob files = %v, want only .hidden.caddy", g2.Imports[0].Files)
 	}
 }
+
+// TestImportPattern_EmptyAndMalformedArgs covers the importPattern
+// fallbacks: an empty argument list and an unlexable argument list both
+// yield an empty pattern.
+func TestImportPattern_EmptyAndMalformedArgs(t *testing.T) {
+	if pattern, args := importPattern(Node{Args: ""}); pattern != "" || args != "" {
+		t.Errorf("importPattern(empty) = (%q, %q), want (\"\", \"\")", pattern, args)
+	}
+	if pattern, args := importPattern(Node{Args: "`unterminated"}); pattern != "" || args != "" {
+		t.Errorf("importPattern(malformed) = (%q, %q), want (\"\", \"\")", pattern, args)
+	}
+	if pattern, args := importPattern(Node{Args: "snippets/*.caddy extra"}); pattern != "snippets/*.caddy" || args != "extra" {
+		t.Errorf("importPattern(normal) = (%q, %q), want the pattern and remaining args", pattern, args)
+	}
+}

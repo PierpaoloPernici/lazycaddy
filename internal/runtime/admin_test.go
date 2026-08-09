@@ -154,3 +154,40 @@ func TestConfig_Error(t *testing.T) {
 		t.Fatalf("expected ErrAdminRejected, got %v", err)
 	}
 }
+
+// TestNewAdminClient_AppliesDefaults verifies the constructor normalises a
+// non-positive timeout to 30s and trims a trailing slash from the base URL.
+func TestNewAdminClient_AppliesDefaults(t *testing.T) {
+	c := NewAdminClient("http://localhost:2019/", 0)
+	if c.baseURL != "http://localhost:2019" {
+		t.Errorf("baseURL = %q, want the trailing slash trimmed", c.baseURL)
+	}
+	if c.hc == nil || c.hc.Timeout != 30*time.Second {
+		t.Errorf("client timeout = %v, want the 30s default", c.hc.Timeout)
+	}
+
+	c2 := NewAdminClient("http://localhost:2019", 5*time.Second)
+	if c2.baseURL != "http://localhost:2019" || c2.hc.Timeout != 5*time.Second {
+		t.Errorf("explicit values not honoured: %q %v", c2.baseURL, c2.hc.Timeout)
+	}
+}
+
+// TestLoadJSON_InvalidURLMapsToUnreachable verifies that a request whose
+// URL cannot even be constructed surfaces as ErrAdminUnreachable.
+func TestLoadJSON_InvalidURLMapsToUnreachable(t *testing.T) {
+	c := &AdminClient{baseURL: "http://[::1:bad", hc: &http.Client{}}
+	if err := c.LoadJSON(context.Background(), []byte(`{}`)); !errors.Is(err, ErrAdminUnreachable) {
+		t.Errorf("LoadJSON with an invalid URL = %v, want ErrAdminUnreachable", err)
+	}
+	if _, err := c.Config(context.Background()); !errors.Is(err, ErrAdminUnreachable) {
+		t.Errorf("Config with an invalid URL = %v, want ErrAdminUnreachable", err)
+	}
+}
+
+// TestAdminErrorBody_FallsBackToStatusText verifies the final fallback of
+// adminErrorBody: an empty non-JSON body yields the HTTP status text.
+func TestAdminErrorBody_FallsBackToStatusText(t *testing.T) {
+	if got := adminErrorBody(404, nil); got != "Not Found" {
+		t.Errorf("adminErrorBody(404, nil) = %q, want the status text", got)
+	}
+}

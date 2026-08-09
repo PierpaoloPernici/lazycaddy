@@ -206,7 +206,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
 			model.Load()
-			program := tea.NewProgram(model, tea.WithAltScreen())
+			program := teaProgram(model)
 			if err := runTUI(func() (tea.Model, error) { return program.Run() }, logSource, monitor); err != nil {
 				return err
 			}
@@ -237,6 +237,15 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 		"systemd journal unit to follow in the log view (e.g. caddy.service); default: empty; the log view then reads the journal")
 
 	return rootCmd
+}
+
+// teaProgram constructs the Bubble Tea program for the TUI. It is a
+// package-level variable so tests can run the full command wiring
+// headlessly (no terminal) by replacing it with a program whose input and
+// output are in-memory; the production value uses the alt screen on the
+// real terminal.
+var teaProgram = func(model tea.Model) *tea.Program {
+	return tea.NewProgram(model, tea.WithAltScreen())
 }
 
 // flagSet is the subset of *pflag.FlagSet used by resolvePaths, exposed as

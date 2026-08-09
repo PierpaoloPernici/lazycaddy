@@ -364,3 +364,15 @@ func TestGroupLines(t *testing.T) {
 		}
 	}
 }
+
+// TestLexQuoted_UnterminatedBacktick verifies an unterminated backtick
+// string reports the backtick kind in its error message.
+func TestLexQuoted_UnterminatedBacktick(t *testing.T) {
+	_, err := lex([]byte("`unterminated"))
+	if err == nil {
+		t.Fatal("lex with an unterminated backtick string: expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unterminated backtick string") {
+		t.Errorf("error = %q, want the backtick kind in the message", err)
+	}
+}

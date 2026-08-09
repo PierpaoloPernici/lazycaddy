@@ -796,3 +796,122 @@ func TestRetention_PermissionFailureReported(t *testing.T) {
 		t.Fatalf("List returned %d entries after a failed cleanup, want 4", len(entries))
 	}
 }
+
+// TestCreate_DirCreationFails verifies Create surfaces a backup-directory
+// error when the directory cannot be created (it is blocked by a file).
+func TestCreate_DirCreationFails(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "backups")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	creator, err := New(Options{Dir: blocker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, "Caddyfile")
+	if err := os.WriteFile(src, []byte("example.test {\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creator.Create(src); err == nil {
+		t.Error("Create with an uncreatable backup dir: expected an error, got nil")
+	}
+}
+
+// TestCreate_SequenceScanFailure verifies nextSequence reports a backup
+// directory that cannot be scanned (it is a file).
+func TestCreate_SequenceScanFailure(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "backups")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &creator{opts: Options{Dir: blocker}}
+	if _, err := c.nextSequence(time.Now()); err == nil {
+		t.Error("nextSequence over a file: expected an error, got nil")
+	}
+}
+
+// TestNextSequence_SkipsUnrelatedNames verifies the sequence scan ignores
+// names that do not match the exact <ts>-<seq>-<base> shape: wrong dash
+// position and non-numeric sequences are skipped, and the highest valid
+// sequence wins.
+func TestNextSequence_SkipsUnrelatedNames(t *testing.T) {
+	dir := t.TempDir()
+	prefix := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC).Format(layout) + "-"
+	for _, name := range []string{
+		prefix + "001-Caddyfile",      // valid, seq 1
+		prefix + "007-Caddyfile",      // valid, seq 7
+		prefix + "12x-Caddyfile",      // non-numeric sequence -> skipped
+		prefix + "001X-Caddyfile",     // name[23] is not a dash -> skipped
+		"other-" + prefix + "003-foo", // wrong prefix -> skipped
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &creator{opts: Options{Dir: dir}}
+	seq, err := c.nextSequence(time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("nextSequence: %v", err)
+	}
+	if seq != 8 {
+		t.Errorf("nextSequence = %d, want 8 (one past the highest valid sequence)", seq)
+	}
+}
+
+// TestWriteSidecar_UncreatableDir verifies the sidecar write fails when
+// its temp file cannot be created next to the backup.
+func TestWriteSidecar_UncreatableDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-dir", "backup")
+	if err := writeSidecar(path, "/srv/Caddyfile"); err == nil {
+		t.Error("writeSidecar in a missing directory: expected an error, got nil")
+	}
+}
+
+// TestList_NonDirectoryErrors verifies List surfaces a non-NotExist scan
+// failure instead of treating it as an empty index.
+func TestList_NonDirectoryErrors(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := List(file); err == nil {
+		t.Error("List over a file: expected an error, got nil")
+	}
+}
+
+// TestReadSourceSidecar_EmptyContent verifies a sidecar containing only
+// whitespace yields an unknown source rather than an empty one.
+func TestReadSourceSidecar_EmptyContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup")
+	if err := os.WriteFile(path+sourceSuffix, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if src, known := readSourceSidecar(path); known || src != "" {
+		t.Errorf("readSourceSidecar = (%q, %v), want (\"\", false)", src, known)
+	}
+}
+
+// TestParseName_InvalidTimestamp verifies a backup name whose timestamp
+// cannot be parsed is rejected.
+func TestParseName_InvalidTimestamp(t *testing.T) {
+	if _, ok := parseName("not-a-timestamp-000-Caddyfile"); ok {
+		t.Error("parseName with an invalid timestamp: expected rejection")
+	}
+}
+
+// TestRetention_ListFailure verifies Retention.Apply surfaces a backup
+// listing failure instead of silently removing nothing.
+func TestRetention_ListFailure(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := Retention{Dir: file, Keep: 1}
+	if _, err := r.Apply(); err == nil {
+		t.Error("Apply over a file: expected an error, got nil")
+	}
+}

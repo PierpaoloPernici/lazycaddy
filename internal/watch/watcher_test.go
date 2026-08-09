@@ -74,3 +74,16 @@ func TestMapEvent_MapsAllOperations(t *testing.T) {
 		t.Fatalf("op = %d, want %d", got.Op, want)
 	}
 }
+
+// TestFSWatcher_AddMissingPath verifies the real fsnotify-backed watcher
+// surfaces an add failure for a path that cannot be watched.
+func TestFSWatcher_AddMissingPath(t *testing.T) {
+	w, err := NewWatcher()
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer w.Close()
+	if err := w.Add(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+		t.Error("Add on a missing path: expected an error, got nil")
+	}
+}

@@ -495,3 +495,31 @@ func TestMonitorQueueDropsOldestWhenFull(t *testing.T) {
 		t.Errorf("newest queued result = %q, want file/9", last)
 	}
 }
+
+// TestRealClockAfter verifies the production Clock seam fires the returned
+// channel after the requested duration.
+func TestRealClockAfter(t *testing.T) {
+	start := time.Now()
+	ch := (realClock{}).After(10 * time.Millisecond)
+	select {
+	case <-ch:
+		if elapsed := time.Since(start); elapsed < 5*time.Millisecond {
+			t.Errorf("timer fired after %v, want at least ~10ms", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("realClock.After never fired")
+	}
+}
+
+// TestMonitorStart_IsIdempotent verifies Start can be called more than
+// once without double-launching the event loop.
+func TestMonitorStart_IsIdempotent(t *testing.T) {
+	w := newFakeWatcher()
+	m := NewMonitor(Options{Watcher: w, ReadFile: memFS{}.read, Clock: &fakeClock{}})
+	m.Start()
+	m.Start() // second call must be a no-op
+	if !m.started {
+		t.Error("started = false after Start")
+	}
+	_ = m.Close()
+}

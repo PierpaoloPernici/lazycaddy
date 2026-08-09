@@ -209,6 +209,37 @@ func TestSave_WriteFailureCarriesBackup(t *testing.T) {
 	}
 }
 
+// TestSave_RetentionFailureReported verifies the contract that a retention
+// cleanup failure after a successful save is reported in RetentionErr
+// without undoing the save.
+func TestSave_RetentionFailureReported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	const original = "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, original)
+
+	// The retention directory is a file, so Retention.Apply fails when
+	// it lists the backup directory.
+	blocker := filepath.Join(dir, "not-a-dir")
+	writeFile(t, blocker, "x")
+	s, _ := newTestSaver(t, dir)
+	s.retention = backup.Retention{Dir: blocker, Keep: 1}
+
+	res, err := s.Save(context.Background(), path, []byte(original), []byte("working"))
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if res.RetentionErr == nil {
+		t.Fatal("RetentionErr = nil, want the retention failure reported")
+	}
+	if !strings.Contains(res.RetentionErr.Error(), "retention:") {
+		t.Errorf("RetentionErr = %v, want a retention-prefixed error", res.RetentionErr)
+	}
+	if got := readFileContent(t, path); got != "working" {
+		t.Errorf("file = %q, want the save to have succeeded despite retention failure", got)
+	}
+}
+
 func TestSave_PreservesMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "Caddyfile")
