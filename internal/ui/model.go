@@ -211,6 +211,19 @@ type pendingChange struct {
 	inMem  []byte
 }
 
+// errorHistoryMax bounds the in-app error history. The log is bounded so
+// a long session can never grow the model state without limit.
+const errorHistoryMax = 50
+
+// errorEntry is one recorded failure in the bounded error history. Every
+// entry names the failed operation, the message and a safe next action so
+// the operator always knows how to recover.
+type errorEntry struct {
+	Op      string
+	Message string
+	Next    string
+}
+
 // Model is the inspector screen: a document tree on the left, the raw
 // source of the selected document on the right (scrollable with
 // PgUp/PgDown) and optional diagnostics / diff / save-confirmation
@@ -292,6 +305,12 @@ type Model struct {
 	diffViewport viewport.Model
 	diffLines    []diff.Line
 	diffTitle    string
+	// diffHOffset is the horizontal scroll offset (in display columns)
+	// applied to long diff lines. h/l shift it in the diff modal.
+	diffHOffset int
+	// diffHunkCursor is the index of the currently selected hunk header
+	// in the diff, for n/N hunk navigation.
+	diffHunkCursor int
 
 	// Save-confirmation modal state. The modal is shown when
 	// showSaveConfirm is true; it names the target path and backup
@@ -454,6 +473,24 @@ type Model struct {
 	// rollingBack is true while an asynchronous rollback is in flight; a
 	// second confirmation is ignored, mirroring the saving guard.
 	rollingBack bool
+
+	// readFile reads a document's current on-disk bytes for the
+	// per-document D diff (and the root fallback when no working copy
+	// exists). nil disables the on-disk comparison with a hint. The UI
+	// never touches the filesystem directly; main.go injects os.ReadFile.
+	readFile app.FileReader
+
+	// showUnsavedConfirm is true while the unsaved-changes confirmation
+	// modal is open (a quit was requested with unsaved edits).
+	showUnsavedConfirm bool
+
+	// errorHistory is a bounded record of reported failures, opened by
+	// the H keybinding.
+	errorHistory []errorEntry
+	// showErrorHistory is true while the error-history view is open.
+	showErrorHistory bool
+	// errorHistoryViewport renders the bounded error-history list.
+	errorHistoryViewport viewport.Model
 }
 
 // pendingRollback holds the state of a backup selected for rollback:
@@ -483,34 +520,38 @@ type pendingRollback struct {
 // monitor detects external changes to the resolved documents; omitting
 // it disables the watch feature (the synchronous conflict guards stay
 // active). rollbacker lists and restores backups; omitting it disables
-// the B keybinding.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, rollbacker app.Rollbacker, clipboards ...app.Clipboard) *Model {
+// the B keybinding. readFile reads a document's on-disk bytes for the
+// per-document D diff; omitting it disables the on-disk comparison with
+// a hint (the root working-copy diff keeps working).
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, rollbacker app.Rollbacker, readFile app.FileReader, clipboards ...app.Clipboard) *Model {
 	var clipboard app.Clipboard
 	if len(clipboards) > 0 {
 		clipboard = clipboards[0]
 	}
 	return &Model{
-		loader:            loader,
-		formatter:         formatter,
-		saver:             saver,
-		reloader:          reloader,
-		runtime:           runtimeStatus,
-		logSource:         logSource,
-		editor:            editor,
-		searcher:          searcher,
-		version:           version,
-		collapsed:         map[string]bool{},
-		viewport:          viewport.New(1, 1),
-		detailViewport:    viewport.New(1, 1),
-		diffViewport:      viewport.New(1, 1),
-		logViewport:       viewport.New(1, 1),
-		logDetailViewport: viewport.New(1, 1),
-		searchViewport:    viewport.New(1, 1),
-		backupViewport:    viewport.New(1, 1),
-		logFollow:         true,
-		clipboard:         clipboard,
-		monitor:           monitor,
-		rollbacker:        rollbacker,
+		loader:               loader,
+		formatter:            formatter,
+		saver:                saver,
+		reloader:             reloader,
+		runtime:              runtimeStatus,
+		logSource:            logSource,
+		editor:               editor,
+		searcher:             searcher,
+		version:              version,
+		collapsed:            map[string]bool{},
+		viewport:             viewport.New(1, 1),
+		detailViewport:       viewport.New(1, 1),
+		diffViewport:         viewport.New(1, 1),
+		logViewport:          viewport.New(1, 1),
+		logDetailViewport:    viewport.New(1, 1),
+		searchViewport:       viewport.New(1, 1),
+		backupViewport:       viewport.New(1, 1),
+		errorHistoryViewport: viewport.New(1, 1),
+		logFollow:            true,
+		clipboard:            clipboard,
+		monitor:              monitor,
+		rollbacker:           rollbacker,
+		readFile:             readFile,
 	}
 }
 
@@ -710,6 +751,12 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The unsaved-changes confirmation modal takes precedence over every
+	// other modal and the main keymap: it is the exit guard and can be
+	// opened from any context.
+	if m.showUnsavedConfirm {
+		return m.updateUnsavedConfirmKey(msg)
+	}
 	// The external-change conflict modal takes precedence over every
 	// other modal: it is the most urgent prompt. While its compare diff
 	// is open, the diff keys apply (Esc returns to the conflict
@@ -763,10 +810,14 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searchActive {
 		return m.updateSearchKey(msg)
 	}
+	// The error-history view opens from the main view and replaces the
+	// tree/source panes while it is open.
+	if m.showErrorHistory {
+		return m.updateErrorHistoryKey(msg)
+	}
 	switch msg.String() {
 	case "q", "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -799,6 +850,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startDelete()
 	case "B":
 		return m.startBackups()
+	case "H":
+		return m.startErrorHistory()
 	case "y":
 		return m.startCopy()
 	case "/", "ctrl+f":
@@ -873,8 +926,7 @@ func (m *Model) updateSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.closeSearch()
 	case "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	case "backspace":
 		if len(m.searchQuery) > 0 {
 			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
@@ -961,6 +1013,7 @@ func (m *Model) syncMonitor() {
 	if err := m.monitor.Update(app.ChangeTargets(m.state.Graph.Documents)); err != nil {
 		m.monitor = nil
 		m.statusMessage = "✗ external change watching unavailable: " + err.Error()
+		m.recordError("external change watch", err.Error(), "fix the directory permissions and restart; the synchronous save/reload conflict guards stay active")
 	}
 }
 
@@ -986,6 +1039,7 @@ func (m *Model) handleExternalChange(msg externalChangeMsg) (tea.Model, tea.Cmd)
 	if msg.err != nil {
 		m.monitor = nil
 		m.statusMessage = "✗ external change watching failed: " + msg.err.Error()
+		m.recordError("external change watch", msg.err.Error(), "restart lazycaddy to re-arm watching; the synchronous conflict guards stay active")
 		return m, nil
 	}
 	if m.inFlightWorkflow() {
@@ -1073,8 +1127,7 @@ func (m *Model) updateChangeConflictKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.openChangeCompare()
 		}
 	case "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	}
 	return m, nil
 }
@@ -1164,12 +1217,8 @@ func (m *Model) openChangeCompare() (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ diff failed: " + err.Error()
 		return m, nil
 	}
-	m.diffLines = lines
-	m.diffTitle = "Compare · " + pc.change.Path
+	m.showDiffModal(lines, "Compare · "+pc.change.Path)
 	m.changeCompare = true
-	m.showDiff = true
-	m.syncDiffContent()
-	m.diffViewport.GotoTop()
 	return m, nil
 }
 
@@ -1424,6 +1473,10 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case result.Cancelled:
 		m.statusMessage = "editor cancelled or empty result — nothing applied"
+		if result.SnapshotPath != "" {
+			m.statusMessage += " (recovery snapshot: " + result.SnapshotPath + ")"
+		}
+		m.recordError("editor", "cancelled or empty result — nothing applied", recoverySnapshotNext(result.SnapshotPath))
 		return m, nil
 	case len(result.Diagnostics) > 0:
 		// The modal is for actionable findings, so non-error diagnostics
@@ -1481,22 +1534,36 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ diff failed: " + err.Error()
 		return m, nil
 	}
-	m.diffLines = lines
-	m.diffTitle = "Diff · " + session.DocPath
-	m.showDiff = true
-	m.syncDiffContent()
-	m.diffViewport.GotoTop()
+	m.showDiffModal(lines, "Diff · "+session.DocPath)
 	return m, nil
 }
 
 // handleEditorError surfaces a Prepare or Complete failure (an
 // external-change conflict, a missing editor command or a patch error) in
-// the status line.
+// the status line. When the session already produced a snapshot, the
+// snapshot path is surfaced as the recovery trail.
 func (m *Model) handleEditorError(msg editorErrorMsg) (tea.Model, tea.Cmd) {
+	snapshot := ""
+	if m.editorSession != nil {
+		snapshot = m.editorSession.SnapshotPath
+	}
 	m.editing = false
 	m.editorSession = nil
 	m.statusMessage = "✗ editor: " + msg.Err.Error()
+	if snapshot != "" {
+		m.statusMessage += " (recovery snapshot: " + snapshot + ")"
+	}
+	m.recordError("editor", msg.Err.Error(), recoverySnapshotNext(snapshot))
 	return m, nil
+}
+
+// recoverySnapshotNext builds the safe next action for an editor failure,
+// pointing at the pre-edit snapshot when one exists.
+func recoverySnapshotNext(snapshotPath string) string {
+	if snapshotPath != "" {
+		return "the pre-edit snapshot survives for recovery: " + snapshotPath
+	}
+	return "retry the edit once the editor is available"
 }
 
 // startDelete begins the delete workflow for the selected node: the node's
@@ -1562,27 +1629,27 @@ func (m *Model) handleDeleteValidated(msg deleteValidatedMsg) (tea.Model, tea.Cm
 		m.diagCursor = 0
 		m.showDiagnostics = true
 		m.statusMessage = "✗ delete did not validate — not applied"
+		m.recordError("delete", "delete did not validate", "fix the reported errors and retry the delete")
 		return m, nil
 	}
 	if msg.Err != nil {
 		m.statusMessage = "✗ delete validation failed: " + msg.Err.Error()
+		m.recordError("delete", msg.Err.Error(), "fix the reported issue and retry the delete")
 		return m, nil
 	}
 	if len(msg.Diagnostics) > 0 {
 		m.statusMessage = "✗ delete has warnings — not applied"
+		m.recordError("delete", "delete has warnings", "review the warnings and retry the delete")
 		return m, nil
 	}
 	m.pendingDelete = &pendingDelete{path: msg.Path, original: msg.Original, content: msg.Content}
 	lines, err := diff.Unified(msg.Original, msg.Content, msg.Path, msg.Path+" (after delete)")
 	if err != nil {
 		m.statusMessage = "✗ diff failed: " + err.Error()
+		m.recordError("delete diff", err.Error(), "retry the delete")
 		return m, nil
 	}
-	m.diffLines = lines
-	m.diffTitle = "Delete · " + msg.Path
-	m.showDiff = true
-	m.syncDiffContent()
-	m.diffViewport.GotoTop()
+	m.showDiffModal(lines, "Delete · "+msg.Path)
 	return m, nil
 }
 
@@ -1598,8 +1665,7 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = ""
 		return m, nil // stops the poll: no reschedule
 	case "q", "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	case "up", "k":
 		if m.logFollow {
 			m.logFollow = false
@@ -1671,8 +1737,7 @@ func (m *Model) updateLogDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.logDetailOpen = false
 	case "q", "ctrl+c":
-		m.quit = true
-		return m, tea.Quit
+		return m.requestQuit()
 	case "up", "k":
 		m.logDetailViewport.LineUp(1)
 	case "down", "j":
@@ -1957,9 +2022,11 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 			if msg.Formatted != nil {
 				m.statusMessage = "✗ validation failed (working copy retained, not saved)"
 			}
+			m.recordError("format & validate", "validation failed", "fix the reported errors and re-run v")
 			return m, nil
 		}
 		m.statusMessage = "✗ validation failed (working copy not saved): " + msg.Err.Error()
+		m.recordError("format & validate", msg.Err.Error(), "fix the reported issue and re-run v")
 		return m, nil
 	}
 	m.diagnostics = nil
@@ -1977,46 +2044,112 @@ func (m *Model) closeDiagnostics() {
 	m.diagCursor = 0
 }
 
-// startDiff opens the unified diff modal comparing the original root
-// source with the formatted working copy. It is a no-op when no
-// configuration is loaded or no working copy exists yet; on error the
-// failure is surfaced in the status line. The modal is allowed even
-// when validation previously failed or a validation is still in
-// flight, because the working copy is retained in both cases.
+// showDiffModal opens the shared diff modal with the given lines and
+// title, resetting the horizontal scroll offset and the hunk cursor. It
+// is the single entry point for every diff the model opens (D, editor,
+// delete, backup compare, conflict compare), so a new diff always starts
+// at the top-left and on the first hunk.
+func (m *Model) showDiffModal(lines []diff.Line, title string) {
+	m.diffLines = lines
+	m.diffTitle = title
+	m.diffHOffset = 0
+	m.diffHunkCursor = 0
+	m.showDiff = true
+	m.syncDiffContent()
+	m.diffViewport.GotoTop()
+}
+
+// startDiff opens the unified diff modal for the currently selected
+// document. The root document keeps the existing working-copy-vs-original
+// behavior after `v`; an imported document (and the root without a
+// working copy) is diffed against its current on-disk bytes read through
+// the injected reader. On error the failure is surfaced in the status
+// line. The modal is allowed even when validation previously failed or a
+// validation is still in flight, because the working copy is retained in
+// both cases.
 func (m *Model) startDiff() (tea.Model, tea.Cmd) {
 	if m.state == nil || m.state.Graph == nil {
 		return m, nil
 	}
-	if m.workingBytes == nil {
-		m.statusMessage = "no working copy — press v to format & validate first"
+	sel := m.selectedItem()
+	if sel == nil || sel.doc == nil {
+		m.statusMessage = "✗ diff unavailable: no document selected"
 		return m, nil
 	}
-	lines, err := diff.Unified(
-		m.state.Graph.Root.Source,
-		m.workingBytes,
-		m.state.Settings.ConfigPath,
-		m.state.Settings.ConfigPath+" (formatted)",
-	)
+	doc := sel.doc
+	cleanPath := filepath.Clean(doc.Path)
+	isRoot := cleanPath == filepath.Clean(m.state.Settings.ConfigPath)
+
+	// Root with a working copy keeps the existing v-based diff.
+	if isRoot && m.workingBytes != nil {
+		lines, err := diff.Unified(
+			m.state.Graph.Root.Source,
+			m.workingBytes,
+			m.state.Settings.ConfigPath,
+			m.state.Settings.ConfigPath+" (formatted)",
+		)
+		if err != nil {
+			m.statusMessage = "✗ diff failed: " + err.Error()
+			m.recordError("diff", err.Error(), "retry the diff once the working copy is ready")
+			return m, nil
+		}
+		m.showDiffModal(lines, "Diff · "+m.state.Settings.ConfigPath)
+		return m, nil
+	}
+
+	// Otherwise compare the document's in-memory source against its
+	// current on-disk bytes through the injected reader.
+	if m.readFile == nil {
+		if isRoot {
+			m.statusMessage = "no working copy — press v to format & validate first (no on-disk diff reader configured)"
+		} else {
+			m.statusMessage = "✗ diff unavailable: no on-disk diff reader configured"
+		}
+		return m, nil
+	}
+	onDisk, err := m.readFile(doc.Path)
+	if err != nil {
+		m.statusMessage = "✗ diff unavailable: " + err.Error()
+		m.recordError("diff", "read "+doc.Path+": "+err.Error(), "check the file is readable and retry the diff")
+		return m, nil
+	}
+	lines, err := diff.Unified(doc.Source, onDisk, doc.Path, doc.Path+" (on disk)")
 	if err != nil {
 		m.statusMessage = "✗ diff failed: " + err.Error()
+		m.recordError("diff", err.Error(), "retry the diff")
 		return m, nil
 	}
-	m.diffLines = lines
-	m.diffTitle = "Diff · " + m.state.Settings.ConfigPath
-	m.showDiff = true
-	m.syncDiffContent()
-	m.diffViewport.GotoTop()
+	// The title reflects the outcome: an empty diff (in-memory matches
+	// on-disk) is labelled "No changes" instead of "Diff current
+	// changes", keeping the "no changes" body text as well.
+	title := "Diff current changes · " + doc.Path
+	if !hasDiffHunks(lines) {
+		title = "No changes · " + doc.Path
+	}
+	m.showDiffModal(lines, title)
 	return m, nil
 }
 
+// hasDiffHunks reports whether the given diff lines contain any @@ hunk
+// header (i.e. whether the two sources actually differ).
+func hasDiffHunks(lines []diff.Line) bool {
+	for _, l := range lines {
+		if l.Kind == diff.KindHunkHeader {
+			return true
+		}
+	}
+	return false
+}
+
 // updateDiffKey handles keys when the diff modal is open. Esc and q
-// close the modal; the arrow keys and PgUp/PgDown scroll the viewport.
-// When the diff shows a pending editor edit or delete, the diff is the
-// single confirmation: Enter saves directly and Esc additionally
-// discards the pending change. When the diff shows a backup comparison,
-// Enter opens the rollback confirmation (which requires writable mode)
-// and Esc returns to the backup list. The read-only D flow keeps its
-// current behavior.
+// close the modal; the arrow keys and PgUp/PgDown scroll the viewport;
+// n/N jump to the next/previous hunk header; h/l shift the horizontal
+// scroll offset for long lines. When the diff shows a pending editor
+// edit or delete, the diff is the single confirmation: Enter saves
+// directly and Esc additionally discards the pending change. When the
+// diff shows a backup comparison, Enter opens the rollback confirmation
+// (which requires writable mode) and Esc returns to the backup list. The
+// read-only D flow keeps its current behavior.
 func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
@@ -2066,8 +2199,79 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.diffViewport.PageUp()
 	case "pgdown":
 		m.diffViewport.PageDown()
+	case "n":
+		m.jumpHunk(1)
+	case "N":
+		m.jumpHunk(-1)
+	case "l":
+		m.diffHOffset += 4
+		m.syncDiffContent()
+	case "h":
+		m.diffHOffset -= 4
+		if m.diffHOffset < 0 {
+			m.diffHOffset = 0
+		}
+		m.syncDiffContent()
 	}
 	return m, nil
+}
+
+// diffHunkLines returns the line indices of the @@ hunk headers in the
+// current diff.
+func (m *Model) diffHunkLines() []int {
+	var idx []int
+	for i, l := range m.diffLines {
+		if l.Kind == diff.KindHunkHeader {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// jumpHunk moves the hunk cursor by delta (wrapping) and scrolls the diff
+// viewport so the selected @@ hunk header is visible at the top. It is a
+// no-op when the diff has no hunks. The body is re-rendered so the "> "
+// marker moves to the newly selected hunk (SetContent preserves the
+// scroll position for an unchanged content height). A stale cursor (one
+// that no longer matches the current hunk list, e.g. after the diff
+// content changed) is re-anchored on the first hunk instead of advancing.
+func (m *Model) jumpHunk(delta int) {
+	hunks := m.diffHunkLines()
+	if len(hunks) == 0 {
+		return
+	}
+	n := len(hunks)
+	if m.diffHunkCursor >= n {
+		m.diffHunkCursor = 0
+	} else {
+		m.diffHunkCursor = (m.diffHunkCursor + delta + n) % n
+	}
+	target := hunks[m.diffHunkCursor]
+	m.syncDiffContent()
+	if target < m.diffViewport.YOffset || target >= m.diffViewport.YOffset+m.diffViewport.Height {
+		m.diffViewport.SetYOffset(target)
+	}
+}
+
+// diffSummary counts the hunks and the added/removed lines of the current
+// diff for the modal title. It returns "" for an unchanged diff (no
+// hunks) so the "no changes" message stays the only signal.
+func (m *Model) diffSummary() string {
+	hunks, adds, removes := 0, 0, 0
+	for _, l := range m.diffLines {
+		switch l.Kind {
+		case diff.KindHunkHeader:
+			hunks++
+		case diff.KindAdd:
+			adds++
+		case diff.KindRemove:
+			removes++
+		}
+	}
+	if hunks == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d hunk(s) · +%d −%d", hunks, adds, removes)
 }
 
 // closeDiff dismisses the diff modal and clears its state. Called by
@@ -2076,6 +2280,8 @@ func (m *Model) closeDiff() {
 	m.showDiff = false
 	m.diffLines = nil
 	m.diffTitle = ""
+	m.diffHOffset = 0
+	m.diffHunkCursor = 0
 	m.diffViewport.SetContent("")
 }
 
@@ -2213,6 +2419,12 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 		m.loaded = loadedStale
 		m.loadedAt = time.Time{}
 		status := "✓ saved (backup: " + msg.Result.BackupPath + ")"
+		if msg.Result.RetentionErr != nil {
+			// Cleanup failures are surfaced exactly like rollback does:
+			// the save itself completed, the failure is reported.
+			status += " · ✗ retention cleanup failed: " + msg.Result.RetentionErr.Error()
+			m.recordError("save retention", msg.Result.RetentionErr.Error(), "remove old backups manually or lower --backup-retention")
+		}
 		if m.pendingEdit != nil || m.pendingDelete != nil {
 			// An editor edit or a delete can change the document
 			// structure: rebuild the tree from the freshly written file so
@@ -2234,16 +2446,19 @@ func (m *Model) handleSaveResult(msg saveResultMsg) (tea.Model, tea.Cmd) {
 	}
 	if errors.Is(msg.Err, app.ErrConflict) {
 		m.statusMessage = "✗ file changed on disk — reload before saving"
+		m.recordError("save", "file changed on disk since it was loaded", "reload the file from disk before saving")
 		m.reopenEditDiff()
 		return m, nil
 	}
 	var saveErr *app.SaveError
 	if errors.As(msg.Err, &saveErr) {
-		m.statusMessage = "✗ save failed (backup: " + saveErr.BackupPath + "): " + saveErr.Err.Error()
+		m.statusMessage = "✗ save failed (backup: " + saveErr.BackupPath + "): " + saveErr.Err.Error() + " · press B to compare the recovery backup"
+		m.recordError("save", saveErr.Err.Error(), "press B on the document to inspect the recovery backup: "+saveErr.BackupPath)
 		m.reopenEditDiff()
 		return m, nil
 	}
 	m.statusMessage = "✗ save failed: " + msg.Err.Error()
+	m.recordError("save", msg.Err.Error(), "check the file and retry the save")
 	m.reopenEditDiff()
 	return m, nil
 }
@@ -2318,11 +2533,7 @@ func (m *Model) reopenEditDiff() {
 		if err != nil {
 			return
 		}
-		m.diffLines = lines
-		m.diffTitle = "Diff · " + pe.path
-		m.showDiff = true
-		m.syncDiffContent()
-		m.diffViewport.GotoTop()
+		m.showDiffModal(lines, "Diff · "+pe.path)
 		return
 	}
 	if pd := m.pendingDelete; pd != nil {
@@ -2330,11 +2541,7 @@ func (m *Model) reopenEditDiff() {
 		if err != nil {
 			return
 		}
-		m.diffLines = lines
-		m.diffTitle = "Delete · " + pd.path
-		m.showDiff = true
-		m.syncDiffContent()
-		m.diffViewport.GotoTop()
+		m.showDiffModal(lines, "Delete · "+pd.path)
 	}
 }
 
@@ -2428,18 +2635,22 @@ func (m *Model) handleReloadResult(msg reloadResultMsg) (tea.Model, tea.Cmd) {
 	var reloadErr *app.ReloadError
 	if !errors.As(msg.Err, &reloadErr) {
 		m.statusMessage = "✗ reload failed: " + msg.Err.Error()
+		m.recordError("reload", msg.Err.Error(), "check the Admin API endpoint and the saved file, then retry")
 		return m, nil
 	}
 	switch {
 	case errors.Is(msg.Err, app.ErrConflict):
 		m.loaded = loadedUnknown
 		m.statusMessage = "✗ file changed on disk since save — reload aborted"
+		m.recordError("reload", "file changed on disk since save", "reload the file from disk before retrying the reload")
 	case errors.Is(msg.Err, app.ErrAdminUnreachable), errors.Is(msg.Err, app.ErrAdminTimeout):
 		m.loaded = loadedUnreachable
 		m.statusMessage = "✗ reload failed (file saved, backup intact): " + msg.Err.Error()
+		m.recordError("reload", msg.Err.Error(), "verify the Admin API endpoint and that Caddy is running, then retry")
 	default:
 		m.loaded = loadedStale
 		m.statusMessage = "✗ reload failed (file saved, backup intact): " + msg.Err.Error()
+		m.recordError("reload", msg.Err.Error(), "check the reported rejection and retry the reload")
 	}
 	return m, nil
 }
@@ -2579,24 +2790,64 @@ func (m *Model) diffBody(bodyW int) string {
 	if !hasChanges {
 		return dimStyle.Render("no changes — the working copy matches the source")
 	}
+	// The current hunk (the one at diffHunkCursor) is marked with a "> "
+	// prefix so the operator always knows which @@ header n/N selected.
+	currentHunk := -1
+	if hunks := m.diffHunkLines(); len(hunks) > 0 && m.diffHunkCursor >= 0 && m.diffHunkCursor < len(hunks) {
+		currentHunk = hunks[m.diffHunkCursor]
+	}
 	var b strings.Builder
-	for _, line := range m.diffLines {
-		text := truncateToWidth(line.Text, bodyW)
+	for i, line := range m.diffLines {
 		switch line.Kind {
 		case diff.KindAdd:
+			text := m.renderDiffLine(line.Text, bodyW)
 			b.WriteString(diffAddStyle.Render(text))
 		case diff.KindRemove:
+			text := m.renderDiffLine(line.Text, bodyW)
 			b.WriteString(diffRemoveStyle.Render(text))
 		case diff.KindHunkHeader:
+			raw := line.Text
+			if i == currentHunk {
+				// The marker is part of the line so horizontal scrolling
+				// and truncation account for it.
+				raw = "> " + raw
+			}
+			text := m.renderDiffLine(raw, bodyW)
 			b.WriteString(diffHunkStyle.Render(text))
 		case diff.KindFileHeader:
+			text := m.renderDiffLine(line.Text, bodyW)
 			b.WriteString(diffFileStyle.Render(text))
 		default:
+			text := m.renderDiffLine(line.Text, bodyW)
 			b.WriteString(text)
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// renderDiffLine applies the diff viewport's horizontal scroll offset to
+// one plain-text diff line and truncates it to fit bodyW. With a positive
+// offset the line is prefixed with an ellipsis so the operator can see
+// content is scrolled horizontally; tail truncation keeps the "…" suffix.
+// The offset is measured in display columns and is rune-aware.
+func (m *Model) renderDiffLine(text string, bodyW int) string {
+	if m.diffHOffset <= 0 {
+		return truncateToWidth(text, bodyW)
+	}
+	runes := []rune(text)
+	seen := 0
+	i := 0
+	for ; i < len(runes); i++ {
+		if seen >= m.diffHOffset {
+			break
+		}
+		seen += lipgloss.Width(string(runes[i]))
+	}
+	if bodyW <= 1 {
+		return "…"
+	}
+	return "…" + truncateToWidth(string(runes[i:]), bodyW-1)
 }
 
 // View implements tea.Model.
@@ -2625,7 +2876,12 @@ func (m *Model) View() string {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("✗ %v", m.err)))
 		b.WriteString("\n")
 	}
-	if m.showChangeConflict {
+	if m.showUnsavedConfirm {
+		// The unsaved-changes guard layers above every other modal: it is
+		// the exit guard and can be opened from any context.
+		b.WriteString(m.unsavedConfirmView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showChangeConflict {
 		// The conflict modal layers above every other modal. While its
 		// compare diff is open, the shared diff modal renders instead.
 		if m.changeCompare {
@@ -2669,6 +2925,11 @@ func (m *Model) View() string {
 	} else if m.searchActive {
 		// The search modal is read-only and only opens from the main view.
 		b.WriteString(m.searchView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showErrorHistory {
+		// The error-history view replaces the tree/source panes while it
+		// is open, mirroring the log view.
+		b.WriteString(m.errorHistoryView(width, paneH))
 		b.WriteString("\n")
 	} else {
 		treeW := width * 2 / 5
@@ -2753,6 +3014,11 @@ func (m *Model) header(width int) string {
 		right = unreachableBadge.Render(" UNREACHABLE ") + right
 	} else if m.reloader != nil {
 		right = unknownBadge.Render(" UNKNOWN ") + right
+	}
+	// The unsaved badge is the leftmost marker: it is the most immediate
+	// state and is an explicit text badge, never color alone.
+	if m.hasUnsavedEdits() {
+		right = unsavedBadge.Render(" UNSAVED ") + right
 	}
 
 	rightW := lipgloss.Width(right)
@@ -3189,11 +3455,20 @@ func (m *Model) footer(width int) string {
 	if m.rollbacker != nil {
 		backupSuffix = " · B backups"
 	}
+	// The error-history key is documented in the footer whenever failures
+	// have been recorded, so the operator always has a way back to the
+	// recovery trail without cluttering the footer when nothing failed.
+	errorHistorySuffix := ""
+	if len(m.errorHistory) > 0 {
+		errorHistorySuffix = " · H errors"
+	}
 	var keys string
 	switch {
+	case m.showUnsavedConfirm:
+		keys = "s save · d discard & quit · Esc cancel"
 	case m.showChangeConflict:
 		if m.changeCompare {
-			keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
+			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Esc back"
 		} else if m.hasUnsavedEdits() {
 			keys = "r reload (discards unsaved edits) · c compare · k/Esc keep"
 		} else {
@@ -3201,13 +3476,13 @@ func (m *Model) footer(width int) string {
 		}
 	case m.showDiff:
 		if m.pendingRollback != nil {
-			keys = "↑/↓ scroll · PgUp/PgDown page · Enter rollback · Esc cancel"
+			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Enter rollback · Esc cancel"
 		} else if m.pendingDelete != nil {
-			keys = "↑/↓ scroll · PgUp/PgDown page · Enter delete · Esc cancel"
+			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Enter delete · Esc cancel"
 		} else if m.pendingEdit != nil {
-			keys = "↑/↓ scroll · PgUp/PgDown page · Enter save · Esc discard"
+			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Enter save · Esc discard"
 		} else {
-			keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
+			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Esc close"
 		}
 	case m.showSaveConfirm:
 		keys = "Enter save · Esc cancel"
@@ -3231,10 +3506,12 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ move · PgUp/PgDown page · Enter detail · f follow (on/off) · p pause/resume · Esc close · q quit"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
+	case m.showErrorHistory:
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s%s · q quit · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, backupSuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s%s · q quit%s · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, backupSuffix, errorHistorySuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + backupSuffix + " · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + backupSuffix + " · q quit" + errorHistorySuffix
 	}
 	return footerStyle.Width(width).Render(renderFooterKeys(keys))
 }
@@ -3369,6 +3646,9 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 // roll back and Esc to cancel.
 func (m *Model) diffView(width, height int) string {
 	title := m.diffTitle
+	if summary := m.diffSummary(); summary != "" {
+		title += " · " + summary
+	}
 	switch {
 	case m.pendingRollback != nil:
 		title += " · Enter rollback · Esc cancel"
@@ -3394,6 +3674,9 @@ func (m *Model) diffView(width, height int) string {
 	if m.diffViewport.Height != bodyH {
 		m.syncDiffContent()
 	}
+	// The title (path + summary + action hints) is truncated so a long
+	// path or summary can never overflow the modal border.
+	title = truncateToWidth(title, paneContentW-2)
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.diffViewport.View())
 }
 

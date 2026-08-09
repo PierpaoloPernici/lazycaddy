@@ -201,7 +201,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 				ReadFile: os.ReadFile,
 			})
 			monitor.Start()
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, clip)
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, os.ReadFile, clip)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.

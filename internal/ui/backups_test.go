@@ -492,6 +492,15 @@ func TestRollback_RestoreFailureStatus(t *testing.T) {
 	if !strings.Contains(m.statusMessage, "write exploded") {
 		t.Errorf("statusMessage = %q, want the underlying error", m.statusMessage)
 	}
+	// The recovery backup path is actionable: the status line points the
+	// operator at B to inspect the pre-rollback backup.
+	if !strings.Contains(m.statusMessage, "press B") {
+		t.Errorf("statusMessage = %q, want the press-B recovery hint", m.statusMessage)
+	}
+	// The failure is recorded with a safe next action.
+	if len(m.errorHistory) == 0 || m.errorHistory[len(m.errorHistory)-1].Op != "rollback" {
+		t.Errorf("error history missing the rollback failure: %+v", m.errorHistory)
+	}
 }
 
 func TestRollback_StateRefreshAndWatcherRearm(t *testing.T) {
