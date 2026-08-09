@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // TestFSWatcherReportsWrite is a real-filesystem smoke test for the
@@ -46,9 +48,29 @@ func TestFSWatcherReportsWrite(t *testing.T) {
 			if ev.Path != path && ev.Path != dir {
 				t.Errorf("event path = %q, want %q or %q", ev.Path, path, dir)
 			}
+			if err := w.Remove(dir); err != nil {
+				t.Fatalf("Remove(%s): %v", dir, err)
+			}
+			if w.Errors() == nil {
+				t.Fatal("Errors() returned a nil channel")
+			}
 			return
 		case <-deadline:
 			t.Fatal("timeout waiting for the write event")
 		}
+	}
+}
+
+func TestMapEvent_MapsAllOperations(t *testing.T) {
+	got := mapEvent(fsnotify.Event{
+		Name: "Caddyfile",
+		Op:   fsnotify.Write | fsnotify.Create | fsnotify.Remove | fsnotify.Rename,
+	})
+	if got.Path != "Caddyfile" {
+		t.Fatalf("path = %q, want Caddyfile", got.Path)
+	}
+	want := OpWrite | OpCreate | OpRemove | OpRename
+	if got.Op != want {
+		t.Fatalf("op = %d, want %d", got.Op, want)
 	}
 }

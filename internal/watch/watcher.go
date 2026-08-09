@@ -87,23 +87,27 @@ func (f *fsWatcher) Events() <-chan Event {
 	go func() {
 		defer close(out)
 		for ev := range f.w.Events {
-			var op Op
-			if ev.Has(fsnotify.Write) {
-				op |= OpWrite
-			}
-			if ev.Has(fsnotify.Create) {
-				op |= OpCreate
-			}
-			if ev.Has(fsnotify.Remove) {
-				op |= OpRemove
-			}
-			if ev.Has(fsnotify.Rename) {
-				op |= OpRename
-			}
-			out <- Event{Path: ev.Name, Op: op}
+			out <- mapEvent(ev)
 		}
 	}()
 	return out
+}
+
+func mapEvent(ev fsnotify.Event) Event {
+	var op Op
+	if ev.Has(fsnotify.Write) {
+		op |= OpWrite
+	}
+	if ev.Has(fsnotify.Create) {
+		op |= OpCreate
+	}
+	if ev.Has(fsnotify.Remove) {
+		op |= OpRemove
+	}
+	if ev.Has(fsnotify.Rename) {
+		op |= OpRename
+	}
+	return Event{Path: ev.Name, Op: op}
 }
 
 // Errors implements Watcher.

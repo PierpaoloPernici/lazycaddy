@@ -3,9 +3,36 @@ package validator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestExecRunner_SuccessCapturesOutput(t *testing.T) {
+	stdout, stderr, exit, err := (ExecRunner{}).Run(context.Background(), "sh", "-c", "printf stdout; printf stderr >&2")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("exit code = %d, want 0", exit)
+	}
+	if string(stdout) != "stdout" || string(stderr) != "stderr" {
+		t.Fatalf("output = (%q, %q), want (stdout, stderr)", stdout, stderr)
+	}
+}
+
+func TestExecRunner_NonZeroExitIsReturnedWithoutError(t *testing.T) {
+	stdout, stderr, exit, err := (ExecRunner{}).Run(context.Background(), "sh", "-c", "printf output; printf failure >&2; exit 7")
+	if err != nil {
+		t.Fatalf("Run: unexpected error: %v", err)
+	}
+	if exit != 7 {
+		t.Fatalf("exit code = %d, want 7", exit)
+	}
+	if !strings.EqualFold(string(stdout), "output") || !strings.EqualFold(string(stderr), "failure") {
+		t.Fatalf("output = (%q, %q), want (output, failure)", stdout, stderr)
+	}
+}
 
 // TestExecRunner_NotFoundAbsolutePath verifies that ExecRunner surfaces
 // the ErrBinaryMissing sentinel for an absolute path that does not exist.
