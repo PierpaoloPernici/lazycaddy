@@ -77,6 +77,11 @@ The inspector also provides:
 - exact-range node deletion (`d`) with diff confirmation and post-save tree
   rebuilding.
 
+The v0.1 vertical slice is complete. The next planned milestone is v0.2,
+focused on change safety, navigation, journal-backed logs, sensible path
+defaults, persistent UI state and clipboard ergonomics. Planned capabilities
+are not available in the current build until implemented and released.
+
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing
 and raw source inspection remain available.
@@ -103,6 +108,19 @@ running with its Admin API enabled and reachable at the configured endpoint.
 Reloads use the local Admin API at `http://localhost:2019` by default;
 override the endpoint with `--admin-endpoint` and the per-request timeout
 with `--admin-timeout`. A reload never happens implicitly.
+
+## Project disclaimer
+
+This project is almost entirely vibe coded. It serves as my personal testbed
+for evaluating how much value AI-assisted software development can provide
+when guided by clear engineering practices, deliberate human direction and
+the right tools.
+
+The project team remains responsible for the code, design decisions, tests and
+documentation. AI assistance does not replace human review, security analysis,
+testing or maintenance. This repository is both a working project and an
+ongoing experiment in AI-assisted development. It is all great fun—and highly
+instructive!
 
 ## License
 

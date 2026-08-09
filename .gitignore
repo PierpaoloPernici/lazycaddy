@@ -42,3 +42,33 @@ debug.log
 
 # Local tool configuration
 reasonix.toml
+
+# AI coding harness local state and artifacts
+# Keep shared project instructions/configuration trackable; ignore only
+# private, ephemeral or generated harness data.
+.pi/
+
+# Claude Code project-local overrides and session artifacts
+**/CLAUDE.local.md
+**/.claude/settings.local.json
+**/.claude/file-history/
+**/.claude/plans/
+**/.claude/debug/
+**/.claude/paste-cache/
+**/.claude/image-cache/
+**/.claude/session-env/
+**/.claude/tasks/
+**/.claude/shell-snapshots/
+**/.claude/backups/
+**/.claude/todos/
+**/.claude/statsig/
+**/.claude/logs/
+
+# Codex project-local session, diagnostic and runtime state
+# .codex/config.toml and project rules may be intentionally shared.
+**/.codex/sessions/
+**/.codex/archived_sessions/
+**/.codex/log/
+**/.codex/logs_*.sqlite*
+**/.codex/process_manager/
+**/.codex/.sandbox/

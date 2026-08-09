@@ -25,6 +25,14 @@ goreleaser --version
 - Windows and package-manager publishing are deferred until the release
   process and platform behavior are stable.
 
+## Release-ready history
+
+All pull requests and commits must already satisfy the release-ready change
+contract in [AGENTS.md](../AGENTS.md) before tagging. Check the PR title,
+Conventional Commit subjects, release disposition label and changelog decision
+before merging. Release preparation must not rename or rewrite published
+history; correct a release problem with a new patch version.
+
 ## Before tagging
 
 Run the complete local verification from a clean working tree:

@@ -65,6 +65,47 @@ isolated changes. Before the project approaches 1.0, enable branch protection so
 all changes go through a pull request and the required GitHub Actions check
 named `test` passes before merging.
 
+### Release-ready change contract
+
+Every commit and pull request must be written as if it could be included in the
+next release without renaming or rewriting it later. Release preparation must
+not be used to repair placeholder commit messages, vague pull request titles or
+missing changelog classification.
+
+- Commit subjects use Conventional Commits with a supported English type such
+  as `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`, `ci`, `build`
+  or `revert`; an optional scope should identify the affected area, for example
+  `feat(logs): add journalctl source`.
+- Subjects are short, imperative, specific and final. Do not use messages such
+  as `updates`, `work in progress`, `fix stuff`, or release-numbered
+  placeholders. Do not add a version number to a commit or pull request title
+  merely to make release notes look current.
+- Breaking changes use Conventional Commit breaking-change syntax (`!` in the
+  subject and/or a `BREAKING CHANGE:` footer) and must carry the
+  `breaking-change` pull request label with migration notes.
+- Pull request titles use the same Conventional Commit form as the final
+  change, in English, and must remain release-ready before merge. A title must
+  describe the user-visible outcome or the concrete maintenance change, not the
+  temporary implementation task.
+- Before merge, every pull request receives an intentional release disposition
+  matching `.github/release.yml`: `breaking-change`, `enhancement`, `bug`,
+  `dependencies`, `github_actions`, `documentation`, or the explicit
+  `skip-changelog` label. Do not use `skip-changelog` for user-visible changes;
+  do not leave release classification to be fixed during tagging.
+- The pull request body must include motivation, user-visible impact, safety
+  implications, verification commands/results and any release-note or
+  migration detail needed by a maintainer. If the change is intentionally
+  internal, say why it should be excluded from release notes.
+- If a pull request's scope or user impact changes during review, update its
+  title, labels and description before merge. The same rule applies to direct
+  commits on `main`; direct push permission does not relax release hygiene.
+- Temporary `fixup!` or `squash!` commits may be used during review only when
+  they are squashed or rewritten before merge. The merged history must contain
+  only release-ready commit subjects; release preparation must not rewrite
+  published history.
+- Prefer one coherent release concern per pull request. Split unrelated work
+  instead of relying on a later release edit to explain a mixed change.
+
 ### Branches
 
 - Start from an up-to-date `main` branch.
@@ -79,6 +120,7 @@ named `test` passes before merging.
 - Use short, imperative English subjects in Conventional Commit style, for example `feat: add source range parser`.
 - Keep commits focused and logically reviewable. Do not mix formatting-only changes with feature work unless required.
 - Before committing, inspect the diff and run `make check` plus `git diff --check`.
+- Confirm the final subject, body, scope and intended release disposition before creating the commit; do not defer commit cleanup until release preparation.
 - Never commit secrets, real credentials, private homelab data, generated binaries, or temporary files.
 - Do not create a local merge commit on `main` for work that is intended to be delivered through a pull request.
 
@@ -86,7 +128,7 @@ named `test` passes before merging.
 
 - When using a feature branch, push it to `origin` and open a pull request
   targeting `main`.
-- Write the title and description in English. The description must explain the motivation, summarize the changes, list verification commands and results, and document safety implications.
+- Write the title and description in English and follow the release-ready change contract above. The description must explain the motivation, summarize the changes, list verification commands and results, and document safety implications.
 - UI changes should include a terminal screenshot or recording when it helps reviewers evaluate the result.
 - Wait for the `test` status check to complete successfully when using a pull
   request. A local test run does not replace CI verification.

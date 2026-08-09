@@ -161,9 +161,9 @@ change the original source documents.
 - Remote servers, SSH and multi-server state.
 - Automatic health checks, metrics and certificate renewal.
 - A visual form editor for every Caddy directive.
-- Deleting or reordering blocks through the structured view. (Node
-  deletion via the exact source range is now covered by `d`; reordering
-  and structured directive editing remain future work.)
+- Reordering blocks and structured editing through the structured view. Node
+  deletion via the exact source range is already in scope and covered by `d`;
+  reordering and structured directive editing remain future work.
 - Automatic reloads, background writes or silent formatting of the user's file.
 - Built-in privilege escalation or a privileged helper; v0.1 reports insufficient permissions and keeps mutating actions disabled.
 
@@ -358,11 +358,17 @@ message) that does not gate keys. Capability-driven gating (e.g. disabling
 `r` until the Admin API is provably reachable) is deferred to the runtime
 dashboard milestone, where it can react to capability changes.
 
-Process/service-manager integration (`systemd`, Docker, launchd, etc.) is deferred. Runtime status must distinguish `running`, `stopped`, `unreachable` and `unknown`; absence of the Admin API must not prevent browsing or validating the file.
+Process/service-manager control integration (`systemd`, Docker, launchd, etc.)
+is deferred to the remote/operations milestone. The v0.2 `journalctl`
+integration is read-only log access and must not imply that lazycaddy can
+start, stop or restart a service. Runtime status must distinguish `running`,
+`stopped`, `unreachable` and `unknown`; absence of the Admin API must not
+prevent browsing or validating the file.
 
 Do not claim that the loaded configuration matches the file unless that state can be proven. Record successful reload identity locally where possible and show `unknown` when comparison is ambiguous; do not infer equality by regenerating a Caddyfile from Admin API JSON. Future capability discovery may inspect `caddy list-modules` to improve version- and plugin-aware summaries, but unknown modules must never block browsing or preservation.
 
-Later runtime features may add restart and stop, but stop must never be enabled without an explicit service adapter and a target-specific confirmation.
+Later runtime features may add restart and stop, but stop must never be enabled
+without an explicit service adapter and a target-specific confirmation.
 
 ## Modules
 
@@ -495,38 +501,190 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
 
 ### v0.2 — change safety and navigation
 
+- Add a read-only `journalctl` log source for Caddy installations managed by
+  systemd. The log view should support an explicit unit selection (for
+  example, `caddy.service`), bounded initial history, follow mode and clean
+  cancellation/restart when `journalctl` exits. Consume journal JSON without a
+  shell, preserve the journal cursor between the initial history and follow
+  phases to avoid duplicates or gaps, and reuse the existing Caddy JSON
+  parsing/highlighting where `MESSAGE` contains a structured Caddy log. Show
+  journal metadata and raw messages when the payload is not Caddy JSON. The
+  file tailer remains available, and the selected source must degrade to a
+  clear read-only error when `journalctl`, the unit or journal permissions are
+  unavailable.
+- Add path discovery and sensible defaults. When `--config` is not
+  supplied, prefer an existing `./Caddyfile`, then an existing
+  `/etc/caddy/Caddyfile`, while preserving a clear missing-file error when
+  neither exists. When `--caddy-path` is not supplied, discover `caddy` via
+  `PATH` and keep formatting, validation and reload disabled if it is not
+  available. Provide a user-writable default backup location for system
+  configurations (for example `~/.local/state/lazycaddy/backups` or
+  `~/.lazycaddy/backups`) while retaining an explicit `--backup-dir` override.
+  `--write` remains opt-in; path discovery must never imply automatic
+  privilege escalation or require the entire TUI to run as root.
+- Improve the persistent application chrome and visual hierarchy. Keep the
+  header visible independently from transient notifications, display the
+  LazyCaddy version alongside the Caddy version and runtime/configuration
+  badges, and reserve a separate status strip above the contextual footer for
+  validation, save and error messages. Add a coherent terminal theme with a
+  focused-pane accent, colored section titles and key hints, and restrained
+  semantic colors for success, warning and error states; labels must remain
+  explicit so state never depends on color alone. Define one primary accent
+  color as part of the application identity, using it consistently for the
+  focused pane, selected item, active section, brand/version label and key
+  hints. Keep semantic status colors distinct from that accent and provide a
+  terminal-safe fallback when true color is unavailable. Preserve responsive
+  layout behavior by shortening low-priority path and metadata text on narrow
+  terminals.
+
+  Target layout preview:
+
+  ```text
+   lazycaddy v0.2.0  /etc/caddy/Caddyfile  Caddy v2.11.4  RUNNING  LOADED  READ-ONLY
+  +---------------------------+ +--------------------------------------------------+
+  | Documents                 | | Source: /etc/caddy/Caddyfile                     |
+  | ...                       | | ...                                              |
+  +---------------------------+ +--------------------------------------------------+
+   [ok] validated · working copy updated, not saved
+   ↑/↓ move · Enter open · v validate · D diff · / search · ? help
+  ```
+
+- Add a simple keyboard-first clipboard action for source content. `y` should
+  copy the exact source range represented by the current node selection, while
+  a document-row selection may copy the complete current document. Use a
+  clipboard adapter with OSC 52 and platform fallbacks where available, show a
+  concise success/error notification, and never include tree, pane or footer
+  decorations in the copied bytes.
+- Add deterministic coverage for the v0.2 boundaries: journal history/follow
+  cursor continuity, journal and path-discovery failures, exact source bytes
+  copied without panel decorations, OSC 52 unavailable/fallback clipboard
+  behavior, and the related read-only permission paths.
 - Improve diff review, unsaved-state prompts and error recovery.
 - Detect external changes with `fsnotify` and provide reload/compare/keep actions.
 - Add backup comparison, rollback and configurable retention.
 
-Acceptance: external changes are never overwritten, every successful save is recoverable, and rollback follows validation, diff and confirmation rules.
+Acceptance: external changes are never overwritten, every successful save is
+recoverable, and rollback follows validation, diff and confirmation rules. A
+systemd-backed Caddy installation can show recent and following journal entries
+without requiring a log file or blocking browsing/configuration workflows when
+journald is unavailable. A typical installation should be usable with
+`lazycaddy --write` when the discovered configuration and backup paths are
+accessible to the current user, and keyboard copy produces only the requested
+source bytes without panel decorations.
 
 ### v0.3 — structured editing
 
-- Add source-range-preserving structured editing for `reverse_proxy` and common directives.
+- Generalize tree navigation to arbitrary parent/child rows. Document rows,
+  including imported documents, can expand or collapse their children; future
+  nested sections can use the same behavior without relying on `depth == 0`.
+  `Enter` or `Space` should toggle only rows that have children, while leaf
+  rows should open or select their detail/source view. Make the footer
+  context-aware so it advertises `expand/collapse` only where applicable, and
+  consider `Left`/`Right` as explicit collapse/expand bindings. Keep the
+  current one-file-per-edit safety boundary; this tree behavior is a
+  navigation concern and must not imply multi-file editing.
+- Add pane-aware mouse selection and clipboard support for text-bearing views.
+  Mouse tracking should make the source pane the selectable region when it is
+  active, keep tree/header/footer interactions navigational, and render the
+  selected text range without selecting neighboring panes. Reuse the same
+  selection model for source content, logs and future diff/diagnostic views;
+  map screen cells through each viewport's gutters, scrolling and wrapping,
+  and provide keyboard and non-mouse fallbacks when mouse tracking or
+  clipboard integration is unavailable. `y` remains the precise keyboard copy
+  action for the active view.
+- Add source-range-preserving structured editing for `reverse_proxy` and common
+  directives, covering the supported operations explicitly: edit existing
+  values, insert supported directives, delete selected constructs and reorder
+  compatible blocks. The `a` add action must be capability- and context-aware;
+  unsupported or ambiguous insertions remain unavailable rather than guessing.
 - Node deletion (`d`) is already covered by the exact-range patch plus the
-  diff confirmation and post-save graph reload; reordering and structured
-  directive editing remain.
+  diff confirmation and post-save graph reload; the v0.3 work extends the
+  same safety contract to insertion, reordering and structured directive
+  editing.
 - Add inline validation and richer semantic highlighting when the parse tree
-  can identify roles reliably.
+  can identify roles reliably: site addresses, domains, paths, ports, IP/CIDR
+  values, matchers, placeholders, durations, status codes, strings and
+  heredoc boundaries.
+- Preserve token spans with line/column information alongside byte offsets so
+  inline diagnostics, source selection and copy operations can identify the
+  exact visible text without weakening byte-preserving patches.
+- Add structural navigation features derived from the parsed source: folding
+  for site blocks, snippets, named routes and nested handlers; navigation from
+  named matcher definitions to references; and brace-aware indentation or
+  movement where the source ranges make it safe.
+- Add an advisory metadata catalog for descriptions and suggestions for common
+  directives and global options. The catalog must never define valid syntax or
+  hide unknown/plugin directives, and its entries should be version- and
+  module-aware when capability information is available.
+- Expand the compatibility and regression corpus with focused fixtures for
+  imports, globs, cycles, comments, quoted braces, brace-less sites, heredocs,
+  placeholders, matchers, snippets, named routes and escaped input. Keep the
+  official Caddy parser/formatter behavior authoritative and do not introduce
+  Tree-sitter as a second parser unless incremental parsing becomes a proven
+  bottleneck.
 - Keep raw editing available for unsupported or plugin directives.
 
-Acceptance: a structured edit changes only the selected construct and preserves unrelated bytes, comments and unknown syntax.
+Acceptance: a structured edit changes only the selected construct and preserves
+unrelated bytes, comments and unknown syntax. Structural navigation remains
+usable with partially parsed files, and advisory metadata never prevents
+browsing, raw editing or preservation of unsupported syntax. Mouse selection is
+confined to the active text pane and copies the correct content across source,
+log and other supported views.
 
 ### v0.4 — runtime and TLS dashboards
 
-- Add runtime dashboard, loaded-config inspection and capability-aware restart/stop actions.
-- Add upstream health/reachability and response-time information.
-- Add TLS certificate expiry, issuer, SAN, storage and renewal information where available.
+- Add read-only runtime observability and loaded-config inspection through
+  separate, cancellable Admin API fetchers. Each panel must expose explicit
+  `loading`, `available`, `stale` and `unavailable` states, refresh without
+  blocking the TUI, and preserve per-panel capability/error information. Use
+  the configured Admin API endpoint and runtime identity; do not infer loaded
+  equality by regenerating a Caddyfile from JSON.
+- Add upstream health/reachability and response-time information where the
+  target Caddy build exposes it. Interpret upstream status together with the
+  configured passive/active health-check thresholds and label it as observed
+  runtime state rather than a generic network ping.
+- Extend the log dashboard with source-aware filtering by host, status, level
+  and text, plus bounded status-class counts and basic latency summaries. Keep
+  multiple log sources behind explicit adapters and retain read-only,
+  cancellation-aware behavior.
+- Add a TLS certificate dashboard behind a certificate source adapter. Keep
+  certificate metadata, storage location, renewal state and OCSP state as
+  distinct values; do not assume a private CertMagic filesystem layout or
+  infer renewal from a single certificate file. Surface locking, permission
+  and unavailable-storage states without reading private material by default.
+- Keep restart and stop unavailable unless an explicit target-specific service
+  adapter is present and the action has a confirmation that names the target;
+  service-manager control belongs to the remote/operations milestone.
 
-Acceptance: unavailable runtime data is represented as a useful error state and never blocks configuration browsing.
+Acceptance: unavailable runtime data is represented as a useful error state and
+never blocks configuration browsing. Runtime, log and TLS panels remain
+responsive under refresh failures, preserve bounded state, and never enable a
+mutating service action without a verified service adapter.
 
 ### v0.5 and later
 
-- Add named remote server profiles through SSH or Tailscale SSH.
-- Run remote formatting, validation, backup, write and reload operations on the selected target node, and identify that node in every confirmation and result.
-- Detect the target Caddy version and installed modules before enabling module-specific summaries or actions.
-- Add metrics integrations and richer plugin-aware summaries.
+- Add named remote server profiles through SSH or Tailscale SSH with explicit
+  authentication, host-key policy, timeouts, cancellation and target identity.
+  Never expose credentials or silently reuse a different target profile.
+- Run remote formatting, validation, backup, write and reload operations on the
+  selected target node, and identify that node in every confirmation and result.
+  Extend the same target boundary to remote Admin API inspection, logs
+  (`journalctl` or file sources) and TLS data, with independent offline/error
+  states when one target is unavailable.
+- Add explicit per-target service adapters for systemd, Docker, launchd or
+  another supported manager before enabling restart/stop. Each action requires
+  target-specific confirmation, capability verification and a recoverable
+  failure report.
+- Detect the target Caddy version and installed modules before enabling
+  module-specific summaries or actions, and maintain an explicit supported
+  version/module compatibility record with fixture and UI impact notes.
+- Detect and display generated-versus-user-authored configuration ownership
+  where integrations such as Docker proxy are present. Never regenerate,
+  overwrite or reload a generated configuration without an explicit ownership
+  boundary and confirmation.
+- Add metrics integrations, multi-instance views and richer plugin-aware
+  summaries while keeping bounded state, read-only defaults and per-target
+  capability gating.
 - Stabilize rollback, recovery and the lossless editing engine for a v1.0 release.
 
 ## Caddy compatibility monitoring
@@ -571,6 +729,14 @@ Required tests:
 - concurrent modification detection;
 - runtime timeout and Admin API error handling;
 - separate saved/validated/loaded runtime states;
+- journal/file log source selection, cursor continuity, bounded filtering and
+  status summaries;
+- clipboard OSC 52/fallback behavior and pane-aware mouse coordinate mapping;
+- runtime fetcher refresh states, upstream health interpretation and distinct
+  certificate/storage/renewal/OCSP states;
+- remote target isolation, authentication/host-key policy, timeout/cancel
+  handling and per-target offline states;
+- generated-configuration ownership detection and confirmation guards;
 - keybindings and unsaved-change prompts at the application-state level.
 
 Add an end-to-end test using a fake Caddy command and fake Admin API. Tests must not require Caddy or network access to be installed.
