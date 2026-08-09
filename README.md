@@ -1,30 +1,18 @@
 # lazycaddy
 
+<p align="center"><img src="docs/assets/lazycaddy-logo.png" alt="lazycaddy logo" width="280"></p>
+
+<p align="center"><em>The lazier way to manage your Caddyfile.</em></p>
+
 <p align="center">
-  <img src="docs/assets/lazycaddy-logo.png" alt="lazycaddy logo" width="280">
+  <a href="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml"><img src="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/PierpaoloPernici/lazycaddy/releases/latest"><img src="https://img.shields.io/github/v/release/PierpaoloPernici/lazycaddy?display_name=tag" alt="Latest release"></a>
+  <a href="https://codecov.io/gh/PierpaoloPernici/lazycaddy"><img src="https://codecov.io/gh/PierpaoloPernici/lazycaddy/branch/main/graph/badge.svg" alt="Coverage"></a>
+  <a href="https://github.com/PierpaoloPernici/lazycaddy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/PierpaoloPernici/lazycaddy" alt="License"></a>
+  <a href="https://github.com/PierpaoloPernici/lazycaddy/blob/main/go.mod"><img src="https://img.shields.io/github/go-mod/go-version/PierpaoloPernici/lazycaddy" alt="Go version"></a>
 </p>
 
-> The lazier way to manage your Caddyfile.
-
-<p>
-  <a href="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml">
-    <img src="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI">
-  </a>
-  <a href="https://github.com/PierpaoloPernici/lazycaddy/releases/latest">
-    <img src="https://img.shields.io/github/v/release/PierpaoloPernici/lazycaddy?display_name=tag" alt="Latest release">
-  </a>
-  <a href="https://codecov.io/gh/PierpaoloPernici/lazycaddy">
-    <img src="https://codecov.io/gh/PierpaoloPernici/lazycaddy/branch/main/graph/badge.svg" alt="Coverage">
-  </a>
-  <a href="https://github.com/PierpaoloPernici/lazycaddy/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/PierpaoloPernici/lazycaddy" alt="License">
-  </a>
-  <a href="https://github.com/PierpaoloPernici/lazycaddy/blob/main/go.mod">
-    <img src="https://img.shields.io/github/go-mod/go-version/PierpaoloPernici/lazycaddy" alt="Go version">
-  </a>
-</p>
-
-lazycaddy is a keyboard-first terminal user interface for inspecting and managing Caddy while preserving the Caddyfile as the source of truth.
+<p align="center">lazycaddy is a keyboard-first terminal user interface for inspecting and managing Caddy while preserving the Caddyfile as the source of truth.</p>
 
 ## Screenshot
 
