@@ -47,6 +47,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
+	"github.com/PierpaoloPernici/lazycaddy/internal/watch"
 )
 
 func main() {
@@ -161,13 +162,29 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 			// and the loaded log history with / or Ctrl-F.
 			searcher := app.NewSearcher()
 			clip := clipboard.New(clipboard.Options{Output: os.Stdout})
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, clip)
+			// The external-change monitor watches the parent directories of
+			// the resolved documents, coalesces event bursts and reports
+			// only byte differences against the in-memory sources, feeding
+			// the reload/compare/keep conflict modal. It is a notification
+			// layer: the saver, editor and reloader conflict checks remain
+			// the final guards. A watcher failure degrades to the
+			// notification being disabled, never to browsing being blocked.
+			watcher, err := watch.NewWatcher()
+			if err != nil {
+				return fmt.Errorf("new file watcher: %w", err)
+			}
+			monitor := watch.NewMonitor(watch.Options{
+				Watcher:  watcher,
+				ReadFile: os.ReadFile,
+			})
+			monitor.Start()
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, clip)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
 			model.Load()
 			program := tea.NewProgram(model, tea.WithAltScreen())
-			if err := runTUI(func() (tea.Model, error) { return program.Run() }, logSource); err != nil {
+			if err := runTUI(func() (tea.Model, error) { return program.Run() }, logSource, monitor); err != nil {
 				return err
 			}
 			return nil
@@ -254,18 +271,29 @@ func journalOptions(settings config.Settings) logs.JournalOptions {
 }
 
 // runTUI runs the Bubble Tea program and then closes the configured log
-// source. The log source owns its process lifetime — the journal source
-// spawns a supervisor goroutine around journalctl that must be released on
-// exit — so every path out of the program closes it exactly once. Closing
-// is best-effort: a Close error must never mask a Run error nor turn a
-// successful run into a failure.
-func runTUI(run func() (tea.Model, error), logSource app.LogSource) error {
+// source and the external-change monitor. The log source owns its process
+// lifetime — the journal source spawns a supervisor goroutine around
+// journalctl that must be released on exit — and the monitor owns the
+// fsnotify watcher, so every path out of the program releases them
+// exactly once. Closing is best-effort: a Close error must never mask a
+// Run error nor turn a successful run into a failure.
+func runTUI(run func() (tea.Model, error), logSource app.LogSource, monitor app.ChangeMonitor) error {
 	if _, err := run(); err != nil {
 		closeLogSource(logSource)
+		closeChangeMonitor(monitor)
 		return fmt.Errorf("run TUI: %w", err)
 	}
 	closeLogSource(logSource)
+	closeChangeMonitor(monitor)
 	return nil
+}
+
+// closeChangeMonitor closes monitor when non-nil, ignoring the error:
+// shutdown is best-effort and Close is idempotent.
+func closeChangeMonitor(monitor app.ChangeMonitor) {
+	if monitor != nil {
+		_ = monitor.Close()
+	}
 }
 
 // closeLogSource closes logSource when non-nil, ignoring the error:
