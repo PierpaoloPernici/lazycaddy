@@ -46,7 +46,9 @@ func readFileContent(t *testing.T, path string) string {
 }
 
 // backupEntries lists the backup directory, treating a missing
-// directory as "no backups".
+// directory as "no backups". Identity sidecars (the ".src" files that
+// carry each backup's source path) are part of their backup entry and
+// are not counted separately.
 func backupEntries(t *testing.T, dir string) []os.DirEntry {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -56,7 +58,14 @@ func backupEntries(t *testing.T, dir string) []os.DirEntry {
 	if err != nil {
 		t.Fatalf("read backup dir %s: %v", dir, err)
 	}
-	return entries
+	out := entries[:0]
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".src") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func TestSave_WritesWorkingBytes(t *testing.T) {

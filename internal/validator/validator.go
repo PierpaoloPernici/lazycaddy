@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -128,6 +130,91 @@ func (v *Validator) Validate(ctx context.Context, path string) ([]Diagnostic, er
 	redacted := v.opts.Redactor.Redact(string(stderr))
 	diags := ParseDiagnostics(path, redacted)
 	return diags, &ExitError{Stderr: []byte(redacted), ExitCode: exit}
+}
+
+// File is one document of a configuration graph to validate together.
+// The struct is deliberately decoupled from the caddyfile package so the
+// validator does not depend on the parser.
+type File struct {
+	// Path is the real path of the document, absolute or relative.
+	Path string
+	// Source is the document's exact bytes.
+	Source []byte
+}
+
+// ValidateConfig validates a set of documents as one configuration by
+// mirroring every file's real directory layout under a temporary
+// directory and running `caddy validate --config <mirrored root>` on it.
+// Because the mirrored tree preserves the real layout, relative imports
+// between the documents resolve exactly as they do on disk; the caller's
+// files are never touched. rootPath must match the Path of the root
+// document in files — it is the entry point caddy validates. The
+// temporary directory is recursively removed before ValidateConfig
+// returns, even on failure. Diagnostics are remapped back to the real
+// paths so no temp path ever surfaces. It returns (nil, nil) on success;
+// on failure it returns the parsed diagnostics and an *ExitError
+// wrapping ErrNonZeroExit (or the runner error).
+//
+// Absolute-path imports that point outside the mirrored set still
+// resolve to the real (unchanged) files on disk; the documents passed in
+// files are always mirrored from their File.Source bytes.
+func (v *Validator) ValidateConfig(ctx context.Context, rootPath string, files []File) ([]Diagnostic, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("validator: validate config: no documents")
+	}
+	tmpDir, err := os.MkdirTemp("", "lazycaddy-validate-config-*")
+	if err != nil {
+		return nil, fmt.Errorf("validator: mkdir temp: %w", err)
+	}
+	// The whole mirror is transient; recursive cleanup on every path
+	// (including the runner's context timeout or a panic-free error)
+	// keeps the temp directory from leaking.
+	defer os.RemoveAll(tmpDir)
+
+	// Mirror every document at its real path under the temp directory.
+	// filepath.Join appends a clean path whether it is absolute or
+	// relative, so /etc/caddy/Caddyfile mirrors as <tmp>/etc/caddy/
+	// Caddyfile and Caddyfile mirrors as <tmp>/Caddyfile.
+	mirrored := make(map[string]string, len(files)) // mirrored path -> real path
+	for _, f := range files {
+		clean := filepath.Clean(f.Path)
+		m := filepath.Join(tmpDir, clean)
+		// A relative document path with `..` components (or any other
+		// path whose cleaned join lands outside the temp directory) must
+		// never be mirrored out of the temp tree: the mirror is
+		// transient and the original files are never touched.
+		rel, relErr := filepath.Rel(tmpDir, m)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("validator: mirror path escapes temp dir: %s", f.Path)
+		}
+		mirrored[m] = clean
+		if err := os.MkdirAll(filepath.Dir(m), 0o755); err != nil {
+			return nil, fmt.Errorf("validator: mkdir mirror %s: %w", filepath.Dir(m), err)
+		}
+		if err := os.WriteFile(m, f.Source, 0o600); err != nil {
+			return nil, fmt.Errorf("validator: write mirror %s: %w", m, err)
+		}
+	}
+	root := filepath.Join(tmpDir, filepath.Clean(rootPath))
+	diags, err := v.Validate(ctx, root)
+	remapMirroredPaths(diags, mirrored)
+	if err != nil {
+		return diags, err
+	}
+	return nil, nil
+}
+
+// remapMirroredPaths replaces the temporary mirrored paths in each
+// diagnostic with the real paths, so the UI never surfaces
+// /var/folders/... temp paths. Diagnostics for files that were not part
+// of the mirror (for example absolute imports resolved against the real
+// filesystem) are left untouched.
+func remapMirroredPaths(diags []Diagnostic, mirrored map[string]string) {
+	for i := range diags {
+		if real, ok := mirrored[diags[i].Path]; ok {
+			diags[i].Path = real
+		}
+	}
 }
 
 // FormatAndValidate runs Format then Validate against a temporary

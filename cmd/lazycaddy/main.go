@@ -91,8 +91,13 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 			// probe can report on the API even when no caddy binary is
 			// configured.
 			client := runtime.NewAdminClient(settings.AdminEndpoint, settings.AdminTimeout)
+			// The retention policy is shared by the saver and the
+			// rollbacker. It is disabled by default (Keep zero) and is
+			// applied only after a successful save or rollback.
+			retention := backup.Retention{Dir: settings.BackupDir, Keep: settings.BackupRetention}
 			var formatter app.Formatter
 			var reloader app.Reloader
+			var validatorInstance *validator.Validator
 			if settings.BinaryPath != "" {
 				v, err := validator.New(validator.Options{
 					BinaryPath: settings.BinaryPath,
@@ -101,6 +106,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("new validator: %w", err)
 				}
+				validatorInstance = v
 				formatter = app.NewFormatter(v)
 				// The reloader adapts the configuration locally with the
 				// same caddy binary (so relative imports resolve from the
@@ -110,12 +116,29 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 				reloader = app.NewReloader(settings.AdminEndpoint, client, v, os.ReadFile)
 			}
 			var saver app.Saver
+			var creator backup.Creator
 			if !settings.ReadOnly {
-				creator, err := backup.New(backup.Options{Dir: settings.BackupDir})
+				var err error
+				creator, err = backup.New(backup.Options{Dir: settings.BackupDir})
 				if err != nil {
 					return fmt.Errorf("new backup creator: %w", err)
 				}
-				saver = app.NewSaver(creator, os.ReadFile)
+				saver = app.NewSaverWithRetention(creator, os.ReadFile, retention)
+			}
+			// Backup listing and comparison are available whenever a
+			// backup directory is configured; rollback additionally needs
+			// writable mode (a creator) and a caddy binary (validation).
+			// The rollbacker is built unconditionally so the B keybinding
+			// works read-only; its guards report the missing capability.
+			rollbacker, err := app.NewRollbacker(app.RollbackerOptions{
+				Dir:       settings.BackupDir,
+				Creator:   creator,
+				ReadFile:  os.ReadFile,
+				Validator: validatorInstance,
+				Retention: retention,
+			})
+			if err != nil {
+				return fmt.Errorf("new rollbacker: %w", err)
 			}
 			// The editor runs the operator's $EDITOR on the selected node
 			// range and recomposes the document from the result. It needs
@@ -178,7 +201,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 				ReadFile: os.ReadFile,
 			})
 			monitor.Start()
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, clip)
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, clip)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
@@ -202,6 +225,8 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 		"enable writable mode (save creates backups and writes the file); default is read-only")
 	rootCmd.Flags().StringVar(&settings.BackupDir, "backup-dir", "",
 		"directory for pre-save backups (default: ~/.local/state/lazycaddy/backups, honoring $XDG_STATE_HOME)")
+	rootCmd.Flags().IntVar(&settings.BackupRetention, "backup-retention", 0,
+		"maximum number of backups kept per source file after a successful save or rollback (default: 0, retention disabled)")
 	rootCmd.Flags().StringVar(&settings.AdminEndpoint, "admin-endpoint", settings.AdminEndpoint,
 		"base URL of the local Caddy Admin API used for reloads (default: http://localhost:2019)")
 	rootCmd.Flags().DurationVar(&settings.AdminTimeout, "admin-timeout", settings.AdminTimeout,

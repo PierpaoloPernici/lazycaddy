@@ -191,3 +191,33 @@ func TestResolvePaths_BackupDirHonorsXDGStateHome(t *testing.T) {
 		t.Errorf("BackupDir = %q, want %q", settings.BackupDir, want)
 	}
 }
+
+func TestBackupRetention_FlagBindsAndDefaultsDisabled(t *testing.T) {
+	settings := config.DefaultSettings()
+	var write bool
+	cmd := newRootCommand(&settings, &write)
+
+	// The flag defaults to zero (retention disabled).
+	if settings.BackupRetention != 0 {
+		t.Errorf("default BackupRetention = %d, want 0 (disabled)", settings.BackupRetention)
+	}
+	if err := cmd.ParseFlags([]string{"--backup-retention", "5"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if settings.BackupRetention != 5 {
+		t.Errorf("BackupRetention = %d, want 5", settings.BackupRetention)
+	}
+}
+
+func TestBackupRetention_DisabledByExplicitZero(t *testing.T) {
+	settings := config.DefaultSettings()
+	settings.BackupRetention = 3
+	var write bool
+	cmd := newRootCommand(&settings, &write)
+	if err := cmd.ParseFlags([]string{"--backup-retention", "0"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if settings.BackupRetention != 0 {
+		t.Errorf("BackupRetention = %d, want 0 (explicit zero re-disables)", settings.BackupRetention)
+	}
+}

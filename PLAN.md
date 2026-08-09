@@ -233,6 +233,10 @@ release corrections use a new patch version.
 - Saving and reloading are separate actions; `validate and reload` is the only combined workflow.
 - After a reload, verify the Admin API state and clearly distinguish saved, validated and loaded configuration states.
 - Backups are created atomically before the target is replaced; backup failures abort the save.
+- Rollback is available only in writable mode with a validation binary, restores exactly one source document, and requires the diff review plus an explicit confirmation that names the target and the backup.
+- Rollback re-checks the target with the same external-change guard as a save, validates the restored content in the context of the full document graph (a temporary mirror that preserves every document's real directory layout, so imported fragments validate next to their siblings), and creates a new backup of the current file before the atomic restore; any failure or cancellation leaves the target and existing backups unchanged.
+- A rollback never reloads Caddy implicitly; after a successful rollback the in-memory graph is reloaded, the change monitor is re-armed and the loaded state is marked unknown until an explicit reload.
+- Backup retention is disabled by default and, when configured, applies only after a successful save or rollback: it never deletes the newest backup, the backup created for the current operation, identity-less legacy backups or unrelated files, and cleanup failures are reported without compromising the completed operation.
 - File writes use a temporary file in the same directory, `fsync`, then an atomic rename where supported.
 - Temporary files are cleaned up on cancellation and failure.
 - Symlinks, permissions and ownership must be detected and reported before replacement rather than silently changed.
@@ -275,6 +279,7 @@ v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
 D          Diff current changes
+B          Open backup history for the selected document (compare, then rollback in writable mode)
 l          Logs
 t          TLS
 /          Search
@@ -339,7 +344,26 @@ Backups live beside the configuration in a configurable directory (default: `<co
 2026-08-01T20-10-00-001-Caddyfile
 ```
 
-The backup index must be rebuildable from files on disk. Retention is configurable and disabled by default until a cleanup policy is implemented. A future rollback operation must itself follow the same validate, diff, backup and confirmation workflow.
+The backup index must be rebuildable from files on disk. Because two
+imported documents can share a basename, every backup also carries a
+plain-text identity sidecar next to it (the backup name plus `.src`)
+holding the exact canonical source path; `B` resolves each backup to
+exactly one source file and never offers a legacy (sidecar-less) backup
+to a document whose basename is shared by another document. Retention is
+configured with `--backup-retention N` (maximum backups kept per source
+file; the default 0 disables it). Cleanup runs only after a successful
+save or rollback, always preserves the newest backup and the backup
+created for the current operation, never removes identity-less legacy
+backups or unrelated files, and reports failures without undoing the
+completed operation. Rollback is implemented: it lists backups newest
+first, diffs the selected backup against the current on-disk document,
+then follows the same validate, diff, backup and confirmation workflow —
+validating the restored content in the context of the full document
+graph (a temporary mirror preserving every document's real directory
+layout, so imported snippets and fragments validate next to their
+siblings), restoring exactly one source document, never reloading Caddy
+implicitly, and re-arming the change monitor with the loaded state
+marked unknown until an explicit reload.
 
 ## Runtime integration
 
@@ -496,6 +520,29 @@ Completed within the vertical slice:
   node labels, document paths and content lines (imports included) and
   the loaded log history; Enter jumps to the hit (node reveal, exact
   source line, or log detail) and Esc closes without side effects.
+- [x] Backup comparison, rollback and configurable retention. The `B`
+  keybinding opens the backup history for the currently selected
+  document (root or imported) through an `app.Rollbacker` boundary:
+  backups are listed newest first, each resolved to exactly one source
+  file through a plain-text identity sidecar (so two same-basename
+  imported documents never share rollback candidates), and a selected
+  backup is diffed against the current on-disk document. Rollback is
+  offered only in writable mode with a caddy binary: it re-checks the
+  target with the same external-change guard as a save, validates the
+  restored content in the context of the full document graph (every
+  document is mirrored into a temporary tree preserving its real
+  directory layout, so relative imports — including imported snippet
+  and fragment files — resolve exactly as on disk and the restored
+  backup is checked next to its siblings), requires the diff review and
+  an explicit confirmation, creates a backup of the current file before
+  the atomic restore, never reloads Caddy implicitly, and after success
+  reloads the in-memory graph, re-arms the change monitor and marks the
+  loaded state unknown until an explicit reload. `--backup-retention N`
+  caps backups per source file (disabled by default; applied only after
+  a successful save or rollback; never removes the newest backup, the
+  backup created for the current operation, identity-less legacy backups
+  or unrelated files), and retention failures are reported without
+  compromising the completed save/rollback.
 
 Acceptance: an existing Caddyfile containing comments, unknown directives, nested blocks and imports can be opened without data loss; parse failures still permit raw viewing; invalid or cancelled changes cannot write or reload.
 
@@ -568,8 +615,24 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   copied without panel decorations, OSC 52 unavailable/fallback clipboard
   behavior, and the related read-only permission paths.
 - Improve diff review, unsaved-state prompts and error recovery.
-- Detect external changes with `fsnotify` and provide reload/compare/keep actions.
-- Add backup comparison, rollback and configurable retention.
+- [x] Detect external changes with `fsnotify` and provide reload/compare/keep actions.
+- [x] Add backup comparison, rollback and configurable retention. The `B`
+  keybinding opens the backup history of the selected document, newest
+  first, and diffs a selected backup against the current file. Rollback
+  is writable-only and follows validate → diff → backup → confirmation;
+  it restores exactly one source document, never reloads Caddy
+  implicitly, and after success re-arms the change monitor and marks the
+  loaded state unknown. `--backup-retention N` (default 0 = disabled)
+  keeps at most N backups per source file after a successful save or
+  rollback, always preserving the newest/current backup and never
+  deleting identity-less legacy backups or unrelated files. Backup
+  filenames stay `<timestamp>-<seq>-<basename>` and each backup now
+  carries a plain-text `.src` identity sidecar holding its exact source
+  path, so imports with identical basenames are never mixed up. Rollback
+  validation runs in the context of the full document graph: every
+  document is mirrored into a temporary tree that preserves its real
+  directory layout, so imported snippet and fragment files are validated
+  next to their siblings and relative imports resolve as on disk.
 
 Acceptance: external changes are never overwritten, every successful save is
 recoverable, and rollback follows validation, diff and confirmation rules. A
