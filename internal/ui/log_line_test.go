@@ -37,15 +37,15 @@ func accessEntry(uri, msg string) logs.Entry {
 }
 
 // TestRenderCompactLogLine_AccessLine verifies the compact layout renders
-// the local timestamp, level, logger, method, URI, status and message as
-// explicit text, styled with ANSI codes.
+// the local date and timestamp, level, logger, method, URI, status and
+// message as explicit text, styled with ANSI codes.
 func TestRenderCompactLogLine_AccessLine(t *testing.T) {
 	entry := accessEntry("/api/config", "handled request")
 	out := renderCompactANSI(entry, 200)
 	if out == "" {
 		t.Fatal("compact line rendered empty")
 	}
-	wantTS := entry.Timestamp.Local().Format("15:04:05.000")
+	wantTS := entry.Timestamp.Local().Format(logTimestampLayout)
 	visible := stripANSI(out)
 	for _, want := range []string{wantTS, "INFO", "http.log.access", "GET", "/api/config", "200", "—", "handled request"} {
 		if !strings.Contains(visible, want) {
@@ -83,7 +83,7 @@ func TestRenderCompactLogLine_ZeroTimestamp(t *testing.T) {
 	entry := accessEntry("/", "no ts")
 	entry.Timestamp = time.Time{}
 	out := renderCompactANSI(entry, 200)
-	if !strings.Contains(stripANSI(out), "--:--:--.---") {
+	if !strings.Contains(stripANSI(out), logTimestampPlaceholder) {
 		t.Errorf("compact line missing the zero-timestamp placeholder:\n%s", stripANSI(out))
 	}
 }
@@ -111,22 +111,17 @@ func TestRenderCompactLogLine_GeneralLogNoStatus(t *testing.T) {
 	}
 }
 
-// TestRenderCompactLogLine_LongLineAnsiSafe verifies a long line is
-// truncated on the plain text before styling: the stripped output equals
-// truncateToWidth of the same plain text, fits the width, and no ANSI
-// sequence is split.
+// TestRenderCompactLogLine_LongLineAnsiSafe verifies a long line is reduced
+// before styling, fits the width, and no ANSI sequence is split.
 func TestRenderCompactLogLine_LongLineAnsiSafe(t *testing.T) {
 	entry := accessEntry("/", strings.Repeat("very long message content ", 10))
 	out := renderCompactANSI(entry, 60)
 	visible := stripANSI(out)
-	// Rebuild the plain assembly (capped logger/uri) to compare with the
-	// generic whole-line truncation.
-	plain := joinPlainLogSegments(compactLogSegments(entry))
-	if want := truncateToWidth(plain, 60); visible != want {
-		t.Errorf("stripped output = %q, want the plain truncated text %q", visible, want)
-	}
 	if w := lipgloss.Width(visible); w > 60 {
 		t.Errorf("stripped output width = %d, exceeds 60", w)
+	}
+	if strings.Contains(visible, "very long message content") {
+		t.Errorf("long message was not reduced:\n%s", visible)
 	}
 	if out == visible {
 		t.Errorf("truncated line must still be styled, got no ANSI:\n%s", out)

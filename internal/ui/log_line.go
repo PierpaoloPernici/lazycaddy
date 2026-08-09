@@ -19,6 +19,11 @@ type logSegment struct {
 	flexible bool
 }
 
+const (
+	logTimestampLayout      = "2006-01-02 15:04:05.000"
+	logTimestampPlaceholder = "----/--/-- --:--:--.---"
+)
+
 // renderCompactLogLine renders one log entry as a compact, human-readable
 // line truncated to at most maxW cells. Non-JSON entries (Parsed false)
 // are rendered verbatim. The line is built as plain text segments that
@@ -73,12 +78,12 @@ func renderCompactLogLine(entry logs.Entry, maxW int) string {
 
 // compactLogSegments assembles the plain, per-segment content of a parsed
 // entry. The caps (logger 20 cells, uri 36) keep the prefix bounded; the
-// fixed-width fields (timestamp 12, level 5, method 6, status 3) keep the
+// fixed-width fields (timestamp 23, level 5, method 6, status 3) keep the
 // columns aligned across lines.
 func compactLogSegments(entry logs.Entry) []logSegment {
-	ts := "--:--:--.---"
+	ts := logTimestampPlaceholder
 	if !entry.Timestamp.IsZero() {
-		ts = entry.Timestamp.Local().Format("15:04:05.000")
+		ts = entry.Timestamp.Local().Format(logTimestampLayout)
 	}
 	level := padOrTruncate(strings.ToUpper(entry.Level), 5)
 

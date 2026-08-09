@@ -2507,9 +2507,9 @@ func logDetailSummary(entry logs.Entry) string {
 	if !entry.Parsed {
 		return "raw line"
 	}
-	ts := "--:--:--.---"
+	ts := logTimestampPlaceholder
 	if !entry.Timestamp.IsZero() {
-		ts = entry.Timestamp.Local().Format("15:04:05.000")
+		ts = entry.Timestamp.Local().Format(logTimestampLayout)
 	}
 	parts := []string{ts}
 	if entry.Logger != "" {
