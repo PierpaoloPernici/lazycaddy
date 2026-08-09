@@ -99,6 +99,13 @@ missing changelog classification.
   `dependencies`, `github_actions`, `documentation`, or the explicit
   `skip-changelog` label. Do not use `skip-changelog` for user-visible changes;
   do not leave release classification to be fixed during tagging.
+- The CI workflow validates the release disposition from the pull request
+  event payload and re-runs on PR metadata events, including `labeled` and
+  `unlabeled`: applying or changing the disposition label re-triggers the
+  `test` check with the updated payload. The workflow does not run on the
+  initial `opened` event, so a pull request without a disposition label has
+  no `test` run yet; do not rely on closing and reopening to refresh a
+  stale check.
 - The pull request body must include motivation, user-visible impact, safety
   implications, verification commands/results and any release-note or
   migration detail needed by a maintainer. If the change is intentionally
