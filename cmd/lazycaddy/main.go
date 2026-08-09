@@ -40,6 +40,7 @@ import (
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
+	"github.com/PierpaoloPernici/lazycaddy/internal/clipboard"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/discover"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
@@ -159,7 +160,8 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 			// labels, document paths and content lines (imports included)
 			// and the loaded log history with / or Ctrl-F.
 			searcher := app.NewSearcher()
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version)
+			clip := clipboard.New(clipboard.Options{Output: os.Stdout})
+			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, clip)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.

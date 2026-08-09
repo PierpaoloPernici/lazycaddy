@@ -127,6 +127,18 @@ type fakeEditor struct {
 	capturedExit     int
 }
 
+type fakeClipboard struct {
+	content []byte
+	err     error
+	calls   int
+}
+
+func (f *fakeClipboard) Copy(_ context.Context, content []byte) error {
+	f.calls++
+	f.content = append([]byte(nil), content...)
+	return f.err
+}
+
 func (f *fakeEditor) Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange) (*app.EditSession, error) {
 	f.prepareCalls++
 	f.capturedDoc = doc
@@ -222,6 +234,7 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 	var rt app.RuntimeStatus
 	var ls app.LogSource
 	var e app.Editor
+	var clip app.Clipboard
 	searcher := app.NewSearcher()
 	for _, opt := range opts {
 		switch v := opt.(type) {
@@ -237,11 +250,13 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 			ls = v
 		case app.Editor:
 			e = v
+		case app.Clipboard:
+			clip = v
 		case app.Searcher:
 			searcher = v
 		}
 	}
-	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion)
+	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion, clip)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -268,6 +283,88 @@ func newLoadedModelWithoutSearcher(t *testing.T, loader app.Loader) *Model {
 		t.Fatalf("Load: %v", err)
 	}
 	return m
+}
+
+func TestCopyKeyCopiesExactSelectedNodeRange(t *testing.T) {
+	const source = "example.test {\n\trespond / \"hello\"\n}\n\n# untouched\n"
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) {
+		return []byte(source), nil
+	})
+	clip := &fakeClipboard{}
+	m := newLoadedModel(t, fakeLoader{state: state}, clip)
+
+	// The root document row is followed by its site node.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("copy command is nil")
+	}
+	msg := cmd()
+	updated, _ := m.Update(msg)
+	m = updated.(*Model)
+
+	want := "example.test {\n\trespond / \"hello\"\n}\n"
+	if !bytes.Equal(clip.content, []byte(want)) {
+		t.Errorf("copied node bytes = %q, want %q", clip.content, want)
+	}
+	if clip.calls != 1 {
+		t.Errorf("clipboard calls = %d, want 1", clip.calls)
+	}
+	if !strings.Contains(m.statusMessage, "copied") {
+		t.Errorf("statusMessage = %q, want copied notification", m.statusMessage)
+	}
+}
+
+func TestCopyKeyCopiesCompleteDocumentRow(t *testing.T) {
+	const source = "example.test {\n\trespond / \"hello\"\n}\n"
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) {
+		return []byte(source), nil
+	})
+	clip := &fakeClipboard{}
+	m := newLoadedModel(t, fakeLoader{state: state}, clip)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("copy command is nil")
+	}
+	_, _ = m.Update(cmd())
+	if !bytes.Equal(clip.content, []byte(source)) {
+		t.Errorf("copied document bytes = %q, want %q", clip.content, source)
+	}
+}
+
+func TestCopyKeyReportsUnavailableBackend(t *testing.T) {
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) {
+		return []byte("example.test {}\n"), nil
+	})
+	m := newLoadedModel(t, fakeLoader{state: state})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd != nil {
+		t.Fatal("copy command is non-nil without a clipboard backend")
+	}
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "copy unavailable") {
+		t.Errorf("statusMessage = %q, want unavailable notification", m.statusMessage)
+	}
+}
+
+func TestCopyKeyReportsBackendError(t *testing.T) {
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) {
+		return []byte("example.test {}\n"), nil
+	})
+	clip := &fakeClipboard{err: errors.New("pipe broken")}
+	m := newLoadedModel(t, fakeLoader{state: state}, clip)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil {
+		t.Fatal("copy command is nil")
+	}
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "copy failed") {
+		t.Errorf("statusMessage = %q, want failed notification", m.statusMessage)
+	}
 }
 
 func resize(m *Model, width, height int) *Model {

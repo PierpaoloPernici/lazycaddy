@@ -98,6 +98,13 @@ type logTailMsg struct {
 	Err     error
 }
 
+// copyResultMsg is delivered after a clipboard adapter accepts the exact
+// bytes selected in the source tree.
+type copyResultMsg struct {
+	size int
+	err  error
+}
+
 // editorReadyMsg is delivered when the injected app.Editor finishes
 // Prepare: the session holds the snapshot, the range bytes temp file and
 // the argv to run, and the model hands it to the Bubble Tea exec pipeline.
@@ -350,6 +357,10 @@ type Model struct {
 	// pane when a search activates a document content hit; 0 means no
 	// reveal. It is consumed by syncSource on the next render.
 	sourceRevealLine int
+
+	// clipboard copies exact source bytes for the y keybinding. It is nil
+	// when the host exposes no clipboard backend.
+	clipboard app.Clipboard
 }
 
 // New returns a Model that will load its state through loader, run
@@ -363,8 +374,14 @@ type Model struct {
 // may be nil; the e editor keybinding is disabled in that case. searcher
 // may be nil; the / search keybinding is disabled in that case. Call
 // Load before starting the program. version is the lazycaddy application
-// version (e.g. "dev" or "v1.2.3") shown in the header brand label.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string) *Model {
+// version (e.g. "dev" or "v1.2.3") shown in the header brand label. An
+// optional clipboard may be supplied; omitting it keeps the model read-only
+// with respect to clipboard integration and disables the y keybinding.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, clipboards ...app.Clipboard) *Model {
+	var clipboard app.Clipboard
+	if len(clipboards) > 0 {
+		clipboard = clipboards[0]
+	}
 	return &Model{
 		loader:            loader,
 		formatter:         formatter,
@@ -383,6 +400,7 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		logDetailViewport: viewport.New(1, 1),
 		searchViewport:    viewport.New(1, 1),
 		logFollow:         true,
+		clipboard:         clipboard,
 	}
 }
 
@@ -485,6 +503,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRuntimeProbeResult(msg)
 	case logTailMsg:
 		return m.handleLogTail(msg)
+	case copyResultMsg:
+		if msg.err != nil {
+			m.statusMessage = "✗ copy failed: " + msg.err.Error()
+		} else {
+			m.statusMessage = fmt.Sprintf("✓ copied %d bytes", msg.size)
+		}
+		return m, nil
 	case editorReadyMsg:
 		return m.handleEditorReady(msg)
 	case editorExecMsg:
@@ -623,6 +648,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startFullEdit()
 	case "d":
 		return m.startDelete()
+	case "y":
+		return m.startCopy()
 	case "/", "ctrl+f":
 		return m.startSearch()
 	}
@@ -723,6 +750,36 @@ func (m *Model) updateSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// startCopy captures the selected source bytes before scheduling the adapter.
+// A document row copies the complete document; a node row copies only its
+// exact source range, including the bytes that belong to that range and
+// excluding every tree, pane and footer decoration.
+func (m *Model) startCopy() (tea.Model, tea.Cmd) {
+	if m.clipboard == nil {
+		m.statusMessage = "✗ copy unavailable: no clipboard backend"
+		return m, nil
+	}
+	selected := m.selectedItem()
+	if selected == nil || selected.doc == nil {
+		m.statusMessage = "✗ copy unavailable: no source selected"
+		return m, nil
+	}
+
+	content := selected.doc.Source
+	if selected.hasNode {
+		if !selected.node.Range.Valid(len(selected.doc.Source)) {
+			m.statusMessage = "✗ copy failed: selected source range is invalid"
+			return m, nil
+		}
+		content = selected.doc.Source[selected.node.Range.Start:selected.node.Range.End]
+	}
+	content = append([]byte(nil), content...)
+	clip := m.clipboard
+	return m, func() tea.Msg {
+		return copyResultMsg{size: len(content), err: clip.Copy(context.Background(), content)}
+	}
 }
 
 // recomputeSearch rebuilds the results for the current query against the
@@ -2636,6 +2693,10 @@ func (m *Model) footer(width int) string {
 	if m.searcher != nil {
 		searchSuffix = " · / search"
 	}
+	copySuffix := ""
+	if m.clipboard != nil {
+		copySuffix = " · y copy"
+	}
 	var keys string
 	switch {
 	case m.showDiff:
@@ -2661,9 +2722,9 @@ func (m *Model) footer(width int) string {
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s · q quit · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, len(m.items))
+		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s · q quit · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + " · q quit"
+		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + " · q quit"
 	}
 	return footerStyle.Width(width).Render(renderFooterKeys(keys))
 }

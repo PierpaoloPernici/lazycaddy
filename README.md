@@ -92,6 +92,9 @@ The inspector also provides:
   and atomic-save pipeline;
 - read-only global search across nodes, files, source lines and loaded logs
   (`/` or `Ctrl-F`);
+- exact source copying with `y`, using OSC 52 in the terminal and falling back
+  to an available local clipboard command (`pbcopy`, `wl-copy`, `xclip`,
+  `xsel` or `clip`);
 - exact-range node deletion (`d`) with diff confirmation and post-save tree
   rebuilding.
 
@@ -101,9 +104,9 @@ journal-backed logs and sensible path defaults: lazycaddy now discovers
 binary through `PATH` when they are not given explicitly, and keeps format,
 validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
-pane layout, adaptive theme colors and a wrapped contextual footer. Remaining
-v0.2 capabilities — persistent UI state and clipboard ergonomics — are not
-available in the current build until implemented and released.
+pane layout, adaptive theme colors, a wrapped contextual footer and exact
+source clipboard copying with OSC 52 and local fallbacks. Persistent UI state
+remains a later v0.2 capability.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing
