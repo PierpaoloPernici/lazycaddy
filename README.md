@@ -24,7 +24,7 @@ The `v0.2.0` TUI combines a navigable document tree, source inspection,
 validation status and explicit editing actions in one terminal workspace.
 
 <p align="center">
-  <img src="docs/assets/lazycaddy-tui.png" alt="lazycaddy v0.2.0 terminal user interface" width="1200">
+  <img src="docs/assets/lazycaddy-demo.gif" alt="lazycaddy v0.2.0 terminal user interface demo" width="1200">
 </p>
 
 The project is under active development. Read the project direction and implementation constraints first:
