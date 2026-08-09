@@ -99,10 +99,11 @@ The v0.1 vertical slice is complete. The v0.2 milestone has landed
 journal-backed logs and sensible path defaults: lazycaddy now discovers
 `./Caddyfile` (falling back to `/etc/caddy/Caddyfile`) and the `caddy`
 binary through `PATH` when they are not given explicitly, and keeps format,
-validate and reload disabled when `caddy` is unavailable. Remaining v0.2
-capabilities — persistent UI state, clipboard ergonomics and the chrome
-redesign — are not available in the current build until implemented and
-released.
+validate and reload disabled when `caddy` is unavailable. The interface also
+provides a persistent state-aware header, semantic status strip, responsive
+pane layout, adaptive theme colors and a wrapped contextual footer. Remaining
+v0.2 capabilities — persistent UI state and clipboard ergonomics — are not
+available in the current build until implemented and released.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing

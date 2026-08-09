@@ -6,54 +6,54 @@ package ui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Palette-agnostic styles: important state is never conveyed by color alone,
+// Theme-aware styles: important state is never conveyed by color alone,
 // so labels like "READ-ONLY" and error text are always printed explicitly.
+// Colors come from theme.go and use lipgloss.AdaptiveColor so they degrade
+// gracefully to ANSI-256, ANSI-16 or Ascii/NoColor profiles.
 var (
-	headerStyle = lipgloss.NewStyle().
+	// brandStyle renders the application name and version in the header.
+	brandStyle = lipgloss.NewStyle().
 			Bold(true).
-			Padding(0, 1).
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("236"))
+			Foreground(accentColor)
 	readOnlyBadge = lipgloss.NewStyle().
 			Bold(true).
 			Padding(0, 1).
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("238"))
+			Foreground(badgeMutedForeground).
+			Background(mutedColor)
 	writableBadge = lipgloss.NewStyle().
 			Bold(true).
 			Padding(0, 1).
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("28"))
+			Foreground(badgeSuccessForeground).
+			Background(successColor)
 	// loadedBadge marks the state where the running Caddy configuration
-	// provably matches the saved file. The dark-blue background keeps it
-	// distinct from the neutral read-only grey.
+	// provably matches the saved file.
 	loadedBadge = lipgloss.NewStyle().
 			Bold(true).
 			Padding(0, 1).
-			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("24"))
+			Foreground(badgeSuccessForeground).
+			Background(successColor)
 	// staleBadge marks a saved-but-not-reloaded configuration: the file
 	// on disk is newer than the running config. The amber background
 	// signals "action pending".
 	staleBadge = lipgloss.NewStyle().
 			Bold(true).
 			Padding(0, 1).
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("214"))
+			Foreground(badgeWarningForeground).
+			Background(warningColor)
 	// unreachableBadge marks a reload that failed because the Admin API
 	// could not be reached. The dark-red background signals a degraded
 	// operational state.
 	unreachableBadge = lipgloss.NewStyle().
 				Bold(true).
 				Padding(0, 1).
-				Foreground(lipgloss.Color("15")).
-				Background(lipgloss.Color("52"))
+				Foreground(badgeErrorForeground).
+				Background(errorColor)
 	// reloadingBadge marks an in-flight reload. The teal background is
-	// distinct from both the loaded and stale states.
+	// distinct from the loaded and stale states.
 	reloadingBadge = lipgloss.NewStyle().
 			Bold(true).
 			Padding(0, 1).
-			Foreground(lipgloss.Color("15")).
+			Foreground(badgeReloadForeground).
 			Background(lipgloss.Color("30"))
 	// unknownBadge signals that nothing has been proven yet. The neutral
 	// grey matches the dim status style so it reads as quiet rather than
@@ -61,42 +61,55 @@ var (
 	unknownBadge = lipgloss.NewStyle().
 			Bold(true).
 			Padding(0, 1).
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("244"))
+			Foreground(badgeMutedForeground).
+			Background(mutedColor)
 	// runtimeRunningBadge marks a Caddy daemon reachable through the
-	// Admin API. The green background matches the writable mode badge.
+	// Admin API.
 	runtimeRunningBadge = lipgloss.NewStyle().
 				Bold(true).
 				Padding(0, 1).
-				Foreground(lipgloss.Color("15")).
-				Background(lipgloss.Color("28"))
+				Foreground(badgeSuccessForeground).
+				Background(successColor)
 	// runtimeStoppedBadge marks a queryable caddy binary whose Admin API
-	// is unreachable (daemon stopped or admin disabled). The dark-red
-	// background matches the unreachable badge.
+	// is unreachable (daemon stopped or admin disabled).
 	runtimeStoppedBadge = lipgloss.NewStyle().
 				Bold(true).
 				Padding(0, 1).
-				Foreground(lipgloss.Color("15")).
-				Background(lipgloss.Color("52"))
+				Foreground(badgeErrorForeground).
+				Background(errorColor)
 	// runtimeUnreachableBadge marks a runtime probe that could not
 	// complete (timeout or cancellation). The amber background matches
 	// the stale badge and reads as "state unknown, action pending".
 	runtimeUnreachableBadge = lipgloss.NewStyle().
 				Bold(true).
 				Padding(0, 1).
-				Foreground(lipgloss.Color("0")).
-				Background(lipgloss.Color("214"))
+				Foreground(badgeWarningForeground).
+				Background(warningColor)
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("203")).
+			Foreground(errorColor).
 			Padding(0, 1)
+	// paneStyle is the default unfocused pane border.
 	paneStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
+			BorderForeground(mutedColor).
 			Padding(0, 1)
+	// focusedPaneStyle is the focused/active pane border. It uses the
+	// single accent color so the current input target is obvious.
+	focusedPaneStyle = paneStyle.Copy().
+				BorderForeground(accentColor)
 	cursorStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("212"))
+			Foreground(accentColor)
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
+			Foreground(mutedColor)
+	// activeTitleStyle renders the title of the focused section or modal.
+	activeTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(accentColor)
+	// keyHintStyle renders key names in the footer hint line.
+	keyHintStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(accentColor)
 	// selectedGutterNumberStyle emphasizes the line numbers of the
 	// currently selected section. It stays quiet (grey, not the cursor
 	// accent) so it reads as a subtle guide rather than state.
@@ -107,26 +120,35 @@ var (
 	// the selected block's lines in the source gutter.
 	selectedGutterBarStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("245"))
-	statusLineStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(lipgloss.Color("245"))
+	// footerStyle renders the contextual key hint line at the bottom.
+	// It only provides padding; key names and descriptions carry their own
+	// colors so the accent is not lost.
+	footerStyle = lipgloss.NewStyle().
+			Padding(0, 1)
 	statusSuccessStyle = lipgloss.NewStyle().
 				Bold(true).
 				Padding(0, 1).
-				Foreground(lipgloss.Color("42"))
+				Foreground(successColor)
+	// statusWarningStyle renders transient warning messages. Warnings
+	// keep the ✗ glyph contract (tests assert the exact prefix) but are
+	// styled distinctly from errors.
+	statusWarningStyle = lipgloss.NewStyle().
+				Bold(true).
+				Padding(0, 1).
+				Foreground(warningColor)
 	statusInfoStyle = lipgloss.NewStyle().
 			Padding(0, 1).
-			Foreground(lipgloss.Color("244"))
+			Foreground(infoColor)
 
 	// diffAddStyle highlights lines added by the working copy (lines
 	// that start with '+') in the conventional unified-diff green.
 	diffAddStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42"))
+			Foreground(successColor)
 	// diffRemoveStyle highlights lines removed from the original source
 	// (lines that start with '-') in the conventional unified-diff red,
 	// matching the error-style foreground for visual consistency.
 	diffRemoveStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("203"))
+			Foreground(errorColor)
 	// diffHunkStyle highlights '@@ -l,c +l,c @@' hunk headers in bold
 	// cyan so the boundaries between change groups stand out.
 	diffHunkStyle = lipgloss.NewStyle().
@@ -143,7 +165,7 @@ var (
 	// syntaxCommentStyle renders "# ..." comments dimmed and italic so they
 	// recede behind the directives.
 	syntaxCommentStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245")).
+				Foreground(mutedColor).
 				Italic(true)
 	// syntaxStringStyle renders quoted string tokens in the soft green used
 	// elsewhere for "success" content.
@@ -157,7 +179,7 @@ var (
 	// as active/editable regions.
 	syntaxPlaceholderStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("212"))
+				Foreground(accentColor)
 	// syntaxBraceStyle renders structural braces in soft yellow so block
 	// boundaries are easy to scan.
 	syntaxBraceStyle = lipgloss.NewStyle().
@@ -182,14 +204,14 @@ var (
 			Foreground(lipgloss.Color("221"))
 	// logBoolStyle renders true/false literals in the cursor accent.
 	logBoolStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("212"))
+			Foreground(accentColor)
 	// logNullStyle renders null literals dimmed.
 	logNullStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
+			Foreground(mutedColor)
 	// logDelimiterStyle renders braces, brackets, colons and commas
 	// dimmed so the structural tokens recede.
 	logDelimiterStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
+				Foreground(mutedColor)
 	// logTimestampStyle renders the ts value in blue.
 	logTimestampStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("33"))
@@ -199,7 +221,7 @@ var (
 			Foreground(lipgloss.Color("15"))
 	// logLoggerStyle renders the logger value dimmed and italic.
 	logLoggerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
+			Foreground(mutedColor).
 			Italic(true)
 	// logLevelDebugStyle renders the debug level in bright magenta.
 	logLevelDebugStyle = lipgloss.NewStyle().
@@ -209,32 +231,32 @@ var (
 				Foreground(lipgloss.Color("33"))
 	// logLevelWarnStyle renders the warn level in amber.
 	logLevelWarnStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("214"))
+				Foreground(warningColor)
 	// logLevelErrorStyle renders the error level in red.
 	logLevelErrorStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("203"))
+				Foreground(errorColor)
 	// logLevelOtherStyle renders unrecognized levels dimmed.
 	logLevelOtherStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
+				Foreground(mutedColor)
 	// logStatus1xxStyle renders 1xx status values dimmed (rare
 	// informational responses).
 	logStatus1xxStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
+				Foreground(mutedColor)
 	// logStatus2xxStyle renders 2xx status values in green.
 	logStatus2xxStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("42"))
+				Foreground(successColor)
 	// logStatus3xxStyle renders 3xx status values in amber.
 	logStatus3xxStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("214"))
+				Foreground(warningColor)
 	// logStatus4xxStyle renders 4xx status values in amber.
 	logStatus4xxStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("214"))
+				Foreground(warningColor)
 	// logStatus5xxStyle renders 5xx status values in red.
 	logStatus5xxStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("203"))
+				Foreground(errorColor)
 	// logStatusOtherStyle renders unrecognized status values dimmed.
 	logStatusOtherStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
+				Foreground(mutedColor)
 	// logMethodStyle renders the request method in bold cyan.
 	logMethodStyle = lipgloss.NewStyle().
 			Bold(true).

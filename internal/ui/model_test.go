@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
@@ -240,12 +241,15 @@ func newLoadedModel(t *testing.T, loader app.Loader, opts ...any) *Model {
 			searcher = v
 		}
 	}
-	m := New(loader, f, s, r, rt, ls, e, searcher)
+	m := New(loader, f, s, r, rt, ls, e, searcher, testVersion)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
 	return m
 }
+
+// testVersion is the application version injected by test helpers.
+const testVersion = "dev"
 
 func keyPress(t *testing.T, m *Model, msg tea.Msg) *Model {
 	t.Helper()
@@ -259,7 +263,7 @@ func keyPress(t *testing.T, m *Model, msg tea.Msg) *Model {
 // ...any slot matches no type-switch case), so this constructs New directly.
 func newLoadedModelWithoutSearcher(t *testing.T, loader app.Loader) *Model {
 	t.Helper()
-	m := New(loader, nil, nil, nil, nil, nil, nil, nil)
+	m := New(loader, nil, nil, nil, nil, nil, nil, nil, testVersion)
 	if err := m.Load(); err != nil && m.state == nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -438,7 +442,7 @@ func TestModelQuit(t *testing.T) {
 }
 
 func TestModelReadErrorShowsMessage(t *testing.T) {
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion)
 	if err := m.Load(); err == nil {
 		t.Fatal("Load must return the read error")
 	}
@@ -811,7 +815,7 @@ func TestModelNoWriteOperations(t *testing.T) {
 
 func TestModelFormatAndValidate_DisabledWithoutGraph(t *testing.T) {
 	formatter := &fakeFormatter{formatted: []byte("x")}
-	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil, nil)
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing"}}, formatter, nil, nil, nil, nil, nil, nil, testVersion)
 	m.Load()
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	if cmd != nil {
@@ -1514,7 +1518,7 @@ func TestModelFooter_GlobalWhenModalClosed(t *testing.T) {
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
-	view := m.View()
+	view := stripANSI(m.View())
 	for _, want := range []string{"v format & validate", "Enter toggle"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("global footer should show %q, got:\n%s", want, view)
@@ -1537,7 +1541,7 @@ func TestModelFooter_ListContext(t *testing.T) {
 	m = resize(m, 80, 24)
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	m.Update(cmd())
-	view := m.View()
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "Enter/+ detail") {
 		t.Errorf("list footer should show 'Enter/+ detail', got:\n%s", view)
 	}
@@ -1562,7 +1566,7 @@ func TestModelFooter_DetailContext(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	m.Update(cmd())
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open detail
-	view := m.View()
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "PgUp/PgDown") {
 		t.Errorf("detail footer should show PgUp/PgDown, got:\n%s", view)
 	}
@@ -1713,7 +1717,7 @@ func TestModelFooter_DiffContext(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	m.Update(cmd())
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
-	view := m.View()
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "Esc close") {
 		t.Errorf("diff footer should show 'Esc close', got:\n%s", view)
 	}
@@ -2108,7 +2112,7 @@ func TestModelFooter_SaveConfirmContext(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	m.Update(cmd())
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	view := m.View()
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "Enter save") {
 		t.Errorf("footer should show Enter save, got:\n%s", view)
 	}
@@ -2517,13 +2521,13 @@ func TestModelReload_FooterShowsKey(t *testing.T) {
 	reloader := &fakeReloader{}
 	m := newLoadedModel(t, fakeLoader{state: state}, reloader)
 	m = resize(m, 120, 30)
-	if !strings.Contains(m.View(), "r reload") {
+	if !strings.Contains(stripANSI(m.View()), "r reload") {
 		t.Errorf("View missing 'r reload' with reloader configured:\n%s", m.View())
 	}
 	// Without a reloader the key must be absent.
 	m2 := newLoadedModel(t, fakeLoader{state: state})
 	m2 = resize(m2, 120, 30)
-	if strings.Contains(m2.View(), "r reload") {
+	if strings.Contains(stripANSI(m2.View()), "r reload") {
 		t.Errorf("View should not contain 'r reload' without a reloader:\n%s", m2.View())
 	}
 }
@@ -2746,6 +2750,252 @@ func TestModelRuntimeProbe_UnknownHidesBadge(t *testing.T) {
 	if strings.Contains(view, " RUNNING ") || strings.Contains(view, " STOPPED ") || strings.Contains(view, " caddy v") {
 		t.Errorf("unknown probe rendered runtime state in the header:\n%s", view)
 	}
+}
+
+// TestModelHeader_BrandVersion verifies that the header shows the
+// application name and the injected version.
+func TestModelHeader_BrandVersion(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 80, 24)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "lazycaddy") {
+		t.Errorf("header missing brand label:\n%s", view)
+	}
+	if !strings.Contains(view, testVersion) {
+		t.Errorf("header missing version %q:\n%s", testVersion, view)
+	}
+	if !strings.Contains(view, "Config:") {
+		t.Errorf("header missing explicit configuration label:\n%s", view)
+	}
+}
+
+// TestModelHeader_ResponsiveNarrow verifies that the header keeps its
+// badges on narrow terminals and truncates the path instead of overflowing.
+func TestModelHeader_ResponsiveNarrow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	longPath := "/very/long/path/to/the/caddy/configuration/file/Caddyfile"
+	fs := map[string]string{longPath: "example.test {\n}\n"}
+	state := stateFor(t, longPath, fsReader(fs))
+	m := newLoadedModel(t, fakeLoader{state: state})
+
+	// Wide window: the full path fits and all badges are present.
+	m = resize(m, 120, 30)
+	wide := stripANSI(m.View())
+	if !strings.Contains(wide, longPath) {
+		t.Errorf("wide header missing full path:\n%s", wide)
+	}
+	for _, want := range []string{"lazycaddy", testVersion, "Config:", "READ-ONLY"} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("wide header missing %q:\n%s", want, wide)
+		}
+	}
+
+	// Narrow window: the raw long path must be gone, but the brand and
+	// state badges remain. No rendered line may exceed the window width.
+	m = resize(m, 40, 24)
+	narrow := stripANSI(m.View())
+	if strings.Contains(narrow, longPath) {
+		t.Errorf("narrow header should not contain the raw long path:\n%s", narrow)
+	}
+	for _, want := range []string{"lazycaddy", testVersion, "Config:", "READ-ONLY"} {
+		if !strings.Contains(narrow, want) {
+			t.Errorf("narrow header missing %q:\n%s", want, narrow)
+		}
+	}
+	for i, line := range strings.Split(narrow, "\n") {
+		if w := lipgloss.Width(stripANSI(line)); w > 40 {
+			t.Errorf("narrow header line %d is %d columns wide (max 40):\n%s", i+1, w, line)
+		}
+	}
+}
+
+// TestModelStatusStrip_AboveFooter verifies that transient status messages
+// render in a dedicated strip above the footer and do not push the header
+// out of place.
+func TestModelStatusStrip_AboveFooter(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 80, 24)
+	m.statusMessage = "✓ saved (backup: config/backups/Caddyfile.bak)"
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "✓ saved") {
+		t.Errorf("status message missing from view:\n%s", view)
+	}
+	if !strings.Contains(view, "q quit") {
+		t.Errorf("footer missing from view:\n%s", view)
+	}
+
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[0], "lazycaddy") {
+		t.Errorf("header displaced or missing:\n%s", lines[0])
+	}
+
+	statusIdx, footerIdx := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "✓ saved") {
+			statusIdx = i
+		}
+		if strings.Contains(line, "q quit") {
+			footerIdx = i
+		}
+	}
+	if statusIdx == -1 || footerIdx == -1 {
+		t.Fatalf("could not locate status (%d) or footer (%d) lines", statusIdx, footerIdx)
+	}
+	if statusIdx >= footerIdx {
+		t.Errorf("status strip (line %d) must appear above footer (line %d)", statusIdx+1, footerIdx+1)
+	}
+}
+
+// TestModelStatusStrip_WarningMessage verifies that warning messages are
+// surfaced in the status strip and kept out of the footer.
+func TestModelStatusStrip_WarningMessage(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 80, 24)
+	m.statusMessage = "✗ edited document has warnings — not saved"
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "✗ edited document has warnings") {
+		t.Errorf("warning message missing from view:\n%s", view)
+	}
+
+	// The warning text must not be mixed into the contextual footer line.
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "q quit") && i > 0 && strings.Contains(lines[i-1], "warnings") {
+			t.Errorf("warning text rendered on the footer line")
+		}
+	}
+}
+
+// TestModelFooter_TruncatesOnNarrow verifies that the footer wraps onto
+// additional lines when the hints do not fit, instead of truncating away
+// critical keys like q quit.
+func TestModelFooter_TruncatesOnNarrow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 80, 24)
+
+	view := stripANSI(m.View())
+	for _, hint := range []string{"q quit", "v format & validate", "Enter toggle"} {
+		if !strings.Contains(view, hint) {
+			t.Errorf("wrapped footer missing critical hint %q:\n%s", hint, view)
+		}
+	}
+
+	footer := stripANSI(m.footer(80))
+	footerLines := lipgloss.Height(footer)
+	if footerLines < 2 {
+		t.Errorf("footer should wrap to multiple lines at 80 cols, got %d line(s):\n%s", footerLines, footer)
+	}
+	for i, line := range strings.Split(footer, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Errorf("footer line %d is %d columns wide (max 80):\n%s", i+1, w, line)
+		}
+	}
+}
+
+// assertFits verifies that the rendered view fits the terminal budget,
+// that the header is the first line, and that the footer is the last
+// visible section. It is used by the layout regression tests.
+func assertFits(t *testing.T, m *Model, width, height int) {
+	t.Helper()
+	m = resize(m, width, height)
+	lines := strings.Split(stripANSI(m.View()), "\n")
+	n := len(lines)
+	if n > 0 && lines[n-1] == "" {
+		n--
+	}
+	if n > height {
+		t.Fatalf("view renders %d lines on a %d-line budget:\n%s", n, height, m.View())
+	}
+	if !strings.Contains(lines[0], "lazycaddy") {
+		t.Errorf("header is not the first line: %q", lines[0])
+	}
+	if !strings.Contains(lines[n-1], "quit") && !strings.Contains(lines[n-1], "Esc") {
+		t.Errorf("footer is not the last section: %q", lines[n-1])
+	}
+}
+
+func TestModelViewFits_Normal(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	assertFits(t, m, 80, 24)
+}
+
+func TestModelViewFits_StatusMessage(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.statusMessage = "✓ caddy v2.11.4 · running"
+	assertFits(t, m, 80, 24)
+}
+
+func TestModelViewFits_ErrorAndStatus(t *testing.T) {
+	m := New(fakeLoader{state: nil, err: &noSuchFile{path: "missing/Caddyfile"}}, nil, nil, nil, nil, nil, nil, nil, testVersion)
+	m.Load()
+	m.statusMessage = "✓ caddy v2.11.4 · running"
+	assertFits(t, m, 80, 24)
+}
+
+func TestModelViewFits_WrappedFooter(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	// The default 80-column global footer wraps onto two lines; this must
+	// not push the header off the screen.
+	assertFits(t, m, 80, 24)
+}
+
+func TestModelViewFits_LogViewWithStatus(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		HistoryFn: func() []logs.Entry { return nil },
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m.showLogs = true
+	m.statusMessage = "log poll resumed"
+	assertFits(t, m, 80, 24)
+}
+
+func TestModelViewFits_ModalWithStatus(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.showSaveConfirm = true
+	m.statusMessage = "save cancelled"
+	assertFits(t, m, 80, 24)
 }
 
 // logEntry builds a structured entry with the given message for tests.
@@ -3104,7 +3354,7 @@ func TestModelLogView_Footer(t *testing.T) {
 	// Without a log source the l key is absent.
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
-	if strings.Contains(m.View(), "l logs") {
+	if strings.Contains(stripANSI(m.View()), "l logs") {
 		t.Errorf("footer shows 'l logs' without a log source:\n%s", m.View())
 	}
 	// With a log source the l key appears.
@@ -3114,13 +3364,13 @@ func TestModelLogView_Footer(t *testing.T) {
 	}
 	m = newLoadedModel(t, fakeLoader{state: state}, src)
 	m = resize(m, 120, 30)
-	if !strings.Contains(m.View(), "l logs") {
+	if !strings.Contains(stripANSI(m.View()), "l logs") {
 		t.Errorf("footer missing 'l logs' with a log source:\n%s", m.View())
 	}
 	// While the log view is open the footer shows the log-view key hints.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	m = updated.(*Model)
-	view := m.View()
+	view := stripANSI(m.View())
 	for _, want := range []string{"Enter detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
@@ -3296,8 +3546,8 @@ func TestModelLogDetail_ShowsFullJSON(t *testing.T) {
 	if !strings.Contains(visible, `"request"`) || !strings.Contains(visible, "/api/config") {
 		t.Errorf("detail modal missing the full JSON:\n%s", visible)
 	}
-	if !strings.Contains(view, "Esc back") {
-		t.Errorf("footer missing the detail hint 'Esc back':\n%s", view)
+	if !strings.Contains(visible, "Esc back") {
+		t.Errorf("footer missing the detail hint 'Esc back':\n%s", visible)
 	}
 }
 
@@ -3802,13 +4052,13 @@ func TestEditorFlow_FooterShowsKey(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
 	// On a document row the key is hidden (no node range to edit).
-	if strings.Contains(m.View(), "e edit") {
+	if strings.Contains(stripANSI(m.View()), "e edit") {
 		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
 	}
 	// On a node row the key appears.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(m.View(), "e edit") {
+	if !strings.Contains(stripANSI(m.View()), "e edit") {
 		t.Errorf("footer missing 'e edit' on a node row:\n%s", m.View())
 	}
 	// In read-only mode the key is hidden even on a node row.
@@ -3818,7 +4068,7 @@ func TestEditorFlow_FooterShowsKey(t *testing.T) {
 	m2 := newLoadedModel(t, fakeLoader{state: readOnly}, editor)
 	m2 = resize(m2, 120, 30)
 	m2 = keyPress(t, m2, tea.KeyMsg{Type: tea.KeyDown})
-	if strings.Contains(m2.View(), "e edit") {
+	if strings.Contains(stripANSI(m2.View()), "e edit") {
 		t.Errorf("footer shows 'e edit' in read-only mode:\n%s", m2.View())
 	}
 }
@@ -4460,23 +4710,23 @@ func TestSearch_FooterShowsKey(t *testing.T) {
 	// With the default searcher the key is listed.
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
-	if !strings.Contains(m.View(), "/ search") {
+	if !strings.Contains(stripANSI(m.View()), "/ search") {
 		t.Errorf("footer missing '/ search' with a searcher:\n%s", m.View())
 	}
 
 	// Without a searcher the key is absent.
 	m2 := newLoadedModelWithoutSearcher(t, fakeLoader{state: state})
 	m2 = resize(m2, 120, 30)
-	if strings.Contains(m2.View(), "/ search") {
+	if strings.Contains(stripANSI(m2.View()), "/ search") {
 		t.Errorf("footer shows '/ search' without a searcher:\n%s", m2.View())
 	}
 
 	// While the search modal is open the footer shows the search keys.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	m.View()
+	view := stripANSI(m.View())
 	for _, want := range []string{"type to search", "Enter open", "Esc close"} {
-		if !strings.Contains(m.View(), want) {
-			t.Errorf("search footer missing %q:\n%s", want, m.View())
+		if !strings.Contains(view, want) {
+			t.Errorf("search footer missing %q:\n%s", want, view)
 		}
 	}
 }
@@ -5187,7 +5437,7 @@ func TestDelete_ValidShowsDiffAndSaves(t *testing.T) {
 		t.Fatal("pendingDelete not set")
 	}
 	// The diff footer advertises the delete confirmation.
-	if !strings.Contains(m.View(), "Enter delete") {
+	if !strings.Contains(stripANSI(m.View()), "Enter delete") {
 		t.Errorf("delete diff footer missing 'Enter delete':\n%s", m.View())
 	}
 	expected, err := caddyfile.Patch([]byte(src), state.Graph.Root.Nodes[1].Range, []byte{})
@@ -5495,15 +5745,15 @@ func TestEditorFull_FooterShowsKey(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
 	// On the document row: E is shown, e is not.
-	if !strings.Contains(m.View(), "E full edit") {
+	if !strings.Contains(stripANSI(m.View()), "E full edit") {
 		t.Errorf("footer missing 'E full edit' on a document row:\n%s", m.View())
 	}
-	if strings.Contains(m.View(), "e edit") {
+	if strings.Contains(stripANSI(m.View()), "e edit") {
 		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
 	}
 	// On a node row: both are shown.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(m.View(), "E full edit") || !strings.Contains(m.View(), "e edit") {
+	if !strings.Contains(stripANSI(m.View()), "E full edit") || !strings.Contains(stripANSI(m.View()), "e edit") {
 		t.Errorf("footer missing E/e edit on a node row:\n%s", m.View())
 	}
 	// Read-only: neither.
@@ -5512,7 +5762,7 @@ func TestEditorFull_FooterShowsKey(t *testing.T) {
 	}))
 	m2 := newLoadedModel(t, fakeLoader{state: readOnly}, editor)
 	m2 = resize(m2, 120, 30)
-	if strings.Contains(m2.View(), "E full edit") || strings.Contains(m2.View(), "e edit") {
+	if strings.Contains(stripANSI(m2.View()), "E full edit") || strings.Contains(stripANSI(m2.View()), "e edit") {
 		t.Errorf("footer shows edit keys in read-only mode:\n%s", m2.View())
 	}
 }
@@ -5528,12 +5778,12 @@ func TestDelete_FooterShowsKey(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
 	m = resize(m, 120, 30)
 	// On the document row the key is hidden.
-	if strings.Contains(m.View(), "d delete") {
+	if strings.Contains(stripANSI(m.View()), "d delete") {
 		t.Errorf("footer shows 'd delete' on a document row:\n%s", m.View())
 	}
 	// On a node row the key appears.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(m.View(), "d delete") {
+	if !strings.Contains(stripANSI(m.View()), "d delete") {
 		t.Errorf("footer missing 'd delete' on a node row:\n%s", m.View())
 	}
 	// Read-only: hidden even on a node row.
@@ -5543,7 +5793,7 @@ func TestDelete_FooterShowsKey(t *testing.T) {
 	m2 := newLoadedModel(t, fakeLoader{state: readOnly}, formatter)
 	m2 = resize(m2, 120, 30)
 	m2 = keyPress(t, m2, tea.KeyMsg{Type: tea.KeyDown})
-	if strings.Contains(m2.View(), "d delete") {
+	if strings.Contains(stripANSI(m2.View()), "d delete") {
 		t.Errorf("footer shows 'd delete' in read-only mode:\n%s", m2.View())
 	}
 	// Without a formatter the key is hidden even on a writable node row:
@@ -5553,7 +5803,7 @@ func TestDelete_FooterShowsKey(t *testing.T) {
 	m3 := newLoadedModel(t, fakeLoader{state: state}, saverOnly)
 	m3 = resize(m3, 120, 30)
 	m3 = keyPress(t, m3, tea.KeyMsg{Type: tea.KeyDown})
-	if strings.Contains(m3.View(), "d delete") {
+	if strings.Contains(stripANSI(m3.View()), "d delete") {
 		t.Errorf("footer shows 'd delete' without a formatter:\n%s", m3.View())
 	}
 }

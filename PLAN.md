@@ -528,7 +528,7 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   `$XDG_STATE_HOME/lazycaddy/backups` (or `~/.local/state/lazycaddy/backups`)
   — the default location, not a writability guarantee: the save/backup
   pipeline reports any writability failure.
-- Improve the persistent application chrome and visual hierarchy. Keep the
+- [x] Improve the persistent application chrome and visual hierarchy. Keep the
   header visible independently from transient notifications, display the
   LazyCaddy version alongside the Caddy version and runtime/configuration
   badges, and reserve a separate status strip above the contextual footer for
@@ -541,7 +541,9 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   hints. Keep semantic status colors distinct from that accent and provide a
   terminal-safe fallback when true color is unavailable. Preserve responsive
   layout behavior by shortening low-priority path and metadata text on narrow
-  terminals.
+  terminals. Implemented in `internal/ui` with a persistent header, semantic
+  status strip, responsive layout accounting, wrapped contextual footer and
+  adaptive theme colors with explicit labels.
 
   Target layout preview:
 

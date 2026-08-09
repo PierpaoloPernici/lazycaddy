@@ -72,8 +72,8 @@ func TestRenderCompactLogLine_LevelAndStatusSemanticWithoutColor(t *testing.T) {
 	if !strings.Contains(visible, "500") {
 		t.Errorf("stripped compact line missing the 500 label:\n%s", visible)
 	}
-	if !strings.Contains(out, "38;5;203") {
-		t.Errorf("error level must use the red style (38;5;203):\n%s", out)
+	if !strings.Contains(out, sgrOf(logLevelErrorStyle)) {
+		t.Errorf("error level must use the theme error style:\n%s", out)
 	}
 }
 
