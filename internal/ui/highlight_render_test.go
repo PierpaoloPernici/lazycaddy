@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 )
 
@@ -45,6 +46,68 @@ func assertSourceLossless(t *testing.T, src []byte, got string) {
 		if body != want[i] {
 			t.Errorf("rendered line %d body = %q, want %q", i+1, body, want[i])
 		}
+	}
+}
+
+func TestStyleKeyMappings(t *testing.T) {
+	tests := []struct {
+		name string
+		kind caddyfile.SpanKind
+		want int
+	}{
+		{"word", caddyfile.SpanWord, 0},
+		{"string", caddyfile.SpanString, 2},
+		{"heredoc", caddyfile.SpanHeredoc, 3},
+		{"comment", caddyfile.SpanComment, 1},
+		{"open brace", caddyfile.SpanOpenBrace, 5},
+		{"close brace", caddyfile.SpanCloseBrace, 5},
+		{"placeholder", caddyfile.SpanPlaceholder, 4},
+		{"unknown", caddyfile.SpanKind(99), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := styleKeyFor(tt.kind); got != tt.want {
+				t.Fatalf("styleKeyFor(%v) = %d, want %d", tt.kind, got, tt.want)
+			}
+			if got := stripANSI(styleForKey(tt.want).Render("x")); got != "x" {
+				t.Errorf("styleForKey(%d) rendered %q, want x", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestLogStyleKeyMappings(t *testing.T) {
+	kinds := []logs.SpanKind{
+		logs.SpanKey, logs.SpanString, logs.SpanNumber, logs.SpanBool,
+		logs.SpanNull, logs.SpanDelimiter, logs.SpanTimestamp, logs.SpanMsg,
+		logs.SpanLogger, logs.SpanLevelDebug, logs.SpanLevelInfo,
+		logs.SpanLevelWarn, logs.SpanLevelError, logs.SpanLevelOther,
+		logs.SpanStatus1xx, logs.SpanStatus2xx, logs.SpanStatus3xx,
+		logs.SpanStatus4xx, logs.SpanStatus5xx, logs.SpanStatusOther,
+		logs.SpanMethod, logs.SpanURI,
+	}
+	for _, kind := range kinds {
+		key := logStyleKeyFor(kind)
+		if key == 0 {
+			t.Fatalf("logStyleKeyFor(%v) = 0, want a styled key", kind)
+		}
+		if got := stripANSI(logStyleForKey(key).Render("x")); got != "x" {
+			t.Errorf("logStyleForKey(%d) rendered %q, want x", key, got)
+		}
+	}
+	if got := logStyleKeyFor(logs.SpanKind(99)); got != 0 {
+		t.Errorf("unknown log span key = %d, want 0", got)
+	}
+	if got := stripANSI(logStyleForKey(0).Render("x")); got != "x" {
+		t.Errorf("logStyleForKey(0) rendered %q, want x", got)
+	}
+}
+
+func TestWriteStyledChunkPreservesTabs(t *testing.T) {
+	var b strings.Builder
+	writeStyledChunk(&b, lipgloss.NewStyle().Bold(true), "left\tmiddle\tright")
+	if got := stripANSI(b.String()); got != "left\tmiddle\tright" {
+		t.Errorf("styled chunk = %q, want tabs preserved", got)
 	}
 }
 

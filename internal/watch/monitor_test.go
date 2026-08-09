@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ type fakeWatcher struct {
 	removes []string
 	events  chan Event
 	errors  chan error
+	addErr  error
 	closed  bool
 }
 
@@ -29,6 +31,9 @@ func newFakeWatcher() *fakeWatcher {
 
 func (f *fakeWatcher) Add(path string) error {
 	f.adds = append(f.adds, path)
+	if f.addErr != nil {
+		return f.addErr
+	}
 	return nil
 }
 
@@ -362,6 +367,20 @@ func TestMonitorReRegistersDirsOnFlush(t *testing.T) {
 	}
 }
 
+func TestMonitorReRegisterErrorIsDelivered(t *testing.T) {
+	w := newFakeWatcher()
+	path := filepath.Join("etc", "caddy", "Caddyfile")
+	fs := memFS{path: "new"}
+	m := newMonitor(t, w, fs, Target{Path: path, Source: []byte("old")})
+	w.addErr = errors.New("watch lost")
+
+	m.handleEvent(Event{Path: path, Op: OpWrite})
+	m.flush()
+	if _, err := next(t, m); !strings.Contains(err.Error(), "watch lost") {
+		t.Fatalf("re-register error = %v, want watch lost", err)
+	}
+}
+
 func TestMonitorWatcherErrorIsDelivered(t *testing.T) {
 	w := newFakeWatcher()
 	m := newMonitor(t, w, memFS{}, Target{Path: "Caddyfile", Source: []byte("x")})
@@ -452,5 +471,27 @@ func TestMonitorReportedChangeAdvancesSnapshot(t *testing.T) {
 	case r := <-m.queue:
 		t.Fatalf("touch after acknowledge reported a change: %+v", r)
 	default:
+	}
+}
+
+func TestMonitorQueueDropsOldestWhenFull(t *testing.T) {
+	m := NewMonitor(Options{Watcher: newFakeWatcher(), ReadFile: memFS{}.read})
+	for i := 0; i < queueCap+2; i++ {
+		m.queueResult(result{change: Change{Path: filepath.Join("file", string(rune('0'+i)))}})
+	}
+
+	if got := len(m.queue); got != queueCap {
+		t.Fatalf("queue length = %d, want %d", got, queueCap)
+	}
+	first := (<-m.queue).change.Path
+	last := first
+	for len(m.queue) > 0 {
+		last = (<-m.queue).change.Path
+	}
+	if first != filepath.Join("file", "2") {
+		t.Errorf("oldest queued result = %q, want file/2", first)
+	}
+	if last != filepath.Join("file", "9") {
+		t.Errorf("newest queued result = %q, want file/9", last)
 	}
 }

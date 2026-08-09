@@ -255,6 +255,43 @@ func TestBackups_EscCloses(t *testing.T) {
 	}
 }
 
+func TestBackups_NavigationRevealsCursor(t *testing.T) {
+	m := &Model{
+		backups: []backup.Entry{{}, {}, {}},
+	}
+	m.backupViewport.Height = 1
+	m.backupViewport.SetContent("a\nb\nc")
+
+	updated, _ := m.updateBackupsKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(*Model)
+	if m.backupCursor != 1 {
+		t.Fatalf("cursor after down = %d, want 1", m.backupCursor)
+	}
+	if m.backupViewport.YOffset != 1 {
+		t.Errorf("viewport after down = %d, want 1", m.backupViewport.YOffset)
+	}
+
+	updated, _ = m.updateBackupsKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(*Model)
+	if m.backupCursor != 0 {
+		t.Fatalf("cursor after up = %d, want 0", m.backupCursor)
+	}
+	if m.backupViewport.YOffset != 0 {
+		t.Errorf("viewport after up = %d, want 0", m.backupViewport.YOffset)
+	}
+
+	// The cursor stops at both ends of the list.
+	m.updateBackupsKey(tea.KeyMsg{Type: tea.KeyUp})
+	if m.backupCursor != 0 {
+		t.Errorf("cursor moved above first entry: %d", m.backupCursor)
+	}
+	m.backupCursor = len(m.backups) - 1
+	m.updateBackupsKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m.backupCursor != len(m.backups)-1 {
+		t.Errorf("cursor moved past last entry: %d", m.backupCursor)
+	}
+}
+
 func TestBackups_FooterShowsKey(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n}\n",
