@@ -202,3 +202,42 @@ func TestCheckWritePreflight_UnwritableDir(t *testing.T) {
 		t.Fatal("CheckWritePreflight succeeded in an unwritable directory")
 	}
 }
+
+func TestCheckWritePreflight_InvalidPath(t *testing.T) {
+	if err := CheckWritePreflight("\x00"); err == nil {
+		t.Fatal("CheckWritePreflight accepted an invalid path")
+	}
+}
+
+func TestCheckWritePreflight_MissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "Caddyfile")
+	if err := CheckWritePreflight(path); err == nil {
+		t.Fatal("CheckWritePreflight accepted a missing parent directory")
+	}
+}
+
+func TestWriteAtomic_InvalidPath(t *testing.T) {
+	if err := WriteAtomic("\x00", []byte("content")); err == nil {
+		t.Fatal("WriteAtomic accepted an invalid path")
+	}
+}
+
+func TestWriteAtomic_MissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "Caddyfile")
+	if err := WriteAtomic(path, []byte("content")); err == nil {
+		t.Fatal("WriteAtomic succeeded with a missing parent directory")
+	}
+}
+
+func TestWriteAtomic_RenameFailureCleansTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteAtomic(path, []byte("content")); err == nil {
+		t.Fatal("WriteAtomic replaced a directory")
+	}
+	assertNoTempFiles(t, dir)
+}
