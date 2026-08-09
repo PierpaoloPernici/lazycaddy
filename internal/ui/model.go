@@ -302,6 +302,11 @@ type Model struct {
 	// logDetailViewport renders the detail modal body.
 	logDetailViewport viewport.Model
 
+	// version is the lazycaddy application version injected at
+	// construction time; it is shown next to the brand label in the
+	// header and never changes during the session.
+	version string
+
 	// editor launches $EDITOR on the selected node range; nil disables
 	// the e keybinding (no editor command and/or no validation binary).
 	editor app.Editor
@@ -357,8 +362,9 @@ type Model struct {
 // may be nil; the l log-view keybinding is disabled in that case. editor
 // may be nil; the e editor keybinding is disabled in that case. searcher
 // may be nil; the / search keybinding is disabled in that case. Call
-// Load before starting the program.
-func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher) *Model {
+// Load before starting the program. version is the lazycaddy application
+// version (e.g. "dev" or "v1.2.3") shown in the header brand label.
+func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string) *Model {
 	return &Model{
 		loader:            loader,
 		formatter:         formatter,
@@ -368,6 +374,7 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		logSource:         logSource,
 		editor:            editor,
 		searcher:          searcher,
+		version:           version,
 		collapsed:         map[string]bool{},
 		viewport:          viewport.New(1, 1),
 		detailViewport:    viewport.New(1, 1),
@@ -1335,22 +1342,42 @@ func (m *Model) buildDetailBody(bodyW int) string {
 	return body.String()
 }
 
+// paneContentH returns the content height handed to pane/modal renderers
+// so the complete view (header + optional error line + pane/modal +
+// optional status strip + wrapped footer) fits the given total height.
+// Pane renderers draw their border around the content, so the vertical
+// frame size must be subtracted here, mirroring the horizontal handling
+// in View(). All pane/modal styles are copies of paneStyle with the same
+// border and padding, so paneStyle.GetVerticalFrameSize() is correct for
+// every renderer.
+func (m *Model) paneContentH(height int) int {
+	width := m.width
+	if width == 0 {
+		width = 80
+	}
+	footerH := lipgloss.Height(m.footer(width))
+	if footerH < 1 {
+		footerH = 1
+	}
+	h := height - 1 /*header*/ - paneStyle.GetVerticalFrameSize() - footerH
+	if m.err != nil {
+		h--
+	}
+	if m.statusMessage != "" {
+		h--
+	}
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
 // paneHeight returns the height of the main pane area (the modal or
 // the tree+source panes), matching the computation in View. It is
 // extracted so the detail view can size its viewport to match the
 // pane that will contain it, without re-deriving the layout.
 func (m *Model) paneHeight() int {
-	paneH := m.height - 3
-	if m.err != nil {
-		paneH--
-	}
-	if m.statusMessage != "" {
-		paneH--
-	}
-	if paneH < 1 {
-		paneH = 1
-	}
-	return paneH
+	return m.paneContentH(m.height)
 }
 
 // closeDetail returns from the detail view to the diagnostics list.
@@ -1960,7 +1987,7 @@ func (m *Model) saveConfirmView(width, height int) string {
 	body.WriteString("\n")
 	body.WriteString(dimStyle.Render("a backup is created before the file is replaced") + "\n")
 	body.WriteString(hint)
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
 // reloadConfirmView renders the reload-confirmation modal. It names the
@@ -1983,7 +2010,7 @@ func (m *Model) reloadConfirmView(width, height int) string {
 	body.WriteString("\n")
 	body.WriteString(dimStyle.Render("the saved file and its backup stay intact if the reload fails") + "\n")
 	body.WriteString(dimStyle.Render("reloads through the local Admin API after a confirmed save"))
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
 // syncDiffContent sets the diff viewport size and content from the
@@ -2055,25 +2082,17 @@ func (m *Model) View() string {
 		height = 24
 	}
 
-	paneH := height - 3
-	if m.err != nil {
-		paneH--
-	}
-	if m.statusMessage != "" {
-		paneH--
-	}
-	if paneH < 1 {
-		paneH = 1
-	}
+	paneH := m.paneContentH(height)
+
+	// Compute the footer string now; it may wrap onto multiple lines and
+	// the pane area above already accounts for its real height. Critical
+	// hints are never truncated; wrapping keeps every key visible.
+	footerStr := m.footer(width)
 
 	var b strings.Builder
 	b.WriteString(m.header(width))
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("✗ %v", m.err)))
-		b.WriteString("\n")
-	}
-	if m.statusMessage != "" {
-		b.WriteString(m.statusLine(width))
 		b.WriteString("\n")
 	}
 	if m.showDiff {
@@ -2120,7 +2139,11 @@ func (m *Model) View() string {
 			m.sourcePane(srcW, paneH)))
 		b.WriteString("\n")
 	}
-	b.WriteString(m.footer(width))
+	if m.statusMessage != "" {
+		b.WriteString(m.statusStrip(width))
+		b.WriteString("\n")
+	}
+	b.WriteString(footerStr)
 	return b.String()
 }
 
@@ -2132,13 +2155,21 @@ func (m *Model) header(width int) string {
 	if path == "" {
 		path = "unknown"
 	}
-	left := headerStyle.Render(" lazycaddy ")
-	// A compact version indicator joins the left cluster once the startup
-	// probe has proven the binary exists. The version is shown exactly as
-	// reported (leading "v" included).
-	if m.runtimeProbed && m.runtimeReport.Capabilities.Binary {
-		left += dimStyle.Render(" caddy " + m.runtimeReport.Capabilities.Version)
+
+	version := m.version
+	if version == "" {
+		version = "dev"
 	}
+	left := brandStyle.Render("lazycaddy " + version)
+	separator := dimStyle.Render(" · ")
+
+	// The caddy version is secondary metadata: drop it on narrow widths
+	// before compressing the path.
+	var caddyVersion string
+	if m.runtimeProbed && m.runtimeReport.Capabilities.Binary {
+		caddyVersion = dimStyle.Render("Caddy " + m.runtimeReport.Capabilities.Version)
+	}
+
 	// Important state is conveyed by an explicit text label, not
 	// color alone, matching the existing READ-ONLY pattern.
 	right := readOnlyBadge.Render(" READ-ONLY ")
@@ -2178,11 +2209,50 @@ func (m *Model) header(width int) string {
 	} else if m.reloader != nil {
 		right = unknownBadge.Render(" UNKNOWN ") + right
 	}
-	pad := width - lipgloss.Width(left) - lipgloss.Width(right) - len(path) - 3
-	if pad < 1 {
-		pad = 1
+
+	rightW := lipgloss.Width(right)
+	leftW := lipgloss.Width(left)
+	separatorW := lipgloss.Width(separator)
+
+	// Reserve a minimum path width; drop the caddy version badge first
+	// when space gets tight.
+	const minPathW = 8
+	caddyW := lipgloss.Width(caddyVersion)
+	available := width - leftW - caddyW - rightW - separatorW*2
+	if caddyVersion != "" && available < minPathW {
+		caddyVersion = ""
+		available = width - leftW - rightW - separatorW
 	}
-	return left + dimStyle.Render(path) + strings.Repeat(" ", pad) + right + "\n"
+	if caddyVersion != "" {
+		left += separator + caddyVersion
+	}
+	leftW = lipgloss.Width(left)
+	available = width - leftW - rightW - separatorW
+	if available < 0 {
+		available = 0
+	}
+
+	const configLabel = "Config: "
+	pathAvailable := available - lipgloss.Width(configLabel)
+	if pathAvailable < 0 {
+		pathAvailable = 0
+	}
+	displayedPath := path
+	if lipgloss.Width(path) > pathAvailable {
+		displayedPath = truncateToWidth(path, pathAvailable)
+	}
+	if displayedPath == "" {
+		displayedPath = "—"
+	}
+	pathBlock := dimStyle.Render(configLabel + displayedPath)
+	pathW := lipgloss.Width(pathBlock)
+
+	pad := width - leftW - separatorW - pathW - rightW
+	if pad < 0 {
+		pad = 0
+	}
+
+	return left + separator + pathBlock + strings.Repeat(" ", pad) + right + "\n"
 }
 
 func (m *Model) treePane(width, height int) string {
@@ -2213,7 +2283,7 @@ func (m *Model) treePane(width, height int) string {
 			body.WriteString(line + "\n")
 		}
 	}
-	return paneStyle.Width(width).Height(height).Render(title + "\n" + body.String())
+	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
 func renderItem(it item) string {
@@ -2238,7 +2308,7 @@ func renderItem(it item) string {
 // overflowing the terminal.
 func (m *Model) sourcePane(srcW, paneH int) string {
 	m.syncSource(srcW, paneH)
-	return paneStyle.Width(srcW).Height(paneH).Render(m.sourceTitle + "\n" + m.viewport.View())
+	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(m.sourceTitle) + "\n" + m.viewport.View())
 }
 
 // syncSource keeps the source viewport sized to the pane and refreshes
@@ -2364,14 +2434,17 @@ func (m *Model) selectedItem() *item {
 	return &m.items[m.cursor]
 }
 
-// statusLine renders the current statusMessage in a style chosen by
-// the leading glyph: ✓ for success, ✗ for error, anything else is
-// shown in the dim info style.
-func (m *Model) statusLine(width int) string {
+// statusStrip renders the current statusMessage in a dedicated strip
+// above the footer. The style is chosen by the leading glyph: ✓ for
+// success, ✗ for error (or warning when the message mentions warnings),
+// and anything else is shown in the dim info style.
+func (m *Model) statusStrip(width int) string {
 	msg := m.statusMessage
 	switch {
 	case strings.HasPrefix(msg, "✓"):
 		return statusSuccessStyle.Width(width).Render(msg)
+	case strings.HasPrefix(msg, "✗") && strings.Contains(msg, "warnings"):
+		return statusWarningStyle.Width(width).Render(msg)
 	case strings.HasPrefix(msg, "✗"):
 		return errorStyle.Width(width).Render(msg)
 	default:
@@ -2411,7 +2484,7 @@ func (m *Model) logView(width, height int) string {
 		paneContentW = 1
 	}
 	m.syncLogViewport(paneContentW, bodyH)
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.logViewport.View())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.logViewport.View())
 }
 
 // syncLogViewport sizes the log viewport to the pane and refreshes its
@@ -2480,7 +2553,7 @@ func (m *Model) logDetailView(width, height int) string {
 	if m.logDetailViewport.Height != bodyH {
 		m.syncLogDetailContent(width, height)
 	}
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.logDetailViewport.View())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.logDetailViewport.View())
 }
 
 // syncLogDetailContent sizes the log detail viewport and rebuilds its
@@ -2592,7 +2665,25 @@ func (m *Model) footer(width int) string {
 	default:
 		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + " · q quit"
 	}
-	return statusLineStyle.Width(width).Render(keys)
+	return footerStyle.Width(width).Render(renderFooterKeys(keys))
+}
+
+// renderFooterKeys highlights key names with the accent color while
+// keeping descriptions dim. The returned string is wrapped by the
+// caller's footerStyle.Width(width).Render, so critical hints are never
+// truncated; they wrap onto extra lines instead.
+func renderFooterKeys(keys string) string {
+	segments := strings.Split(keys, " · ")
+	var parts []string
+	for _, seg := range segments {
+		idx := strings.IndexByte(seg, ' ')
+		if idx <= 0 {
+			parts = append(parts, keyHintStyle.Render(seg))
+			continue
+		}
+		parts = append(parts, keyHintStyle.Render(seg[:idx])+dimStyle.Render(seg[idx:]))
+	}
+	return strings.Join(parts, dimStyle.Render(" · "))
 }
 
 // diagnosticsView renders the validation results modal. It lists the
@@ -2646,7 +2737,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 			body.WriteString(line + "\n")
 		}
 	}
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + body.String())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
 // diagnosticDetailView renders the full diagnostic for the entry
@@ -2686,8 +2777,8 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 		m.syncDetailContent()
 	}
 
-	return paneStyle.Width(paneContentW).Height(height).Render(
-		title + "\n" + m.detailViewport.View(),
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(
+		activeTitleStyle.Render(title) + "\n" + m.detailViewport.View(),
 	)
 }
 
@@ -2719,7 +2810,7 @@ func (m *Model) diffView(width, height int) string {
 	if m.diffViewport.Height != bodyH {
 		m.syncDiffContent()
 	}
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + m.diffViewport.View())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.diffViewport.View())
 }
 
 // searchView renders the read-only search modal: the current query on an
@@ -2753,7 +2844,7 @@ func (m *Model) searchView(width, height int) string {
 		inputW = 1
 	}
 	input = truncateToWidth(input, inputW)
-	return paneStyle.Width(paneContentW).Height(height).Render(title + "\n" + input + "\n" + m.searchViewport.View())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + input + "\n" + m.searchViewport.View())
 }
 
 // syncSearchViewport sizes the search viewport and refreshes its content

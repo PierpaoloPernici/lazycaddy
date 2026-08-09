@@ -81,8 +81,8 @@ func TestHighlightSourceCommentStyled(t *testing.T) {
 	if line != "   1│ # hello" {
 		t.Errorf("stripped line = %q, want %q", line, "   1│ # hello")
 	}
-	if !strings.Contains(got, "\x1b[") || !strings.Contains(got, "38;5;245") {
-		t.Errorf("comment must be styled with the dim foreground, got:\n%s", got)
+	if !strings.Contains(got, "\x1b[") || !strings.Contains(got, sgrOf(syntaxCommentStyle)) {
+		t.Errorf("comment must be styled with the theme comment style, got:\n%s", got)
 	}
 }
 
@@ -103,8 +103,8 @@ func TestHighlightSourcePlaceholderStyled(t *testing.T) {
 	if !strings.Contains(got, "{$MSG}") {
 		t.Errorf("placeholder text missing from the rendered view:\n%s", got)
 	}
-	if !strings.Contains(got, "38;5;212") {
-		t.Errorf("placeholder must use the cursor accent, got:\n%s", got)
+	if !strings.Contains(got, sgrOf(syntaxPlaceholderStyle)) {
+		t.Errorf("placeholder must use the theme accent style, got:\n%s", got)
 	}
 }
 
