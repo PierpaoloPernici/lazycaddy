@@ -1,8 +1,8 @@
-# lazycaddy
+# lazycaddy 🦥
 
-<p align="center"><img src="docs/assets/lazycaddy-logo.png" alt="lazycaddy logo" width="280"></p>
+<p align="center"><img src="docs/assets/lazycaddy-logo.png" alt="lazycaddy logo with sloth mascot" width="420"></p>
 
-<p align="center"><em>The lazier way to manage your Caddyfile.</em></p>
+<p align="center"><em>🦥 The lazier way to manage your Caddyfile.</em></p>
 
 <p align="center">
   <a href="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml"><img src="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -13,6 +13,9 @@
 </p>
 
 <p align="center">lazycaddy is a keyboard-first terminal user interface for inspecting and managing Caddy while preserving the Caddyfile as the source of truth.</p>
+
+The 🦥 is lazycaddy's mascot: deliberately unhurried, careful with your
+configuration.
 
 ## Screenshot
 
