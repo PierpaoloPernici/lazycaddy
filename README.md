@@ -14,8 +14,9 @@
 
 <p align="center">lazycaddy is a keyboard-first terminal user interface for inspecting and managing Caddy while preserving the Caddyfile as the source of truth.</p>
 
-The 🦥 is lazycaddy's mascot: deliberately unhurried, careful with your
-configuration.
+<p align="center">
+  <sub>The 🦥 is lazycaddy's mascot: deliberately unhurried, careful with your configuration.</sub>
+</p>
 
 ## Screenshot
 
@@ -30,7 +31,10 @@ The project is under active development. Read the project direction and implemen
 
 - [VISION.md](VISION.md) — product vision and design principles;
 - [PLAN.md](PLAN.md) — scope, architecture, safety workflow and roadmap;
-- [AGENTS.md](AGENTS.md) — repository and contributor guidelines.
+- [AGENTS.md](AGENTS.md) — repository and contributor guidelines;
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development and contribution workflow;
+- [SECURITY.md](SECURITY.md) — vulnerability reporting and security model;
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — participation and conduct standards.
 
 ## Development
 

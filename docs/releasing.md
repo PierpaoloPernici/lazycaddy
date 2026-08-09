@@ -36,14 +36,16 @@ history; correct a release problem with a new patch version.
 
 ## Before tagging
 
-Before starting a release, verify that the documentation is aligned with the
-actual merged implementation. Review `PLAN.md`, `VISION.md`, `README.md`,
-`AGENTS.md`, this release guide, the CLI help text, and the GoReleaser and
+Before starting a release, verify that the complete documentation set is
+aligned with the actual merged implementation. Review `PLAN.md`, `VISION.md`,
+`README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md`, every Markdown
+guide under `docs/` (including this guide and the research record), the CLI
+help text, the community-health files under `.github/`, and the GoReleaser and
 GitHub release configuration. Confirm that completed roadmap items, safety
-rules, supported flags, keybindings, release wording and documented
-limitations agree across those sources. Update the relevant documentation in
-the release change before creating the tag; do not defer documentation drift
-to a later release.
+rules, supported flags, keybindings, release wording, contribution guidance,
+security policy and documented limitations agree across those sources. Update
+the relevant documentation in the release change before creating the tag; do
+not defer documentation drift to a later release.
 
 Run the complete local verification from a clean working tree:
 

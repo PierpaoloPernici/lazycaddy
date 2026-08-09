@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a focused improvement that fits lazycaddy's product direction.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [VISION.md](https://github.com/PierpaoloPernici/lazycaddy/blob/main/VISION.md) and [PLAN.md](https://github.com/PierpaoloPernici/lazycaddy/blob/main/PLAN.md) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or workflow limitation should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired user-visible behavior. Avoid prescribing an implementation unless it is important to the proposal.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Product principles
+      options:
+        - label: The proposal keeps the Caddyfile as the source of truth.
+        - label: The proposal preserves explicit, reviewable and recoverable changes.
+        - label: The proposal does not require implicit reloads or privileged execution.

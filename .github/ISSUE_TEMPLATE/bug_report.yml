@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible problem in lazycaddy.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve lazycaddy. Please remove secrets and private configuration details before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: lazycaddy version
+      placeholder: v0.2.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: caddy-version
+    attributes:
+      label: Caddy version
+      placeholder: v2.x.y or not installed
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture and terminal.
+      placeholder: macOS arm64, Terminal.app
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include command-line arguments and a minimal sanitized Caddyfile fragment when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste sanitized logs or diagnostics. Never include tokens, private keys, passwords or private IPs you do not want to publish.
+      render: text

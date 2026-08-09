@@ -77,11 +77,10 @@ Completed:
   the backup. The TUI gates saving on a validated working copy, a
   confirmation modal that names the target and backup directory, and
   the opt-in `--write` mode (read-only by default).
-- A test suite of 455 test functions covering the lossless-editing
-  contract, import resolution, validation, diagnostics, unified
-  diffs, atomic writes, backups, the save workflow, the reload
-  workflow and the TUI. Tests use fakes and require no installed
-  caddy or network access.
+- A broad test suite covering the lossless-editing contract, import
+  resolution, validation, diagnostics, unified diffs, atomic writes,
+  backups, the save workflow, the reload workflow and the TUI. Tests use
+  fakes and require no installed caddy or network access.
 - explicit Admin API reload and loaded-state verification: the `r`
   keybinding adapts the saved configuration locally with the caddy
   binary and posts it to the Admin API `/load` endpoint after a
@@ -202,8 +201,8 @@ Initial local platform support targets Linux and macOS. Windows is deferred unti
 
 ## Release and distribution
 
-The first public release target is `v0.1.0`. Release artifacts are produced
-by GoReleaser from a tag-triggered GitHub Actions workflow:
+The first public release was `v0.1.0`. Release artifacts are produced by
+GoReleaser from a tag-triggered GitHub Actions workflow:
 
 - Linux and macOS `amd64` and `arm64` builds are published as versioned
   `.tar.gz` archives;
