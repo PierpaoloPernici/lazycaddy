@@ -309,3 +309,90 @@ func TestClassifyCompatFixture(t *testing.T) {
 		t.Errorf("placeholder spans = %d, want >= 3", placeholders)
 	}
 }
+
+func TestClassifyDocDirectEntry(t *testing.T) {
+	doc := Parse([]byte("example.test {\n\trespond ok\n}\n"))
+	if doc.Err != nil {
+		t.Fatalf("Parse: %v", doc.Err)
+	}
+	sr := ClassifyDoc(doc)
+	if sr == nil || len(sr.Spans) == 0 {
+		t.Fatalf("ClassifyDoc spans = %+v, want site-address and directive-name spans", sr)
+	}
+}
+
+func TestClassifyToleratesEmptyAndNonWordDirectives(t *testing.T) {
+	// A directive node with an empty name is skipped during tree-context
+	// collection; the neutral source produces no lexical roles either.
+	empty := &Document{Source: []byte("\n"), Nodes: []Node{{Kind: KindDirective, Name: ""}}}
+	if sr := ClassifyDoc(empty); sr == nil || len(sr.Spans) != 0 {
+		t.Errorf("empty-name directive spans = %+v, want none", sr)
+	}
+	// A directive whose first token is not a word (here an open brace)
+	// contributes no tree context.
+	nonWord := &Document{Source: []byte("{\n}\n"), Nodes: []Node{{Kind: KindDirective, Name: "x", Range: SourceRange{Start: 0, End: 1}}}}
+	if sr := ClassifyDoc(nonWord); sr == nil || len(sr.Spans) != 0 {
+		t.Errorf("non-word header directive spans = %+v, want none", sr)
+	}
+}
+
+func TestSiteHeaderTokensDegrades(t *testing.T) {
+	src := []byte("example.test {\n\trespond \"oops\n}\n")
+	// An un-lexable site header yields no tokens.
+	if toks := siteHeaderTokens(src, Node{Kind: KindSite, Name: "example.test", Range: SourceRange{Start: 0, End: 29}}); toks != nil {
+		t.Errorf("siteHeaderTokens(unlexable) = %v, want nil", toks)
+	}
+	// An empty site range yields no tokens either.
+	if toks := siteHeaderTokens(src, Node{Kind: KindSite, Name: "x", Range: SourceRange{Start: 5, End: 5}}); toks != nil {
+		t.Errorf("siteHeaderTokens(empty) = %v, want nil", toks)
+	}
+}
+
+func TestHeredocMarkersWithoutNewline(t *testing.T) {
+	opener, closer := heredocMarkers([]byte("abc"), Token{Start: 0, End: 3})
+	if opener != (Classified{}) || closer != (Classified{}) {
+		t.Errorf("heredocMarkers(single-line) = %+v, %+v, want zero markers", opener, closer)
+	}
+}
+
+func TestClassifyWordDirectRoles(t *testing.T) {
+	cases := []struct {
+		text string
+		role Role
+	}{
+		{"https://example.test", RoleDomain}, // scheme stripped before classification
+		{"192.0.2.4", RoleIP},
+		{":8080", RolePort},
+	}
+	for _, c := range cases {
+		out := &SemanticRoles{}
+		classifyWord([]byte(c.text), Token{Text: c.text, Start: 0, End: len(c.text)}, out)
+		if len(out.Spans) != 1 || out.Spans[0].Role != c.role {
+			t.Errorf("classifyWord(%q) spans = %+v, want a single %v", c.text, out.Spans, c.role)
+		}
+	}
+}
+
+func TestClassifySiteAddressSubspans(t *testing.T) {
+	// A scheme-bearing site address strips the scheme before sub-span
+	// classification; the port keeps its role.
+	wantRole(t, "https://example.test:8443 {\n}\n", ":8443", RolePort)
+	// A path-prefixed address classifies the path sub-span directly.
+	out := &SemanticRoles{}
+	classifyWordSubspans([]byte("/foo"), Token{Text: "/foo", Start: 0, End: 4}, out)
+	if len(out.Spans) != 1 || out.Spans[0].Role != RolePath {
+		t.Errorf("classifyWordSubspans(/foo) = %+v, want a single RolePath", out.Spans)
+	}
+}
+
+func TestIsAllDigits(t *testing.T) {
+	if isAllDigits("") {
+		t.Error("isAllDigits(\"\") must be false")
+	}
+	if isAllDigits("12a") {
+		t.Error("isAllDigits(\"12a\") must be false")
+	}
+	if !isAllDigits("8080") {
+		t.Error("isAllDigits(\"8080\") must be true")
+	}
+}

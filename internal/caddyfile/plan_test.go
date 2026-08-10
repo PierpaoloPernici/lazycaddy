@@ -714,3 +714,311 @@ func TestPlanValueEditPreservesPlaceholders(t *testing.T) {
 		t.Errorf("result = %q, want %q", out, want)
 	}
 }
+
+func TestEditOpString(t *testing.T) {
+	tests := []struct {
+		op   EditOp
+		want string
+	}{
+		{EditSetValue, "set-value"},
+		{EditInsert, "insert"},
+		{EditDelete, "delete"},
+		{EditReorder, "reorder"},
+		{EditOp(99), "unknown"},
+	}
+	for _, tt := range tests {
+		if got := tt.op.String(); got != tt.want {
+			t.Errorf("EditOp(%d).String() = %q, want %q", tt.op, got, tt.want)
+		}
+	}
+}
+
+func TestPlanApplyAllPropagatesApplyError(t *testing.T) {
+	// The first edit is in range, so ordering passes; the second edit is
+	// out of bounds and must fail while being applied from the end.
+	plan := Plan{
+		PlannedEdit{Range: SourceRange{Start: 0, End: 5}, NewText: "x"},
+		PlannedEdit{Range: SourceRange{Start: 100, End: 101}, NewText: "y"},
+	}
+	if _, err := plan.ApplyAll([]byte("hello world")); err == nil {
+		t.Fatal("ApplyAll with an out-of-bounds edit must fail")
+	}
+}
+
+func TestPlanNilDocument(t *testing.T) {
+	p := NewPlanner(nil)
+	checks := []struct {
+		name string
+		err  error
+	}{
+		{"SetArgs", func() error {
+			_, err := p.SetArgs(Node{Kind: KindDirective, Name: "respond"}, "x")
+			return err
+		}()},
+		{"SetArg", func() error {
+			_, err := p.SetArg(Node{Kind: KindDirective, Name: "respond"}, 0, "x")
+			return err
+		}()},
+		{"Insert", func() error {
+			_, err := p.Insert(Node{Kind: KindSite, Name: "a.test"}, DirectiveInsert{Name: "respond"})
+			return err
+		}()},
+		{"Delete", func() error {
+			_, err := p.Delete(Node{Kind: KindDirective, Name: "respond"})
+			return err
+		}()},
+		{"Reorder", func() error {
+			_, err := p.Reorder(Node{Kind: KindDirective, Name: "a"}, Node{Kind: KindDirective, Name: "b"})
+			return err
+		}()},
+		{"GetReverseProxyFields", func() error {
+			_, err := p.GetReverseProxyFields(Node{Kind: KindDirective, Name: "reverse_proxy"})
+			return err
+		}()},
+		{"SetReverseProxyFields", func() error {
+			_, err := p.SetReverseProxyFields(Node{Kind: KindDirective, Name: "reverse_proxy"}, ReverseProxyFields{})
+			return err
+		}()},
+	}
+	for _, c := range checks {
+		if c.err == nil || !strings.Contains(c.err.Error(), "nil document") {
+			t.Errorf("%s on a nil planner document: err = %v, want a nil-document error", c.name, c.err)
+		}
+	}
+}
+
+// craftedDoc builds a parser-free document for guard-condition tests that
+// need nodes the tolerant parser would never produce (un-lexable directive
+// headers, overlapping top-level ranges).
+func craftedDoc(src string, nodes ...Node) *Document {
+	return &Document{Source: []byte(src), Nodes: nodes}
+}
+
+func TestPlanHeaderTokensRejectsUnlexableHeader(t *testing.T) {
+	p := NewPlanner(craftedDoc("x\n\trespond \"oops\n"))
+	n := Node{Kind: KindDirective, Name: "respond", Range: SourceRange{Start: 3, End: 16}}
+	if _, _, err := p.headerTokens(n); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("headerTokens err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestPlanHeaderTokensRejectsMissingName(t *testing.T) {
+	p := NewPlanner(craftedDoc("{\n}\n"))
+	n := Node{Kind: KindDirective, Name: "", Range: SourceRange{Start: 0, End: 1}}
+	if _, _, err := p.headerTokens(n); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("headerTokens err = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanSetArgsSurvivesHeaderTokensError(t *testing.T) {
+	n := Node{Kind: KindDirective, Name: "respond", Range: SourceRange{Start: 3, End: 16}}
+	p := NewPlanner(craftedDoc("x\n\trespond \"oops\n", n))
+	if _, err := p.SetArgs(n, "changed"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("SetArgs err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestPlanSetArgSurvivesHeaderTokensError(t *testing.T) {
+	n := Node{Kind: KindDirective, Name: "respond", Range: SourceRange{Start: 3, End: 16}}
+	p := NewPlanner(craftedDoc("x\n\trespond \"oops\n", n))
+	if _, err := p.SetArg(n, 0, "changed"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("SetArg err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestPlanReverseProxyFieldsSurviveHeaderTokensError(t *testing.T) {
+	n := Node{Kind: KindDirective, Name: "reverse_proxy", Range: SourceRange{Start: 3, End: 18}}
+	p := NewPlanner(craftedDoc("x\n\treverse_proxy \"oops\n", n))
+	if _, err := p.GetReverseProxyFields(n); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("GetReverseProxyFields err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestPlanSetArgsTrimsTrailingWhitespaceOnBareDirective(t *testing.T) {
+	// A directive with no arguments keeps its trailing whitespace: the
+	// planned span collapses it so the new value lands before it.
+	doc, p := planDoc(t, "example.test {\n\tfile_server  \n}\n")
+	fs := findNode(t, doc, "file_server")
+	e, err := p.SetArgs(fs, "/srv/www")
+	if err != nil {
+		t.Fatalf("SetArgs: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\tfile_server /srv/www  \n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanSetArgRejectsBlockNode(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\trespond ok\n}\n")
+	site := findNode(t, doc, "example.test")
+	if _, err := p.SetArg(site, 0, "x"); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("SetArg on a site err = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanSetArgReplacesBlockDirectiveArgument(t *testing.T) {
+	// The argument index is computed inside the header, excluding the
+	// nested block options.
+	doc, p := planDoc(t, "example.test {\n\treverse_proxy localhost:8080 localhost:9090 {\n\t\theader_up Host {host}\n\t}\n}\n")
+	rp := findNode(t, doc, "reverse_proxy")
+	e, err := p.SetArg(rp, 1, "localhost:7070")
+	if err != nil {
+		t.Fatalf("SetArg: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\treverse_proxy localhost:8080 localhost:7070 {\n\t\theader_up Host {host}\n\t}\n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanReverseProxyFieldsRejectForeignNode(t *testing.T) {
+	_, p := planDoc(t, "example.test {\n\treverse_proxy localhost:8080\n}\n")
+	foreign := Node{Kind: KindDirective, Name: "reverse_proxy", Range: SourceRange{Start: 999, End: 1000}}
+	if _, err := p.GetReverseProxyFields(foreign); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("GetReverseProxyFields foreign err = %v, want ErrNodeNotFound", err)
+	}
+	if _, err := p.SetReverseProxyFields(foreign, ReverseProxyFields{Upstreams: []string{"localhost:8080"}}); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("SetReverseProxyFields foreign err = %v, want ErrNodeNotFound", err)
+	}
+}
+
+func TestPlanParentCtxRejectsUnknownKind(t *testing.T) {
+	p := NewPlanner(craftedDoc(""))
+	if _, err := p.parentCtx(Node{Kind: Kind(99), Name: "x"}); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("parentCtx unknown kind err = %v, want ErrInvalidContext", err)
+	}
+	// insertionContext reports false for unknown kinds and plain leaf
+	// directives.
+	if ctx, ok := insertionContext(Node{Kind: Kind(99)}); ok || ctx != 0 {
+		t.Errorf("insertionContext(unknown kind) = %d, %v, want 0, false", ctx, ok)
+	}
+	if _, ok := insertionContext(Node{Kind: KindDirective, Name: "respond"}); ok {
+		t.Error("insertionContext(leaf directive) must be false")
+	}
+}
+
+func TestInsertableDirectiveNamesForLeafParent(t *testing.T) {
+	if got := InsertableDirectiveNames(Node{Kind: KindDirective, Name: "respond"}); got != nil {
+		t.Fatalf("InsertableDirectiveNames(leaf) = %v, want nil", got)
+	}
+}
+
+func TestPlanBlockGeometryGuardBranches(t *testing.T) {
+	t.Run("unlexable block", func(t *testing.T) {
+		p := NewPlanner(craftedDoc("x\n\trespond \"oops\n"))
+		n := Node{Kind: KindSite, Name: "x", Range: SourceRange{Start: 0, End: 16}}
+		if _, err := p.blockGeometry(n); !errors.Is(err, ErrInvalidContext) {
+			t.Fatalf("blockGeometry err = %v, want ErrInvalidContext", err)
+		}
+	})
+	t.Run("leaf directive cannot host insertions", func(t *testing.T) {
+		doc, p := planDoc(t, "example.test {\n\trespond ok\n}\n")
+		respond := findNode(t, doc, "respond")
+		if _, err := p.blockGeometry(respond); !errors.Is(err, ErrInvalidContext) {
+			t.Fatalf("blockGeometry err = %v, want ErrInvalidContext", err)
+		}
+	})
+	t.Run("block without closing brace", func(t *testing.T) {
+		p := NewPlanner(craftedDoc("route {\n"))
+		n := Node{Kind: KindDirective, Name: "route", Range: SourceRange{Start: 0, End: 8}}
+		if _, err := p.blockGeometry(n); !errors.Is(err, ErrInvalidContext) {
+			t.Fatalf("blockGeometry err = %v, want ErrInvalidContext", err)
+		}
+	})
+}
+
+func TestPlanInsertHeaderLineCommentIsNotCompact(t *testing.T) {
+	// A comment on the header line is not compact content: the block has a
+	// safe interior point after the header line.
+	doc, p := planDoc(t, "example.test { # keep\n\trespond ok\n}\n")
+	site := findNode(t, doc, "example.test")
+	e, err := p.Insert(site, DirectiveInsert{Name: "file_server", Position: InsertAtStart})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test { # keep\n\tfile_server\n\trespond ok\n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanInsertPointGuardBranches(t *testing.T) {
+	geo := blockGeometry{interiorStart: 5, interiorEnd: 20, childIndent: "\t", braceLineIndent: ""}
+	p := NewPlanner(craftedDoc("x"))
+	t.Run("last child extends past the closing brace", func(t *testing.T) {
+		parent := Node{Kind: KindSite, Name: "s", Children: []Node{
+			{Kind: KindDirective, Name: "a", Range: SourceRange{Start: 0, End: 50}},
+		}}
+		if _, err := p.insertPoint(parent, InsertAtEnd, Node{}, geo); !errors.Is(err, ErrAmbiguous) {
+			t.Fatalf("insertPoint err = %v, want ErrAmbiguous", err)
+		}
+	})
+	t.Run("anchor extends past the closing brace", func(t *testing.T) {
+		anchor := Node{Kind: KindDirective, Name: "a", Range: SourceRange{Start: 0, End: 50}}
+		parent := Node{Kind: KindSite, Name: "s", Children: []Node{anchor}}
+		if _, err := p.insertPoint(parent, InsertAfter, anchor, geo); !errors.Is(err, ErrAmbiguous) {
+			t.Fatalf("insertPoint err = %v, want ErrAmbiguous", err)
+		}
+	})
+	t.Run("unknown position", func(t *testing.T) {
+		if _, err := p.insertPoint(Node{}, InsertPosition(99), Node{}, geo); !errors.Is(err, ErrAmbiguous) {
+			t.Fatalf("insertPoint err = %v, want ErrAmbiguous", err)
+		}
+	})
+}
+
+func TestPlanReorderNestedSiblings(t *testing.T) {
+	// Reordering two directives deep inside a handler block exercises the
+	// common-parent search across nested subtrees.
+	doc, p := planDoc(t, "a.test {\n\thandle /x {\n\t\trespond a\n\t\tfile_server\n\t}\n\tencode gzip\n}\nb.test {\n\trespond b\n}\n")
+	respond := findNode(t, doc, "respond")
+	fs := findNode(t, doc, "file_server")
+	e, err := p.Reorder(respond, fs)
+	if err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "a.test {\n\thandle /x {\n\t\tfile_server\n\t\trespond a\n\t}\n\tencode gzip\n}\nb.test {\n\trespond b\n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanReorderForeignNode(t *testing.T) {
+	doc, p := planDoc(t, "a.test {\n\trespond a\n}\n")
+	respond := findNode(t, doc, "respond")
+	foreign := Node{Kind: KindDirective, Name: "respond", Range: SourceRange{Start: 999, End: 1000}}
+	if _, err := p.Reorder(respond, foreign); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("Reorder foreign err = %v, want ErrNodeNotFound", err)
+	}
+}
+
+func TestPlanReorderReversedArguments(t *testing.T) {
+	// Passing the later node first still swaps the two constructs.
+	doc, p := planDoc(t, "example.test {\n\tfile_server\n\trespond ok\n}\n")
+	fs := findNode(t, doc, "file_server")
+	respond := findNode(t, doc, "respond")
+	e, err := p.Reorder(respond, fs)
+	if err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\trespond ok\n\tfile_server\n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanReorderOverlappingRanges(t *testing.T) {
+	// Overlapping top-level ranges can never be swapped safely.
+	a := Node{Kind: KindSite, Name: "a.test", Range: SourceRange{Start: 0, End: 10}}
+	b := Node{Kind: KindSite, Name: "b.test", Range: SourceRange{Start: 5, End: 7}}
+	p := NewPlanner(craftedDoc("a.test {\n}\nb.test {\n}\n", a, b))
+	if _, err := p.Reorder(a, b); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("Reorder overlapping err = %v, want ErrInvalidContext", err)
+	}
+}
