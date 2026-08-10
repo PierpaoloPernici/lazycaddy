@@ -28,6 +28,7 @@ const (
 	commandEdit          commandID = "edit"
 	commandFullEdit      commandID = "full-edit"
 	commandAdd           commandID = "add-structured"
+	commandEditReverse   commandID = "edit-reverse-proxy"
 	commandDelete        commandID = "delete"
 	commandBackups       commandID = "backups"
 	commandErrors        commandID = "errors"
@@ -101,6 +102,17 @@ func commandDefinitions() []uiCommand {
 				return "Caddy binary unavailable"
 			}
 			return "select a supported block"
+		}},
+		{ID: commandEditReverse, Category: "Source & validation", Label: "Edit reverse_proxy fields", Description: "matcher and upstreams", Keys: []string{"m"}, Enabled: func(m *Model) bool {
+			return m.canEditReverseProxy()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a reverse_proxy directive"
 		}},
 		{ID: commandDelete, Category: "Source & validation", Label: "Delete selected block", Description: "validate then diff", Keys: []string{"d"}, Enabled: func(m *Model) bool {
 			return m.canDeleteSelected()
@@ -176,6 +188,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startFullEdit()
 	case commandAdd:
 		return m.startStructuredAdd()
+	case commandEditReverse:
+		return m.startReverseProxyEdit()
 	case commandDelete:
 		return m.startDelete()
 	case commandBackups:
@@ -294,11 +308,19 @@ func (m *Model) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) filteredCommands() []uiCommand {
 	query := strings.ToLower(strings.TrimSpace(string(m.commandQuery)))
-	if query == "" {
-		return commandDefinitions()
-	}
 	var matches []uiCommand
 	for _, command := range commandDefinitions() {
+		// The structured reverse_proxy action is only useful, and therefore
+		// only discoverable, when its target is selected. Keeping it out of
+		// the default palette avoids pushing the runtime actions below the
+		// initial viewport for every other selection.
+		if command.ID == commandEditReverse && !m.canEditReverseProxy() {
+			continue
+		}
+		if query == "" {
+			matches = append(matches, command)
+			continue
+		}
 		searchable := strings.ToLower(strings.Join([]string{command.Category, command.Label, command.Description, strings.Join(command.Keys, " ")}, " "))
 		if strings.Contains(searchable, query) {
 			matches = append(matches, command)

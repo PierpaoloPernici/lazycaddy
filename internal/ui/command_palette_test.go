@@ -98,6 +98,7 @@ func TestCommandPalette_KeyCatalogKeepsDirectHotkeys(t *testing.T) {
 		{key: "v", id: commandValidate},
 		{key: "D", id: commandDiff},
 		{key: "s", id: commandSave},
+		{key: "m", id: commandEditReverse},
 		{key: "?", id: commandPalette},
 		{key: "q", id: commandQuit},
 	} {
@@ -277,8 +278,8 @@ func TestCommandPalette_KeyHandling(t *testing.T) {
 		t.Fatalf("cursor = %d after home, want 0", m.commandCursor)
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnd})
-	if m.commandCursor != len(commandDefinitions())-1 {
-		t.Fatalf("cursor = %d after end, want %d", m.commandCursor, len(commandDefinitions())-1)
+	if m.commandCursor != len(m.filteredCommands())-1 {
+		t.Fatalf("cursor = %d after end, want %d", m.commandCursor, len(m.filteredCommands())-1)
 	}
 
 	// Backspace edits the query; backspacing an empty query is a no-op.

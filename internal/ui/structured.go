@@ -103,6 +103,16 @@ func (m *Model) canAddStructured() bool {
 		sel.node.Kind == caddyfile.KindNamedRoute || sel.node.Kind == caddyfile.KindGlobalOptions
 }
 
+func (m *Model) canEditReverseProxy() bool {
+	if m.state == nil || m.state.Graph == nil || m.state.Settings.ReadOnly ||
+		m.saver == nil || m.formatter == nil || m.structuredAddBusy ||
+		m.busy || m.saving || m.editing || m.deleting || m.reloading || m.rollingBack {
+		return false
+	}
+	sel := m.selectedItem()
+	return sel != nil && sel.hasNode && sel.doc != nil && sel.node.IsDirective("reverse_proxy")
+}
+
 // startStructuredAdd opens the context-aware directive picker. The planner,
 // rather than the UI, remains authoritative about the selected context.
 func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
@@ -122,6 +132,37 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	m.structuredAddMatcher = structuredInput{}
 	m.structuredAddUpstreams = structuredInput{}
 	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddEditing = false
+	m.showStructuredAdd = true
+	m.statusMessage = ""
+	return m, nil
+}
+
+func (m *Model) startReverseProxyEdit() (tea.Model, tea.Cmd) {
+	if !m.canEditReverseProxy() {
+		m.statusMessage = "✗ reverse_proxy edit unavailable: select a directive in writable mode"
+		return m, nil
+	}
+	sel := m.selectedItem()
+	planner := caddyfile.NewPlanner(sel.doc)
+	fields, err := planner.GetReverseProxyFields(sel.node)
+	if err != nil {
+		m.statusMessage = "✗ reverse_proxy edit unavailable: " + err.Error()
+		return m, nil
+	}
+	m.structuredAddInput = structuredInput{}
+	m.structuredAddDoc = sel.doc
+	m.structuredAddParent = sel.node
+	m.structuredAddKey = sel.key
+	m.structuredAddMode = structuredAddReverseProxy
+	m.structuredAddName = "reverse_proxy"
+	m.structuredAddItems = nil
+	m.structuredAddCursor = 0
+	m.structuredAddMatcher = structuredInput{value: []rune(fields.Matcher), cursor: len([]rune(fields.Matcher))}
+	m.structuredAddUpstreams = structuredInput{value: []rune(strings.Join(fields.Upstreams, " "))}
+	m.structuredAddUpstreams.cursor = len(m.structuredAddUpstreams.value)
+	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddEditing = true
 	m.showStructuredAdd = true
 	m.statusMessage = ""
 	return m, nil
@@ -158,6 +199,7 @@ func (m *Model) returnToStructuredPicker() {
 	m.structuredAddMatcher = structuredInput{}
 	m.structuredAddUpstreams = structuredInput{}
 	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddEditing = false
 	m.structuredAddCursor = 0
 }
 
@@ -174,6 +216,7 @@ func (m *Model) closeStructuredAdd() {
 	m.structuredAddMatcher = structuredInput{}
 	m.structuredAddUpstreams = structuredInput{}
 	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddEditing = false
 }
 
 func (m *Model) filteredStructuredItems() []string {
@@ -225,6 +268,7 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.structuredAddMatcher = structuredInput{}
 			m.structuredAddUpstreams = structuredInput{}
 			m.structuredAddRPField = structuredReverseProxyUpstreams
+			m.structuredAddEditing = false
 		} else {
 			m.structuredAddMode = structuredAddArgs
 		}
@@ -299,7 +343,7 @@ func (m *Model) submitStructuredAdd() (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ add unavailable: " + err.Error()
 		return m, nil
 	}
-	return m.queueStructuredAddValidation(name, edit)
+	return m.queueStructuredAddValidation(name, "add", edit)
 }
 
 func (m *Model) submitStructuredReverseProxy() (tea.Model, tea.Cmd) {
@@ -318,19 +362,32 @@ func (m *Model) submitStructuredReverseProxy() (tea.Model, tea.Cmd) {
 		args = append([]string{matcher}, args...)
 	}
 	planner := caddyfile.NewPlanner(m.structuredAddDoc)
-	edit, err := planner.Insert(m.structuredAddParent, caddyfile.DirectiveInsert{
-		Name:     "reverse_proxy",
-		Args:     strings.Join(args, " "),
-		Position: caddyfile.InsertAtEnd,
-	})
+	var edit *caddyfile.PlannedEdit
+	var err error
+	if m.structuredAddEditing {
+		edit, err = planner.SetReverseProxyFields(m.structuredAddParent, caddyfile.ReverseProxyFields{
+			Matcher:   strings.TrimSpace(m.structuredAddMatcher.String()),
+			Upstreams: strings.Fields(upstreamText),
+		})
+	} else {
+		edit, err = planner.Insert(m.structuredAddParent, caddyfile.DirectiveInsert{
+			Name:     "reverse_proxy",
+			Args:     strings.Join(args, " "),
+			Position: caddyfile.InsertAtEnd,
+		})
+	}
 	if err != nil {
 		m.statusMessage = "✗ reverse_proxy unavailable: " + err.Error()
 		return m, nil
 	}
-	return m.queueStructuredAddValidation("reverse_proxy", edit)
+	operation := "add"
+	if m.structuredAddEditing {
+		operation = "edit"
+	}
+	return m.queueStructuredAddValidation("reverse_proxy", operation, edit)
 }
 
-func (m *Model) queueStructuredAddValidation(name string, edit *caddyfile.PlannedEdit) (tea.Model, tea.Cmd) {
+func (m *Model) queueStructuredAddValidation(name, operation string, edit *caddyfile.PlannedEdit) (tea.Model, tea.Cmd) {
 	candidate, err := edit.Apply(m.structuredAddDoc.Source)
 	if err != nil {
 		m.statusMessage = "✗ add failed: " + err.Error()
@@ -342,11 +399,11 @@ func (m *Model) queueStructuredAddValidation(name string, edit *caddyfile.Planne
 	itemKey := m.structuredAddKey
 	m.closeStructuredAdd()
 	m.structuredAddBusy = true
-	m.statusMessage = "validating add…"
-	return m, m.structuredAddValidateCmd(docPath, original, candidate, name, parent, itemKey)
+	m.statusMessage = "validating " + operation + "…"
+	return m, m.structuredAddValidateCmd(docPath, original, candidate, name, operation, parent, itemKey)
 }
 
-func (m *Model) structuredAddValidateCmd(path string, original, candidate []byte, name string, parent caddyfile.Node, itemKey string) tea.Cmd {
+func (m *Model) structuredAddValidateCmd(path string, original, candidate []byte, name, operation string, parent caddyfile.Node, itemKey string) tea.Cmd {
 	timeout := m.validatorTimeout
 	formatter := m.formatter
 	return func() tea.Msg {
@@ -359,7 +416,7 @@ func (m *Model) structuredAddValidateCmd(path string, original, candidate []byte
 		formatted, diagnostics, err := formatter.FormatAndValidate(ctx, path, candidate)
 		return structuredAddValidatedMsg{
 			Path: path, Original: original, Content: candidate, Formatted: formatted,
-			Diagnostics: diagnostics, Name: name, Parent: parent,
+			Diagnostics: diagnostics, Name: name, Operation: operation, Parent: parent,
 			ItemKey: itemKey, Err: err,
 		}
 	}
@@ -377,18 +434,18 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 		m.diagnostics = errorDiags
 		m.diagCursor = 0
 		m.showDiagnostics = true
-		m.statusMessage = "✗ structured add did not validate — not applied"
-		m.recordError("structured add", "candidate did not validate", "fix the directive and retry the add")
+		m.statusMessage = "✗ structured " + msg.Operation + " did not validate — not applied"
+		m.recordError("structured "+msg.Operation, "candidate did not validate", "fix the directive and retry the edit")
 		return m, nil
 	}
 	if msg.Err != nil {
-		m.statusMessage = "✗ structured add validation failed: " + msg.Err.Error()
-		m.recordError("structured add", msg.Err.Error(), "fix the directive and retry the add")
+		m.statusMessage = "✗ structured " + msg.Operation + " validation failed: " + msg.Err.Error()
+		m.recordError("structured "+msg.Operation, msg.Err.Error(), "fix the directive and retry the edit")
 		return m, nil
 	}
 	if len(msg.Diagnostics) > 0 {
-		m.statusMessage = "✗ structured add has warnings — not applied"
-		m.recordError("structured add", "candidate has warnings", "review the warnings and retry the add")
+		m.statusMessage = "✗ structured " + msg.Operation + " has warnings — not applied"
+		m.recordError("structured "+msg.Operation, "candidate has warnings", "review the warnings and retry the edit")
 		return m, nil
 	}
 	content := msg.Content
@@ -398,16 +455,20 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 	m.pendingEdit = &pendingEdit{
 		path: msg.Path, original: msg.Original, content: content,
 		nodeName: msg.Parent.Name, startLine: msg.Parent.Range.StartLine,
-		itemKey: msg.ItemKey, operation: "add",
+		itemKey: msg.ItemKey, operation: msg.Operation,
 	}
-	lines, err := diff.Unified(msg.Original, content, msg.Path, msg.Path+" (after add)")
+	lines, err := diff.Unified(msg.Original, content, msg.Path, msg.Path+" (after "+msg.Operation+")")
 	if err != nil {
 		m.pendingEdit = nil
-		m.statusMessage = "✗ structured add diff failed: " + err.Error()
-		m.recordError("structured add diff", err.Error(), "retry the add")
+		m.statusMessage = "✗ structured " + msg.Operation + " diff failed: " + err.Error()
+		m.recordError("structured "+msg.Operation+" diff", err.Error(), "retry the edit")
 		return m, nil
 	}
-	m.showDiffModal(lines, "Add "+msg.Name+" · "+msg.Path)
+	title := "Add " + msg.Name
+	if msg.Operation == "edit" {
+		title = "Edit " + msg.Name
+	}
+	m.showDiffModal(lines, title+" · "+msg.Path)
 	return m, nil
 }
 

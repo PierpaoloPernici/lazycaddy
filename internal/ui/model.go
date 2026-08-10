@@ -161,8 +161,8 @@ type deleteValidatedMsg struct {
 	Err         error
 }
 
-// structuredAddValidatedMsg is delivered after a planned structured
-// insertion has passed the same format+validate boundary as other edits.
+// structuredAddValidatedMsg is delivered after a planned structured add or
+// edit has passed the same format+validate boundary as other edits.
 type structuredAddValidatedMsg struct {
 	Path        string
 	Original    []byte
@@ -170,6 +170,7 @@ type structuredAddValidatedMsg struct {
 	Formatted   []byte
 	Diagnostics []validator.Diagnostic
 	Name        string
+	Operation   string
 	Parent      caddyfile.Node
 	ItemKey     string
 	Err         error
@@ -419,6 +420,7 @@ type Model struct {
 	structuredAddMatcher   structuredInput
 	structuredAddUpstreams structuredInput
 	structuredAddRPField   int
+	structuredAddEditing   bool
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the

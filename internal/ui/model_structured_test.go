@@ -175,3 +175,51 @@ func TestStructuredAddDiffEnterSaves(t *testing.T) {
 		t.Fatalf("pending add state survived save: pending=%v diff=%v", m.pendingEdit != nil, m.showDiff)
 	}
 }
+
+func TestStructuredReverseProxyEditPlansAndOpensDiff(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\treverse_proxy @api localhost:8080 app-02:8080 {\n\t\theader_up Host {host}\n\t}\n}\n",
+	}))
+	formatter := &fakeFormatter{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, &fakeSaver{})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	if !m.showStructuredAdd || !m.structuredAddEditing {
+		t.Fatalf("reverse_proxy edit state = show:%v editing:%v, want open edit form", m.showStructuredAdd, m.structuredAddEditing)
+	}
+	if got := m.structuredAddMatcher.String(); got != "@api" {
+		t.Fatalf("prefilled matcher = %q, want @api", got)
+	}
+	if got := m.structuredAddUpstreams.String(); got != "localhost:8080 app-02:8080" {
+		t.Fatalf("prefilled upstreams = %q, want both upstreams", got)
+	}
+	for len(m.structuredAddUpstreams.value) > 0 {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyHome})
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDelete})
+	}
+	for _, r := range []rune("localhost:9090 app-03:9090") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("reverse_proxy edit did not return validation command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if m.pendingEdit == nil || m.pendingEdit.operation != "edit" {
+		t.Fatalf("pendingEdit = %+v, want structured edit", m.pendingEdit)
+	}
+	content := string(m.pendingEdit.content)
+	if !strings.Contains(content, "reverse_proxy @api localhost:9090 app-03:9090 {") {
+		t.Fatalf("edited reverse_proxy missing from candidate: %q", content)
+	}
+	if !strings.Contains(content, "header_up Host {host}") {
+		t.Fatalf("nested reverse_proxy options changed: %q", content)
+	}
+	if !m.showDiff {
+		t.Fatal("showDiff = false after validated reverse_proxy edit")
+	}
+}
