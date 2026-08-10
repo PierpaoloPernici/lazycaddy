@@ -37,19 +37,19 @@ const logPollInterval = 500 * time.Millisecond
 //	TreeRow    — a visible row in the UI tree (this struct).
 //	Branch     — a visible row with children; only branches expand,
 //	             collapse and respond to Enter/Space.
-//	Leaf       — a node without children; leaves are not visible tree
-//	             rows in the main tree, but stay in the parse tree, the
-//	             source view and the search scope.
+//	Leaf       — a node without children; terminal directives are not visible
+//	             tree rows, while visible block-kind leaves carry a · marker.
+//	             All leaves stay in the parse tree, source view and search scope.
 //	Document   — a root branch (one TreeRow per caddyfile.Document).
 //
-// Markers: › selected row, - expanded branch, + collapsed branch; blank
-// for visible leaf rows. ASCII -/+ are used (not ▾/▸ or −) for terminal
-// readability.
+// Markers: › selected row, - expanded branch, + collapsed branch, · visible
+// leaf row. ASCII -/+ are used (not ▾/▸ or −) for terminal readability.
 //
 // item is a TreeRow: a document row, or a branch of the parse tree
 // (site blocks, snippets, named routes, global options, and any node
 // with children such as a directive with a nested block), nested
-// recursively. Leaves are never rows. depth is purely a rendering
+// recursively. Terminal leaves are never rows; visible block-kind leaves
+// carry no expansion state. depth is purely a rendering
 // indent; expansion logic uses hasChildren and the stable key.
 type item struct {
 	// key is the stable identity of the row: the document path for a
@@ -529,6 +529,15 @@ type Model struct {
 	showErrorHistory bool
 	// errorHistoryViewport renders the bounded error-history list.
 	errorHistoryViewport viewport.Model
+
+	// showCommandPalette is true while the searchable command catalog is
+	// open. The palette is a discoverability layer over the same actions
+	// invoked by the direct hotkeys; it never replaces them.
+	showCommandPalette bool
+	commandQuery       []rune
+	commandCursor      int
+	commandViewport    viewport.Model
+	commandLineOffsets []int
 }
 
 // pendingRollback holds the state of a backup selected for rollback:
@@ -585,6 +594,7 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		searchViewport:       viewport.New(1, 1),
 		backupViewport:       viewport.New(1, 1),
 		errorHistoryViewport: viewport.New(1, 1),
+		commandViewport:      viewport.New(1, 1),
 		logFollow:            true,
 		clipboard:            clipboard,
 		monitor:              monitor,
@@ -832,6 +842,12 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.showRollbackConfirm {
 		return m.updateRollbackConfirmKey(msg)
 	}
+	// The command palette takes over ordinary input while it is open. It is
+	// intentionally below safety confirmations, so a pending save, reload or
+	// quit decision can never be bypassed by a discoverability overlay.
+	if m.showCommandPalette {
+		return m.updateCommandPaletteKey(msg)
+	}
 	// The backup-history modal takes precedence over the diagnostics
 	// modal and the main keymap.
 	if m.showBackups {
@@ -863,7 +879,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "q", "ctrl+c":
-		return m.requestQuit()
+		return m.runCommand(commandQuit)
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -873,43 +889,45 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 	case "enter", " ":
-		m.toggleCursor()
+		return m.runCommand(commandToggleBranch)
 	case "left":
 		m.collapseOrExpand(false)
 	case "right":
 		m.collapseOrExpand(true)
 	case "+":
-		m.expandAllBranches()
+		return m.runCommand(commandExpandAll)
 	case "-":
-		m.collapseDescendants()
+		return m.runCommand(commandCollapseAll)
 	case "pgup":
 		m.viewport.PageUp()
 	case "pgdown":
 		m.viewport.PageDown()
 	case "v":
-		return m.startFormatAndValidate()
+		return m.runCommand(commandValidate)
 	case "D":
-		return m.startDiff()
+		return m.runCommand(commandDiff)
 	case "s":
-		return m.startSave()
+		return m.runCommand(commandSave)
 	case "r":
-		return m.startReload()
+		return m.runCommand(commandReload)
 	case "l":
-		return m.toggleLogView()
+		return m.runCommand(commandLogs)
 	case "e":
-		return m.startEditor()
+		return m.runCommand(commandEdit)
 	case "E":
-		return m.startFullEdit()
+		return m.runCommand(commandFullEdit)
 	case "d":
-		return m.startDelete()
+		return m.runCommand(commandDelete)
 	case "B":
-		return m.startBackups()
+		return m.runCommand(commandBackups)
 	case "H":
-		return m.startErrorHistory()
+		return m.runCommand(commandErrors)
 	case "y":
-		return m.startCopy()
+		return m.runCommand(commandCopy)
 	case "/", "ctrl+f":
-		return m.startSearch()
+		return m.runCommand(commandSearch)
+	case "?":
+		return m.runCommand(commandPalette)
 	}
 	return m, nil
 }
@@ -1346,17 +1364,16 @@ func (m *Model) closeSearch() {
 }
 
 // activateSearchResult jumps to the target of a search hit: a node hit
-// re-anchors the tree cursor on the node row, a document hit selects the
-// document row (optionally revealing a content line), and a log hit opens
-// the log view with the entry's detail.
+// re-anchors the tree cursor on its visible row, a document hit selects the
+// deepest containing row (optionally revealing a content line), and a log
+// hit opens the log view with the entry's detail.
 func (m *Model) activateSearchResult(r app.SearchResult) {
 	m.sourceRevealLine = 0
 	switch r.Kind {
 	case app.SearchNode:
 		// A search covers every node, including collapsed rows and hidden
 		// leaf directives. Expand every ancestor of the node (the document
-		// row first, then each parent block) so the containing rows exist
-		// in the tree.
+		// row first, then each parent block) so the containing rows exist.
 		if r.Doc == nil || m.state == nil || m.state.Graph == nil {
 			return
 		}
@@ -1384,7 +1401,7 @@ func (m *Model) activateSearchResult(r app.SearchResult) {
 		// selects the deepest tree row containing the line, so the cursor
 		// lands on the structural node instead of the document row, and
 		// reveals the exact source line. The target document and every
-		// structural ancestor are expanded first (mirroring the
+		// containing ancestors are expanded first (mirroring the
 		// SearchNode branch), so the row exists in the rebuilt tree even
 		// when the document or a containing branch is collapsed; a line
 		// outside every tree row (for example inside a hidden top-level
@@ -2026,7 +2043,7 @@ func (m *Model) buildDetailBody(bodyW int) string {
 
 // paneContentH returns the content height handed to pane/modal renderers
 // so the complete view (header + optional error line + pane/modal +
-// optional status strip + wrapped footer) fits the given total height.
+// optional status strip + compact footer) fits the given total height.
 // Pane renderers draw their border around the content, so the vertical
 // frame size must be subtracted here, mirroring the horizontal handling
 // in View(). All pane/modal styles are copies of paneStyle with the same
@@ -3026,7 +3043,7 @@ func (m *Model) saveConfirmView(width, height int) string {
 		path = m.pendingEdit.path
 		hint = dimStyle.Render("the edit applies only to the selected node range")
 	}
-	bodyH := height - 3 // border (2) + title (1)
+	bodyH := height - 4 // border (2) + title (1) + blank separator (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -3043,27 +3060,64 @@ func (m *Model) saveConfirmView(width, height int) string {
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
-// reloadConfirmView renders the reload-confirmation modal. It names the
-// target path and the Admin API endpoint (the action is network-visible
-// and irreversible once accepted) and offers Enter to confirm or Esc to
-// cancel.
+// reloadConfirmView renders the centered reload-confirmation modal. It names
+// the target path and Admin API endpoint while keeping the confirmation keys
+// in the modal footer, matching the command palette and search surfaces.
 func (m *Model) reloadConfirmView(width, height int) string {
-	title := "Reload config · Enter reload · Esc cancel"
-	bodyH := height - 3 // border (2) + title (1)
-	if bodyH < 1 {
-		bodyH = 1
+	if width < 1 {
+		width = 1
 	}
-	paneContentW := width - 2
-	if paneContentW < 1 {
-		paneContentW = 1
+	if height < 1 {
+		height = 1
 	}
-	var body strings.Builder
-	body.WriteString(dimStyle.Render("Path      ") + m.state.Settings.ConfigPath + "\n")
-	body.WriteString(dimStyle.Render("Admin API ") + m.state.Settings.AdminEndpoint + "\n")
-	body.WriteString("\n")
-	body.WriteString(dimStyle.Render("the saved file and its backup stay intact if the reload fails") + "\n")
-	body.WriteString(dimStyle.Render("reloads through the local Admin API after a confirmed save"))
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+	boxW := width - 8
+	if boxW < 56 {
+		boxW = width - 2
+	}
+	if boxW > 78 {
+		boxW = 78
+	}
+	if boxW < 1 {
+		boxW = 1
+	}
+	boxH := 12
+	if height-6 < boxH {
+		boxH = height - 6
+	}
+	if boxH < 8 {
+		boxH = 8
+	}
+
+	contentW := boxW - 4
+	if contentW < 1 {
+		contentW = 1
+	}
+	header := activeTitleStyle.Render("RELOAD CONFIG") + " " + dimStyle.Render("confirm")
+	separator := dimStyle.Render(strings.Repeat("─", contentW))
+	path := "—"
+	adminEndpoint := "—"
+	if m.state != nil {
+		if m.state.Settings.ConfigPath != "" {
+			path = m.state.Settings.ConfigPath
+		}
+		if m.state.Settings.AdminEndpoint != "" {
+			adminEndpoint = m.state.Settings.AdminEndpoint
+		}
+	}
+	lines := []string{
+		dimStyle.Render("Path      ") + truncateToWidth(path, max(1, contentW-10)),
+		dimStyle.Render("Admin API ") + truncateToWidth(adminEndpoint, max(1, contentW-10)),
+		"",
+		dimStyle.Render("the saved file and its backup stay intact if the reload fails"),
+		dimStyle.Render("reloads through the local Admin API after a confirmed save"),
+	}
+	for i, line := range lines {
+		lines[i] = truncateToWidth(line, contentW)
+	}
+	body := strings.Join(lines, "\n")
+	footer := renderFooterKeys("Enter reload · Esc cancel")
+	content := strings.Join([]string{header, separator, body, separator, footer}, "\n")
+	return commandPaletteStyle.Width(boxW - 2).Height(boxH - 2).Render(content)
 }
 
 // changeConflictView renders the external-change conflict modal. It
@@ -3084,7 +3138,7 @@ func (m *Model) changeConflictView(width, height int) string {
 		path = "unknown"
 	}
 	title := "External change · " + truncateToWidth(path, width-20)
-	bodyH := height - 3 // border (2) + title (1)
+	bodyH := height - 4 // border (2) + title (1) + blank separator (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -3222,9 +3276,8 @@ func (m *Model) View() string {
 
 	paneH := m.paneContentH(height)
 
-	// Compute the footer string now; it may wrap onto multiple lines and
-	// the pane area above already accounts for its real height. Critical
-	// hints are never truncated; wrapping keeps every key visible.
+	// Compute the compact footer string now; the pane area above accounts for
+	// its height and the command palette carries the full action catalog.
 	footerStr := m.footer(width)
 
 	var b strings.Builder
@@ -3254,7 +3307,16 @@ func (m *Model) View() string {
 		b.WriteString(m.saveConfirmView(width, paneH))
 		b.WriteString("\n")
 	} else if m.showReloadConfirm {
-		b.WriteString(m.reloadConfirmView(width, paneH))
+		// Reload confirmation is composited as a centered modal over the
+		// normal panes, matching search and the command palette.
+		treeW := width * 2 / 5
+		srcW := width - treeW - 2*paneStyle.GetHorizontalBorderSize()
+		if srcW < 1 {
+			srcW = 1
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,
+			m.treePane(treeW, paneH),
+			m.sourcePane(srcW, paneH)))
 		b.WriteString("\n")
 	} else if m.showRollbackConfirm {
 		b.WriteString(m.rollbackConfirmView(width, paneH))
@@ -3280,8 +3342,17 @@ func (m *Model) View() string {
 			b.WriteString("\n")
 		}
 	} else if m.searchActive {
-		// The search modal is read-only and only opens from the main view.
-		b.WriteString(m.searchView(width, paneH))
+		// Search is composited as a modal over the normal panes below, just
+		// like the command palette. Keep the underlying application chrome
+		// visible so closing search returns to the exact same context.
+		treeW := width * 2 / 5
+		srcW := width - treeW - 2*paneStyle.GetHorizontalBorderSize()
+		if srcW < 1 {
+			srcW = 1
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,
+			m.treePane(treeW, paneH),
+			m.sourcePane(srcW, paneH)))
 		b.WriteString("\n")
 	} else if m.showErrorHistory {
 		// The error-history view replaces the tree/source panes while it
@@ -3307,10 +3378,27 @@ func (m *Model) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString(footerStr)
-	return b.String()
+	view := b.String()
+	if m.showCommandPalette {
+		return m.commandPaletteOverlay(view, width, height)
+	}
+	if m.searchActive {
+		return m.searchOverlay(view, width, height)
+	}
+	if m.showReloadConfirm {
+		return m.reloadOverlay(view, width, height)
+	}
+	return view
 }
 
 func (m *Model) header(width int) string {
+	// Keep the brand aligned with the padded content in the panes and footer.
+	// Reserve the gutter before calculating the right-side badges so the added
+	// space never pushes them off a narrow terminal.
+	contentWidth := width - 1
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
 	path := ""
 	if m.state != nil {
 		path = m.state.Settings.ConfigPath
@@ -3333,11 +3421,12 @@ func (m *Model) header(width int) string {
 		caddyVersion = dimStyle.Render("Caddy " + m.runtimeReport.Capabilities.Version)
 	}
 
-	// Important state is conveyed by an explicit text label, not
-	// color alone, matching the existing READ-ONLY pattern.
-	right := readOnlyBadge.Render(" READ-ONLY ")
+	// Important state is conveyed by an explicit compact text label, not
+	// color alone. RW/RO stays legible on narrow terminals while preserving
+	// the same writable/read-only distinction as the longer labels.
+	right := readOnlyBadge.Render(" RO ")
 	if m.state != nil && !m.state.Settings.ReadOnly {
-		right = writableBadge.Render(" WRITE ")
+		right = writableBadge.Render(" RW ")
 	}
 	if m.state != nil && m.state.Graph != nil && m.state.Graph.Err != nil {
 		right = errorStyle.Render(" PARSE ERROR ") + right
@@ -3358,7 +3447,7 @@ func (m *Model) header(width int) string {
 	}
 	// The loaded-state badge sits between the PARSE ERROR marker and the
 	// read/write badge. Explicit text labels carry the state, never color
-	// alone, matching the READ-ONLY convention. The initial state is shown
+	// alone, matching the RO convention. The initial state is shown
 	// as UNKNOWN (nothing proven yet) only when reloading is possible, so
 	// a read-only session without a caddy binary stays quiet.
 	if m.reloading {
@@ -3386,16 +3475,16 @@ func (m *Model) header(width int) string {
 	// when space gets tight.
 	const minPathW = 8
 	caddyW := lipgloss.Width(caddyVersion)
-	available := width - leftW - caddyW - rightW - separatorW*2
+	available := contentWidth - leftW - caddyW - rightW - separatorW*2
 	if caddyVersion != "" && available < minPathW {
 		caddyVersion = ""
-		available = width - leftW - rightW - separatorW
+		available = contentWidth - leftW - rightW - separatorW
 	}
 	if caddyVersion != "" {
 		left += separator + caddyVersion
 	}
 	leftW = lipgloss.Width(left)
-	available = width - leftW - rightW - separatorW
+	available = contentWidth - leftW - rightW - separatorW
 	if available < 0 {
 		available = 0
 	}
@@ -3415,12 +3504,13 @@ func (m *Model) header(width int) string {
 	pathBlock := dimStyle.Render(configLabel + displayedPath)
 	pathW := lipgloss.Width(pathBlock)
 
-	pad := width - leftW - separatorW - pathW - rightW
+	pad := contentWidth - leftW - separatorW - pathW - rightW
 	if pad < 0 {
 		pad = 0
 	}
 
-	return left + separator + pathBlock + strings.Repeat(" ", pad) + right + "\n"
+	line := left + separator + pathBlock + strings.Repeat(" ", pad) + right
+	return renderLineOnSurface(" "+line, width, chromeBackground) + "\n"
 }
 
 func (m *Model) treePane(width, height int) string {
@@ -3447,14 +3537,10 @@ func (m *Model) treePane(width, height int) string {
 	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
-// renderTreeRow renders one visible tree row: the selection marker in
-// its own column, the expansion marker in its own column, then the
-// depth indent and the label. The two columns keep the row state
-// explicit: › marks the selected row, - an expanded branch and + a
-// collapsed branch. Rows without visible children (for example an empty
-// site block or a block holding only hidden leaf directives) carry no
-// expansion marker. The reserved leaf marker · is not rendered because
-// leaves are not tree rows yet.
+// renderTreeRow renders one visible tree row: a fixed selector gutter first,
+// followed by the hierarchy indent, the expansion/leaf marker and the label.
+// The selector remains visible at the left edge while branch and leaf markers
+// follow the tree hierarchy.
 func renderTreeRow(it item, selected bool) string {
 	sel := "  "
 	if selected {
@@ -3466,8 +3552,14 @@ func renderTreeRow(it item, selected bool) string {
 		if !it.collapsed {
 			exp = "- " // expanded branch
 		}
+	} else if it.hasNode {
+		exp = "· " // visible leaf row
 	}
-	return fmt.Sprintf("%s%s%s%s", sel, exp, strings.Repeat("  ", it.depth), it.label)
+	row := fmt.Sprintf("%s%s%s%s", sel, strings.Repeat("  ", it.depth), exp, it.label)
+	if selected {
+		return selectedTreeRowStyle.Render(row)
+	}
+	return row
 }
 
 // sourcePane renders the raw, unmodified source of the selected
@@ -3547,8 +3639,8 @@ func (m *Model) syncSource(srcW, paneH int) {
 	// the viewport must stay where the user left it, while a save or a
 	// search activation must re-position the viewport on the selected
 	// node / line. A one-shot search-activated line (a document content
-	// hit or a leaf-directive hit, which selects a structural ancestor
-	// without a row of its own) takes precedence over the node reveal so
+	// hit or an import-directive hit, which selects its document row) takes
+	// precedence over the node reveal so
 	// the exact hit line is always shown.
 	if key != prevSel || refresh || m.sourceRevealLine > 0 {
 		if m.sourceRevealLine > 0 {
@@ -3611,13 +3703,13 @@ func (m *Model) statusStrip(width int) string {
 	msg := m.statusMessage
 	switch {
 	case strings.HasPrefix(msg, "✓"):
-		return statusSuccessStyle.Width(width).Render(msg)
+		return renderLineOnSurface(statusSuccessStyle.Render(msg), width, statusBackground)
 	case strings.HasPrefix(msg, "✗") && strings.Contains(msg, "warnings"):
-		return statusWarningStyle.Width(width).Render(msg)
+		return renderLineOnSurface(statusWarningStyle.Render(msg), width, statusBackground)
 	case strings.HasPrefix(msg, "✗"):
-		return errorStyle.Width(width).Render(msg)
+		return renderLineOnSurface(statusErrorStyle.Render(msg), width, statusBackground)
 	default:
-		return statusInfoStyle.Width(width).Render(msg)
+		return renderLineOnSurface(statusInfoStyle.Render(msg), width, statusBackground)
 	}
 }
 
@@ -3644,7 +3736,7 @@ func (m *Model) logView(width, height int) string {
 	if m.logErr != nil {
 		title += " · poll error"
 	}
-	bodyH := height - 3 // border (2) + title (1)
+	bodyH := height - 4 // border (2) + title (1) + blank separator (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -3652,8 +3744,8 @@ func (m *Model) logView(width, height int) string {
 	if paneContentW < 1 {
 		paneContentW = 1
 	}
-	m.syncLogViewport(paneContentW, bodyH)
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.logViewport.View())
+	m.syncLogViewport(paneContentW, height)
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + m.logViewport.View())
 }
 
 // syncLogViewport sizes the log viewport to the pane and refreshes its
@@ -3666,7 +3758,7 @@ func (m *Model) syncLogViewport(width, height int) {
 	if contentW < 1 {
 		contentW = 1
 	}
-	contentH := height - 3 // border (2) + title (1)
+	contentH := height - 4 // border (2) + title (1) + blank separator (1)
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -3707,11 +3799,17 @@ func (m *Model) syncLogViewport(width, height int) {
 // diagnostics detail view.
 func (m *Model) logDetailView(width, height int) string {
 	title := "Log detail"
-	if summary := logDetailSummary(m.logDetailEntry); summary != "" {
+	summaryWidth := width - 18 // title label, border and padding
+	if summaryWidth < 30 {
+		summaryWidth = 30
+	}
+	if summaryWidth > 80 {
+		summaryWidth = 80
+	}
+	if summary := logDetailSummary(m.logDetailEntry, summaryWidth); summary != "" {
 		title += " · " + summary
 	}
-	title += " · Esc back"
-	bodyH := height - 3 // border (2) + title (1)
+	bodyH := height - 4 // border (2) + title (1) + blank separator (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -3722,7 +3820,7 @@ func (m *Model) logDetailView(width, height int) string {
 	if m.logDetailViewport.Height != bodyH {
 		m.syncLogDetailContent(width, height)
 	}
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.logDetailViewport.View())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + m.logDetailViewport.View())
 }
 
 // syncLogDetailContent sizes the log detail viewport and rebuilds its
@@ -3733,7 +3831,7 @@ func (m *Model) syncLogDetailContent(width, height int) {
 	if contentW < 1 {
 		contentW = 1
 	}
-	contentH := height - 3 // border (2) + title (1)
+	contentH := height - 4 // border (2) + title (1) + blank separator (1)
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -3743,9 +3841,9 @@ func (m *Model) syncLogDetailContent(width, height int) {
 }
 
 // logDetailSummary builds a short descriptor for the detail modal title:
-// timestamp + logger + message truncated to 30 cells, or "raw line" for
-// non-JSON entries.
-func logDetailSummary(entry logs.Entry) string {
+// timestamp + logger + message truncated to maxWidth cells, or "raw line"
+// for non-JSON entries.
+func logDetailSummary(entry logs.Entry, maxWidth int) string {
 	if !entry.Parsed {
 		return "raw line"
 	}
@@ -3760,66 +3858,10 @@ func logDetailSummary(entry logs.Entry) string {
 	if entry.Msg != "" {
 		parts = append(parts, entry.Msg)
 	}
-	return truncateToWidth(strings.Join(parts, " "), 30)
+	return truncateToWidth(strings.Join(parts, " "), maxWidth)
 }
 
 func (m *Model) footer(width int) string {
-	// Modals replace the global keymap with context-aware keys, so the
-	// bottom footer never shows keys that are not active in the current
-	// context.
-	// The e key is only shown when an editor is configured, writable mode
-	// is active and a node (not a document row) is selected. E edits the
-	// whole selected document (row or node), and d deletes the selected
-	// node (never a document row or an import directive).
-	reloadSuffix := ""
-	if m.reloader != nil {
-		reloadSuffix = " · r reload"
-	}
-	logSuffix := ""
-	if m.logSource != nil {
-		logSuffix = " · l logs"
-	}
-	editSuffix := ""
-	fullEditSuffix := ""
-	if m.editor != nil && m.state != nil && !m.state.Settings.ReadOnly && m.saver != nil {
-		sel := m.selectedItem()
-		if sel != nil && sel.hasNode {
-			editSuffix = " · e edit"
-		}
-		if sel != nil && sel.doc != nil {
-			fullEditSuffix = " · E full edit"
-		}
-	}
-	// d delete is only shown when a formatter is wired as well: the delete
-	// flow validates the candidate before the diff, so without caddy
-	// validation the key would fail at the first press.
-	deleteSuffix := ""
-	if m.saver != nil && m.formatter != nil && m.state != nil && !m.state.Settings.ReadOnly {
-		if sel := m.selectedItem(); sel != nil && sel.hasNode {
-			if !(sel.node.Kind == caddyfile.KindDirective && sel.node.Name == "import") {
-				deleteSuffix = " · d delete"
-			}
-		}
-	}
-	searchSuffix := ""
-	if m.searcher != nil {
-		searchSuffix = " · / search"
-	}
-	copySuffix := ""
-	if m.clipboard != nil {
-		copySuffix = " · y copy"
-	}
-	backupSuffix := ""
-	if m.rollbacker != nil {
-		backupSuffix = " · B backups"
-	}
-	// The error-history key is documented in the footer whenever failures
-	// have been recorded, so the operator always has a way back to the
-	// recovery trail without cluttering the footer when nothing failed.
-	errorHistorySuffix := ""
-	if len(m.errorHistory) > 0 {
-		errorHistorySuffix = " · H errors"
-	}
 	var keys string
 	switch {
 	case m.showUnsavedConfirm:
@@ -3848,6 +3890,8 @@ func (m *Model) footer(width int) string {
 		keys = "Enter reload · Esc cancel"
 	case m.showRollbackConfirm:
 		keys = "Enter rollback · Esc cancel"
+	case m.showCommandPalette:
+		keys = "↑/↓ navigate · PgUp/PgDown scroll · Enter run · Esc close"
 	case m.showBackups:
 		if m.canRollback() {
 			keys = "↑/↓ move · Enter compare & rollback · Esc close"
@@ -3867,19 +3911,19 @@ func (m *Model) footer(width int) string {
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		// The navigation hint is context-aware: expand/collapse is
-		// advertised only when the selected row has children. On a leaf
-		// row Enter/←/→ do nothing, so no toggle key is advertised. The
-		// tree-wide + expand all / - collapse all keys always apply.
+		// The normal footer is deliberately navigation-only. Operational
+		// actions remain available through their direct hotkeys and the
+		// searchable command palette opened by ?. Expand/collapse is
+		// advertised only when the selected row has children.
 		navKeys := "↑/↓ move"
 		if sel := m.selectedItem(); sel != nil && sel.hasChildren {
-			navKeys = "↑/↓ move · Enter/←/→ toggle"
+			navKeys = "↑/↓ move · Enter toggle"
 		}
-		keys = fmt.Sprintf("%s · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s%s · + expand all · - collapse all · q quit%s · %d items", navKeys, reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, backupSuffix, errorHistorySuffix, len(m.items))
+		keys = navKeys + " · PgUp/PgDown · +/- all · ? commands"
 	default:
-		keys = "↑/↓ move · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + backupSuffix + " · q quit" + errorHistorySuffix
+		keys = "↑/↓ move · PgUp/PgDown · ? commands"
 	}
-	return footerStyle.Width(width).Render(renderFooterKeys(keys))
+	return renderLineOnSurface(footerStyle.Render(renderFooterKeys(keys)), width, chromeBackground)
 }
 
 // canRollback reports whether the backup-history modal may offer
@@ -3892,9 +3936,8 @@ func (m *Model) canRollback() bool {
 }
 
 // renderFooterKeys highlights key names with the accent color while
-// keeping descriptions dim. The returned string is wrapped by the
-// caller's footerStyle.Width(width).Render, so critical hints are never
-// truncated; they wrap onto extra lines instead.
+// keeping descriptions dim. The compact footer carries only navigation
+// hints; the full action catalog lives in the command palette.
 func renderFooterKeys(keys string) string {
 	segments := strings.Split(keys, " · ")
 	var parts []string
@@ -4046,38 +4089,56 @@ func (m *Model) diffView(width, height int) string {
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.diffViewport.View())
 }
 
-// searchView renders the read-only search modal: the current query on an
-// input row and the scrollable result list below it. The content is only
-// rebuilt when the size changes; the offset survives across renders so
-// PgUp/PgDown and the cursor reveal keep working.
+// searchView renders the centered read-only search catalog. The query shares
+// the command palette header treatment, including a visible block cursor and
+// result count, while the viewport keeps the selected result under a blue
+// selector.
 func (m *Model) searchView(width, height int) string {
-	query := string(m.searchQuery)
-	title := "Search"
-	if query != "" {
-		title += " · " + truncateToWidth(query, 30)
+	if width < 1 {
+		width = 1
 	}
-	title += fmt.Sprintf(" · %d result(s)", len(m.searchResults))
-	bodyH := height - 3 // border (2) + title (1)
-	if bodyH < 1 {
-		bodyH = 1
+	if height < 1 {
+		height = 1
 	}
-	paneContentW := width - 2
-	if paneContentW < 1 {
-		paneContentW = 1
+	boxW := width - 8
+	if boxW < 56 {
+		boxW = width - 2
 	}
-	// The query input row takes one line above the results.
-	viewportH := bodyH - 1
+	if boxW > 110 {
+		boxW = 110
+	}
+	if boxW < 1 {
+		boxW = 1
+	}
+	boxH := height - 6
+	if boxH < 10 {
+		boxH = height - 2
+	}
+	if boxH < 6 {
+		boxH = 6
+	}
+	if boxH > 30 {
+		boxH = 30
+	}
+
+	contentW := boxW - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
+	viewportH := boxH - 6 // header, two separators, footer and border
 	if viewportH < 1 {
 		viewportH = 1
 	}
-	m.syncSearchViewport(paneContentW, viewportH)
-	input := cursorStyle.Render("> ") + query
-	inputW := paneContentW - 4 // border (2) + padding (2)
-	if inputW < 1 {
-		inputW = 1
-	}
-	input = truncateToWidth(input, inputW)
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + input + "\n" + m.searchViewport.View())
+	m.syncSearchViewport(contentW, viewportH)
+
+	query := truncateToWidth(string(m.searchQuery), max(1, contentW-24))
+	header := activeTitleStyle.Render("SEARCH") + " " +
+		cursorStyle.Render("> "+query+"▌") + " " +
+		dimStyle.Render(fmt.Sprintf("%d result(s)", len(m.searchResults)))
+	separator := dimStyle.Render(strings.Repeat("─", contentW))
+	footer := renderFooterKeys("↑/↓ navigate · PgUp/PgDown scroll · Enter open · Esc close")
+	content := strings.Join([]string{header, separator, m.searchViewport.View(), separator, footer}, "\n")
+	return commandPaletteStyle.Width(boxW - 2).Height(boxH - 2).Render(content)
 }
 
 // syncSearchViewport sizes the search viewport and refreshes its content
@@ -4086,7 +4147,7 @@ func (m *Model) searchView(width, height int) string {
 // result set shrank), matching the "don't clobber manual scroll" rule used
 // elsewhere.
 func (m *Model) syncSearchViewport(width, height int) {
-	contentW := width - 4 // border (2) + horizontal padding (2)
+	contentW := width
 	if contentW < 1 {
 		contentW = 1
 	}
@@ -4222,8 +4283,8 @@ func visibleTreeChildren(nodes []caddyfile.Node) []caddyfile.Node {
 
 // seedCollapsedState initializes the startup expand/collapse layout for
 // a fresh session: every document root is expanded and every visible
-// branch below the document roots starts collapsed. Leaves carry no
-// state and no marker. The layout is derived from the graph and never
+// branch below the document roots starts collapsed. Visible leaf rows carry
+// no expansion state and a · marker. The layout is derived from the graph and never
 // persisted across sessions unless explicitly configured.
 func seedCollapsedState(g *caddyfile.ImportGraph, collapsed map[string]bool) {
 	for _, doc := range g.Documents {
@@ -4251,7 +4312,7 @@ func seedCollapsedState(g *caddyfile.ImportGraph, collapsed map[string]bool) {
 // when it has children. Its expandable state (hasChildren) depends on
 // the visible children only: a site whose only children are hidden
 // leaves (for example a lone import directive) renders as a leaf row
-// without an expansion marker. Leaves are never TreeRows: they stay in
+// with a · marker. Terminal leaves are never TreeRows: they stay in
 // the parse tree, the source view and the search scope. depth is only
 // the rendering indent, and a row is collapsible exactly when it has
 // visible children (they are hidden while it is collapsed).
@@ -4285,8 +4346,8 @@ func appendNodeItems(items *[]item, doc *caddyfile.Document, nodes []caddyfile.N
 // other node renders only when it has children (a structural block such
 // as a directive with a nested block). Terminal directives without
 // children (header_up, tls_insecure_skip_verify, protocols, respond,
-// import, …) are Leaves: they stay in the parse tree, the source view
-// and the search scope, but never become tree rows.
+// import, …) are Leaves: they stay in the parse tree, the source view and
+// the search scope, but never become tree rows.
 func renderedNode(n caddyfile.Node) bool {
 	switch n.Kind {
 	case caddyfile.KindGlobalOptions, caddyfile.KindSite, caddyfile.KindSnippet, caddyfile.KindNamedRoute:
@@ -4299,7 +4360,7 @@ func renderedNode(n caddyfile.Node) bool {
 // own: block kinds and any node with children. Leaves never render, so a
 // leaf search hit selects its nearest visible ancestor instead.
 func nodeIsTreeRow(n *caddyfile.Node) bool {
-	return renderedNode(*n)
+	return n != nil && renderedNode(*n)
 }
 
 // structuralNodeAtLine returns the deepest tree row whose source range

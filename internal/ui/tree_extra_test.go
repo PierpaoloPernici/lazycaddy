@@ -99,7 +99,6 @@ func TestTree_LeafDirectivesHidden(t *testing.T) {
 	state := structuralState(t)
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
-
 	labels := itemLabels(m.items)
 	// Terminal directives are never tree rows: nested leaves (header_up,
 	// respond) and the top-level import leaf are all hidden, while the
@@ -108,6 +107,9 @@ func TestTree_LeafDirectivesHidden(t *testing.T) {
 		if strings.Contains(labels, hidden) {
 			t.Errorf("tree shows the hidden leaf %q; labels = %v", hidden, labels)
 		}
+	}
+	if strings.Contains(labels, "import sites/a.caddy") {
+		t.Errorf("tree duplicates the import directive instead of its document row; labels = %v", labels)
 	}
 
 	// The parse tree still holds every leaf node.
@@ -293,7 +295,7 @@ func TestTree_EnterSpaceOnRowsWithoutChildren(t *testing.T) {
 }
 
 // TestTree_ImportedDocsRemainTopLevel verifies imported documents stay
-// separate top-level rows: the import directive is a hidden leaf inside
+// separate top-level rows: the import directive remains hidden inside
 // the root document, never a duplicated syntax tree.
 func TestTree_ImportedDocsRemainTopLevel(t *testing.T) {
 	state := structuralState(t)
@@ -375,7 +377,7 @@ func TestSearch_LeafInCollapsedDoc(t *testing.T) {
 		}
 	}
 	if nodeIdx < 0 {
-		t.Fatalf("results = %+v, want the hidden header_up node hit", m.searchResults)
+		t.Fatalf("results = %+v, want the header_up node hit", m.searchResults)
 	}
 	for m.searchCursor != nodeIdx {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
@@ -385,7 +387,7 @@ func TestSearch_LeafInCollapsedDoc(t *testing.T) {
 	// The ancestors were expanded and the nearest visible structural
 	// ancestor (the enclosing reverse_proxy block) is selected.
 	if m.collapsed[itemKey(state.Graph.Documents[0], nil)] {
-		t.Error("document still collapsed after activating the hidden leaf hit")
+		t.Error("document still collapsed after activating the leaf hit")
 	}
 	sel := m.selectedItem()
 	if sel == nil || sel.label != "reverse_proxy api.localhost:8080" {
@@ -449,7 +451,7 @@ func TestSearch_LeafExpandsAncestors(t *testing.T) {
 	// Every ancestor is expanded and the nearest visible structural
 	// ancestor (the enclosing reverse_proxy block) is selected.
 	if m.collapsed[itemKey(root, nil)] || m.collapsed[itemKey(root, &site)] || m.collapsed[itemKey(root, &handle)] {
-		t.Error("an ancestor stayed collapsed after activating the hidden leaf hit")
+		t.Error("an ancestor stayed collapsed after activating the leaf hit")
 	}
 	sel := m.selectedItem()
 	if sel == nil || sel.label != "reverse_proxy api.localhost:8080" {
@@ -598,20 +600,19 @@ func TestTree_VisibleChildrenPolicy(t *testing.T) {
 		t.Errorf("headers = %+v, want a branch (visible handle child)", h)
 	}
 
-	// The rendered markers match the policy: leaf rows (import-only.test
-	// at depth 1) show no expansion marker; branch rows show the ASCII -
-	// marker.
+	// The rendered markers match the policy: visible leaf rows (import-only.test
+	// at depth 1) show ·; branch rows show the ASCII - marker.
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "      import-only.test") {
-		t.Errorf("import-only.test must render as a leaf row without markers:\n%s", view)
+	if !strings.Contains(view, "    · import-only.test") {
+		t.Errorf("import-only.test must render with the · marker:\n%s", view)
 	}
-	if strings.Contains(view, "  +   import-only.test") || strings.Contains(view, "  -   import-only.test") {
+	if strings.Contains(view, "    + import-only.test") || strings.Contains(view, "    - import-only.test") {
 		t.Errorf("import-only.test must not render an expansion marker:\n%s", view)
 	}
 	// Branch rows render with the - marker in the expansion column.
 	for _, want := range []string{
-		"  -   header-branch.test",
-		"  -     headers",
+		"    - header-branch.test",
+		"      - headers",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("branch rows must show the - marker (%q):\n%s", want, view)
@@ -781,17 +782,15 @@ func TestTree_CollapseAll_StartupStateIsNoOp(t *testing.T) {
 	}
 }
 
-// TestTree_ExpandCollapseAll_FooterHints verifies the footer advertises
-// the + expand all and - collapse all keys in the main view.
+// TestTree_ExpandCollapseAll_FooterHints verifies the compact footer keeps
+// the + and - navigation shortcuts discoverable.
 func TestTree_ExpandCollapseAll_FooterHints(t *testing.T) {
 	state := structuralState(t)
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
 
-	// The footer wraps onto additional lines at 120 cols; flatten the
-	// whitespace so a hint split across a line break is still found.
 	view := strings.Join(strings.Fields(stripANSI(m.View())), " ")
-	for _, hint := range []string{"+ expand all", "- collapse all"} {
+	for _, hint := range []string{"+/- all", "? commands"} {
 		if !strings.Contains(view, hint) {
 			t.Errorf("footer missing %q:\n%s", hint, m.View())
 		}
@@ -927,9 +926,9 @@ func TestSearch_LineHitInTopLevelLeafExpandsDocumentOnly(t *testing.T) {
 }
 
 // TestTree_FooterAndMarkers verifies the canonical markers: the selection
-// marker (›) and the expansion markers (- expanded, + collapsed) live in
-// separate columns, Unicode glyphs are never used, rows without visible
-// children carry no expansion marker, and the footer advertises toggle
+// marker (›) and the expansion markers (- expanded, + collapsed) follow the
+// row indentation, Unicode glyphs are never used, visible leaf rows carry
+// the · marker, and the footer advertises toggle
 // only when the selected row is a branch.
 func TestTree_FooterAndMarkers(t *testing.T) {
 	state := structuralState(t)
@@ -937,21 +936,20 @@ func TestTree_FooterAndMarkers(t *testing.T) {
 	m = resize(m, 120, 30)
 	m = expandAll(m)
 
-	// An expanded branch shows -, a collapsed branch +, in the expansion
-	// column (the second column, after the selection marker).
+	// An expanded branch shows -, a collapsed branch +, after the row indent.
 	block := m.items[2] // handle /api/*, expanded
-	if got := renderTreeRow(block, true); got != "› - "+strings.Repeat("  ", 2)+"handle /api/*" {
+	if got := stripANSI(renderTreeRow(block, true)); got != "› "+strings.Repeat("  ", 2)+"- handle /api/*" {
 		t.Errorf("selected expanded branch render = %q, want the › and - markers", got)
 	}
 	collapsedBlock := block
 	collapsedBlock.collapsed = true
-	if got := renderTreeRow(collapsedBlock, false); got != "  + "+strings.Repeat("  ", 2)+"handle /api/*" {
+	if got := renderTreeRow(collapsedBlock, false); got != strings.Repeat("  ", 2)+"  + handle /api/*" {
 		t.Errorf("unselected collapsed branch render = %q, want the + marker", got)
 	}
-	// A row without children (empty site) carries no expansion marker.
+	// A row without children (empty site) carries the · marker.
 	noChildren := m.items[5] // empty.example.test
-	if got := renderTreeRow(noChildren, true); got != "›   "+strings.Repeat("  ", 1)+"empty.example.test" {
-		t.Errorf("selected row without children render = %q, want only the › marker", got)
+	if got := stripANSI(renderTreeRow(noChildren, true)); got != "› "+strings.Repeat("  ", 1)+"· empty.example.test" {
+		t.Errorf("selected row without children render = %q, want the · marker", got)
 	}
 	// The expansion column uses ASCII -/+; the Unicode ▾/▸ and − are
 	// never used.
@@ -974,9 +972,9 @@ func TestTree_FooterAndMarkers(t *testing.T) {
 }
 
 // TestTree_MarkerColumnsInPane verifies the rendered tree pane keeps the
-// selection and expansion markers in separate fixed columns: › for the
-// selected row, -/+ for the branch state, and no marker on rows without
-// visible children. Unicode expansion glyphs never appear. The pane is
+// selection and expansion markers in separate columns inside each row's
+// indentation: › for the selected row, -/+ for branch state and · on leaves.
+// Unicode expansion glyphs never appear. The pane is
 // rendered with the startup layout (branches below the document roots
 // collapsed), so example.test shows the + marker.
 func TestTree_MarkerColumnsInPane(t *testing.T) {
@@ -987,8 +985,8 @@ func TestTree_MarkerColumnsInPane(t *testing.T) {
 	view := stripANSI(m.View())
 	for _, want := range []string{
 		"› - Caddyfile",            // selected, expanded document row
-		"  +   example.test",       // unselected, collapsed branch
-		"      empty.example.test", // row without children: no markers
+		"    + example.test",       // indented, collapsed branch
+		"    · empty.example.test", // indented, visible leaf row
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("tree pane missing %q:\n%s", want, view)
@@ -1003,7 +1001,7 @@ func TestTree_MarkerColumnsInPane(t *testing.T) {
 
 // TestTree_StartupLayout verifies the initial tree state on a fresh
 // session: every document root is expanded, every visible branch below
-// the document roots starts collapsed, visible leaves carry no marker,
+// the document roots starts collapsed, visible leaves carry the · marker,
 // the cursor starts deterministically on the first document row, and a
 // second fresh model never inherits the previous session's expansion
 // state.
@@ -1018,7 +1016,7 @@ func TestTree_StartupLayout(t *testing.T) {
 	}
 
 	// Rows on startup: the two document roots (expanded) plus their
-	// top-level branches (collapsed) and visible leaf rows (no marker).
+	// top-level branches (collapsed) and visible leaf rows.
 	want := []struct {
 		label       string
 		hasChildren bool
@@ -1053,14 +1051,14 @@ func TestTree_StartupLayout(t *testing.T) {
 		}
 	}
 	// Rendered markers: - for expanded document roots, + for collapsed
-	// branches, blank for visible leaves.
+	// branches, and · for visible leaves.
 	view := stripANSI(m.View())
 	for _, want := range []string{
 		"› - Caddyfile",
-		"  +   example.test",
-		"      empty.example.test",
+		"    + example.test",
+		"    · empty.example.test",
 		"  - a.caddy",
-		"      top.example.test",
+		"    · top.example.test",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("startup pane missing %q:\n%s", want, view)
@@ -1094,8 +1092,8 @@ func TestTree_StartupLayout(t *testing.T) {
 
 // TestTree_AnonymousBlockLabel verifies an anonymous `{ ... }` block
 // renders with an explicit label. In structuralFixture its only child is
-// a hidden respond leaf, so the anonymous block renders as a leaf row:
-// no expansion marker, Enter/Space do nothing and nothing collapses.
+// a hidden respond leaf, so the anonymous block renders as a leaf row with
+// a · marker: Enter/Space do nothing and nothing collapses.
 func TestTree_AnonymousBlockLabel(t *testing.T) {
 	state := structuralState(t)
 	m := newLoadedModel(t, fakeLoader{state: state})
@@ -1115,10 +1113,9 @@ func TestTree_AnonymousBlockLabel(t *testing.T) {
 		t.Errorf("view missing the anonymous block label:\n%s", view)
 	}
 	// It is a leaf row: Enter/Space/←/→ do nothing and no state changes.
-	// The render carries only the selection marker, never an expansion
-	// marker.
-	if got := renderTreeRow(*sel, true); got != "›       anonymous block" {
-		t.Errorf("leaf row render = %q, want only the selection marker", got)
+	// The render carries the · marker, never an expansion marker.
+	if got := stripANSI(renderTreeRow(*sel, true)); got != "› "+strings.Repeat("  ", 2)+"· anonymous block" {
+		t.Errorf("leaf row render = %q, want the · marker", got)
 	}
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},

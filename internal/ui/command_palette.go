@@ -1,0 +1,579 @@
+package ui
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/cellbuf"
+)
+
+// commandID is the stable identity shared by direct keybindings and the
+// command palette. Keeping the identity separate from its key lets the
+// palette remain useful when a command has no convenient single shortcut.
+type commandID string
+
+const (
+	commandMoveSelection commandID = "move-selection"
+	commandToggleBranch  commandID = "toggle-branch"
+	commandExpandAll     commandID = "expand-all"
+	commandCollapseAll   commandID = "collapse-all"
+	commandValidate      commandID = "validate"
+	commandDiff          commandID = "diff"
+	commandSave          commandID = "save"
+	commandReload        commandID = "reload"
+	commandLogs          commandID = "logs"
+	commandEdit          commandID = "edit"
+	commandFullEdit      commandID = "full-edit"
+	commandDelete        commandID = "delete"
+	commandBackups       commandID = "backups"
+	commandErrors        commandID = "errors"
+	commandCopy          commandID = "copy"
+	commandSearch        commandID = "search"
+	commandQuit          commandID = "quit"
+	commandPalette       commandID = "command-palette"
+)
+
+// uiCommand describes one user action. Keys are the direct shortcuts shown
+// in the palette; the first key is the compact label used in command rows.
+// Enabled and Reason are evaluated against the current model so unavailable
+// capabilities are discoverable without pretending they can run.
+type uiCommand struct {
+	ID          commandID
+	Category    string
+	Label       string
+	Description string
+	Keys        []string
+	Enabled     func(*Model) bool
+	Reason      func(*Model) string
+}
+
+func commandDefinitions() []uiCommand {
+	return []uiCommand{
+		{ID: commandMoveSelection, Category: "Navigation", Label: "Move selection", Description: "tree", Keys: []string{"↑↓"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
+		{ID: commandToggleBranch, Category: "Navigation", Label: "Open or toggle branch", Description: "current row", Keys: []string{"Enter", "Space", "←→"}, Enabled: func(m *Model) bool {
+			sel := m.selectedItem()
+			return sel != nil && sel.hasChildren
+		}, Reason: func(*Model) string { return "selected row is a leaf" }},
+		{ID: commandExpandAll, Category: "Navigation", Label: "Expand all branches", Description: "tree", Keys: []string{"+"}, Enabled: func(m *Model) bool {
+			return m.state != nil && m.state.Graph != nil
+		}, Reason: func(*Model) string { return "no configuration loaded" }},
+		{ID: commandCollapseAll, Category: "Navigation", Label: "Collapse all branches", Description: "keep documents open", Keys: []string{"-"}, Enabled: func(m *Model) bool {
+			return m.state != nil && m.state.Graph != nil
+		}, Reason: func(*Model) string { return "no configuration loaded" }},
+		{ID: commandSearch, Category: "Navigation", Label: "Search Caddyfile", Description: "read-only search", Keys: []string{"/", "Ctrl-F"}, Enabled: func(m *Model) bool {
+			return m.searcher != nil
+		}, Reason: func(*Model) string { return "search unavailable" }},
+		{ID: commandValidate, Category: "Source & validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {
+			return m.formatter != nil
+		}, Reason: func(*Model) string { return "Caddy binary unavailable" }},
+		{ID: commandDiff, Category: "Source & validation", Label: "Show diff", Description: "working copy or disk", Keys: []string{"D"}, Enabled: func(m *Model) bool {
+			return m.state != nil && m.state.Graph != nil
+		}, Reason: func(*Model) string { return "no configuration loaded" }},
+		{ID: commandEdit, Category: "Source & validation", Label: "Edit selected block", Description: "$EDITOR", Keys: []string{"e"}, Enabled: func(m *Model) bool {
+			return m.canEditSelection()
+		}, Reason: func(m *Model) string {
+			if m.editor == nil {
+				return "editor unavailable"
+			}
+			return "requires writable mode and a node selection"
+		}},
+		{ID: commandFullEdit, Category: "Source & validation", Label: "Edit selected document", Description: "$EDITOR", Keys: []string{"E"}, Enabled: func(m *Model) bool {
+			return m.canEditDocument()
+		}, Reason: func(m *Model) string {
+			if m.editor == nil {
+				return "editor unavailable"
+			}
+			return "requires writable mode and a document selection"
+		}},
+		{ID: commandDelete, Category: "Source & validation", Label: "Delete selected block", Description: "validate then diff", Keys: []string{"d"}, Enabled: func(m *Model) bool {
+			return m.canDeleteSelected()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a deletable node"
+		}},
+		{ID: commandSave, Category: "Source & validation", Label: "Save validated changes", Description: "write to disk", Keys: []string{"s"}, Enabled: func(m *Model) bool {
+			return m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly
+		}, Reason: func(*Model) string { return "read-only mode" }},
+		{ID: commandCopy, Category: "Source & validation", Label: "Copy selected block", Description: "exact source bytes", Keys: []string{"y"}, Enabled: func(m *Model) bool {
+			return m.clipboard != nil
+		}, Reason: func(*Model) string { return "clipboard unavailable" }},
+		{ID: commandReload, Category: "Runtime & recovery", Label: "Reload Caddy", Description: "Admin API", Keys: []string{"r"}, Enabled: func(m *Model) bool {
+			return m.reloader != nil
+		}, Reason: func(*Model) string { return "Caddy reload unavailable" }},
+		{ID: commandLogs, Category: "Runtime & recovery", Label: "Open logs", Description: "journal / file", Keys: []string{"l"}, Enabled: func(m *Model) bool {
+			return m.logSource != nil
+		}, Reason: func(*Model) string { return "no log source configured" }},
+		{ID: commandBackups, Category: "Runtime & recovery", Label: "Open backups", Description: "recovery", Keys: []string{"B"}, Enabled: func(m *Model) bool {
+			return m.rollbacker != nil
+		}, Reason: func(*Model) string { return "backup history unavailable" }},
+		{ID: commandErrors, Category: "Runtime & recovery", Label: "Open error history", Description: "recent failures", Keys: []string{"H"}, Enabled: func(m *Model) bool {
+			return len(m.errorHistory) > 0
+		}, Reason: func(*Model) string { return "no recorded failures" }},
+		{ID: commandQuit, Category: "Application", Label: "Quit lazycaddy", Description: "guarded when unsaved", Keys: []string{"q", "Ctrl-C"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
+		{ID: commandPalette, Category: "Application", Label: "Open command palette", Description: "search commands", Keys: []string{"?"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
+	}
+}
+
+func commandDefinition(id commandID) (uiCommand, bool) {
+	for _, command := range commandDefinitions() {
+		if command.ID == id {
+			return command, true
+		}
+	}
+	return uiCommand{}, false
+}
+
+func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
+	switch id {
+	case commandMoveSelection:
+		// Movement is represented in the catalog for discoverability; arrow
+		// keys are handled directly by the main model.
+	case commandToggleBranch:
+		m.toggleCursor()
+	case commandExpandAll:
+		m.expandAllBranches()
+	case commandCollapseAll:
+		m.collapseDescendants()
+	case commandValidate:
+		return m.startFormatAndValidate()
+	case commandDiff:
+		return m.startDiff()
+	case commandSave:
+		return m.startSave()
+	case commandReload:
+		return m.startReload()
+	case commandLogs:
+		return m.toggleLogView()
+	case commandEdit:
+		return m.startEditor()
+	case commandFullEdit:
+		return m.startFullEdit()
+	case commandDelete:
+		return m.startDelete()
+	case commandBackups:
+		return m.startBackups()
+	case commandErrors:
+		return m.startErrorHistory()
+	case commandCopy:
+		return m.startCopy()
+	case commandSearch:
+		return m.startSearch()
+	case commandQuit:
+		return m.requestQuit()
+	case commandPalette:
+		return m.startCommandPalette()
+	}
+	return m, nil
+}
+
+func (m *Model) commandForKey(key string) (commandID, bool) {
+	for _, command := range commandDefinitions() {
+		for _, commandKey := range command.Keys {
+			if commandKey == key {
+				return command.ID, true
+			}
+		}
+	}
+	return "", false
+}
+
+func (m *Model) canEditSelection() bool {
+	sel := m.selectedItem()
+	return m.editor != nil && m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && sel.hasNode
+}
+
+func (m *Model) canEditDocument() bool {
+	sel := m.selectedItem()
+	return m.editor != nil && m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && sel.doc != nil
+}
+
+func (m *Model) canDeleteSelected() bool {
+	sel := m.selectedItem()
+	return m.saver != nil && m.formatter != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && sel.hasNode && !(sel.node.Kind == caddyfile.KindDirective && sel.node.Name == "import")
+}
+
+func (m *Model) startCommandPalette() (tea.Model, tea.Cmd) {
+	m.commandQuery = nil
+	m.commandCursor = 0
+	m.showCommandPalette = true
+	m.commandViewport.GotoTop()
+	return m, nil
+}
+
+func (m *Model) closeCommandPalette() {
+	m.showCommandPalette = false
+	m.commandQuery = nil
+	m.commandCursor = 0
+	m.commandLineOffsets = nil
+	m.commandViewport.SetContent("")
+}
+
+func (m *Model) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		m.commandQuery = append(m.commandQuery, msg.Runes...)
+		m.commandCursor = 0
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc":
+		m.closeCommandPalette()
+	case "ctrl+c":
+		m.closeCommandPalette()
+		return m.requestQuit()
+	case "backspace":
+		if len(m.commandQuery) > 0 {
+			m.commandQuery = m.commandQuery[:len(m.commandQuery)-1]
+			m.commandCursor = 0
+		}
+	case "up", "k":
+		if m.commandCursor > 0 {
+			m.commandCursor--
+		}
+		m.revealCommandCursor()
+	case "down", "j":
+		commands := m.filteredCommands()
+		if m.commandCursor < len(commands)-1 {
+			m.commandCursor++
+		}
+		m.revealCommandCursor()
+	case "pgup":
+		m.commandViewport.PageUp()
+	case "pgdown":
+		m.commandViewport.PageDown()
+	case "home":
+		m.commandCursor = 0
+		m.commandViewport.GotoTop()
+	case "end":
+		commands := m.filteredCommands()
+		if len(commands) > 0 {
+			m.commandCursor = len(commands) - 1
+		}
+		m.revealCommandCursor()
+	case "enter":
+		commands := m.filteredCommands()
+		if m.commandCursor >= 0 && m.commandCursor < len(commands) {
+			command := commands[m.commandCursor]
+			if !command.Enabled(m) {
+				m.statusMessage = "✗ " + command.Label + " unavailable: " + command.Reason(m)
+				return m, nil
+			}
+			m.closeCommandPalette()
+			return m.runCommand(command.ID)
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) filteredCommands() []uiCommand {
+	query := strings.ToLower(strings.TrimSpace(string(m.commandQuery)))
+	if query == "" {
+		return commandDefinitions()
+	}
+	var matches []uiCommand
+	for _, command := range commandDefinitions() {
+		searchable := strings.ToLower(strings.Join([]string{command.Category, command.Label, command.Description, strings.Join(command.Keys, " ")}, " "))
+		if strings.Contains(searchable, query) {
+			matches = append(matches, command)
+		}
+	}
+	return matches
+}
+
+func (m *Model) revealCommandCursor() {
+	if m.commandCursor < 0 || m.commandCursor >= len(m.commandLineOffsets) || m.commandViewport.Height < 1 {
+		return
+	}
+	line := m.commandLineOffsets[m.commandCursor]
+	if line < m.commandViewport.YOffset {
+		m.commandViewport.SetYOffset(line)
+	} else if line >= m.commandViewport.YOffset+m.commandViewport.Height {
+		m.commandViewport.SetYOffset(line - m.commandViewport.Height + 1)
+	}
+}
+
+// commandPaletteView renders the centered searchable command catalog. The
+// caller composites this opaque modal over the normal application view so the
+// tree, source pane, status strip and footer remain visible behind it.
+func (m *Model) commandPaletteView(width, height int) string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	boxW := width - 8
+	if boxW < 44 {
+		boxW = width - 2
+	}
+	if boxW > 78 {
+		boxW = 78
+	}
+	if boxW < 1 {
+		boxW = 1
+	}
+	boxH := height - 6
+	if boxH < 10 {
+		boxH = height - 2
+	}
+	if boxH < 6 {
+		boxH = 6
+	}
+	if boxH > 26 {
+		boxH = 26
+	}
+
+	commands := m.filteredCommands()
+	available := 0
+	for _, command := range commands {
+		if command.Enabled(m) {
+			available++
+		}
+	}
+	contentW := boxW - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
+	viewportH := boxH - 6 // header, two separators, footer and border
+	if viewportH < 1 {
+		viewportH = 1
+	}
+	m.syncCommandViewport(contentW, viewportH, commands)
+
+	query := truncateToWidth(string(m.commandQuery), max(1, contentW-26))
+	header := activeTitleStyle.Render("COMMANDS") + " " +
+		cursorStyle.Render("> "+query+"▌") + " " +
+		dimStyle.Render(fmt.Sprintf("%d available", available))
+	header = commandPaletteSurfaceStyle.Width(contentW).Render(header)
+	separator := commandPaletteSurfaceStyle.Width(contentW).Render(dimStyle.Render(strings.Repeat("─", contentW)))
+	footer := commandPaletteSurfaceStyle.Width(contentW).Render(renderFooterKeys("↑/↓ navigate · Enter run · Esc close"))
+	content := strings.Join([]string{header, separator, m.commandViewport.View(), separator, footer}, "\n")
+	return commandPaletteStyle.Width(boxW - 2).Height(boxH - 2).Render(content)
+}
+
+func (m *Model) syncCommandViewport(width, height int, commands []uiCommand) {
+	contentW := width
+	if contentW < 1 {
+		contentW = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	m.commandViewport.Width = contentW
+	m.commandViewport.Height = height
+	m.commandLineOffsets = make([]int, 0, len(commands))
+	var content strings.Builder
+	lineNo := 0
+	category := ""
+	for i, command := range commands {
+		if command.Category != category {
+			if category != "" {
+				content.WriteString("\n")
+				lineNo++
+			}
+			category = command.Category
+			group := "  " + commandPaletteGroupStyle.Render(strings.ToUpper(category))
+			content.WriteString(commandPaletteSurfaceStyle.Width(contentW).Render(group))
+			content.WriteString("\n")
+			lineNo++
+		}
+		m.commandLineOffsets = append(m.commandLineOffsets, lineNo)
+		paletteKeys := command.Keys
+		if command.ID == commandToggleBranch {
+			// Space remains a valid direct hotkey, but Enter and the arrow
+			// keys are the clearer compact label in the palette.
+			paletteKeys = []string{"Enter", "←→"}
+		}
+		key := strings.Join(paletteKeys, " · ")
+		line := renderCommandPaletteRow(key, command.Label, contentW, i == m.commandCursor, command.Enabled(m))
+		content.WriteString(line)
+		content.WriteString("\n")
+		lineNo++
+	}
+	if len(commands) == 0 {
+		content.WriteString(commandPaletteSurfaceStyle.Width(contentW).Render(dimStyle.Render("no matching commands")))
+	}
+	m.commandViewport.SetContent(content.String())
+	m.revealCommandCursor()
+}
+
+func renderCommandPaletteRow(key, label string, width int, selected, enabled bool) string {
+	if width < 8 {
+		width = 8
+	}
+	keyW := 12
+	labelW := width - 2 - keyW
+	if labelW < 1 {
+		labelW = 1
+	}
+	keyText := truncateToWidth(key, keyW-1)
+	labelText := truncateToWidth(label, labelW-1)
+	keyStyle := keyHintStyle
+	labelStyle := lipgloss.NewStyle()
+	if !enabled {
+		keyStyle = commandPaletteDisabledStyle.Copy().Bold(true)
+		labelStyle = commandPaletteDisabledStyle
+	}
+	keyPart := keyStyle.Width(keyW).Render(keyText)
+	labelPart := labelStyle.Width(labelW).Render(labelText)
+	content := lipgloss.JoinHorizontal(lipgloss.Top, keyPart, labelPart)
+	line := commandPaletteSurfaceStyle.Width(width).Render("  " + content)
+	if selected {
+		line = commandPaletteSelectedStyle.Width(width).Render(cursorStyle.Render("› ") + content)
+	}
+	return line
+}
+
+// commandPaletteOverlay composites the opaque palette over the existing view.
+// cellbuf understands the ANSI styles emitted by Lip Gloss, so replacing the
+// modal rectangle does not strip the colors from the underlying TUI.
+func (m *Model) commandPaletteOverlay(base string, width, height int) string {
+	return m.modalOverlay(base, m.commandPaletteView(width, height), width, height)
+}
+
+// searchOverlay composites the centered search catalog over the normal TUI.
+func (m *Model) searchOverlay(base string, width, height int) string {
+	return m.modalOverlay(base, m.searchView(width, height), width, height)
+}
+
+// reloadOverlay composites the reload confirmation over the normal TUI.
+func (m *Model) reloadOverlay(base string, width, height int) string {
+	return m.modalOverlay(base, m.reloadConfirmView(width, height), width, height)
+}
+
+// modalOverlay dims the application behind an opaque centered modal while
+// preserving the ANSI styles in both layers.
+func (m *Model) modalOverlay(base, modalText string, width, height int) string {
+	modalW := lipgloss.Width(modalText)
+	modalH := lipgloss.Height(modalText)
+	if modalW > width {
+		modalW = width
+	}
+	if modalH > height {
+		modalH = height
+	}
+	x := (width - modalW) / 2
+	y := (height - modalH) / 2
+	if y < 1 {
+		y = 1
+	}
+	if y+modalH > height {
+		y = max(0, height-modalH)
+	}
+
+	background := cellbuf.NewBuffer(width, height)
+	cellbuf.SetContent(background, base)
+	fillBlankCells(background)
+	dimCommandPaletteBackground(background, x, y, modalW, modalH)
+	modal := cellbuf.NewBuffer(modalW, modalH)
+	cellbuf.SetContent(modal, modalText)
+	fillPaletteCells(modal)
+	for row := 0; row < modalH; row++ {
+		for col := 0; col < modalW; col++ {
+			cell := modal.Cell(col, row)
+			if cell != nil {
+				background.SetCell(x+col, y+row, cell)
+			}
+		}
+	}
+	return strings.ReplaceAll(cellbuf.Render(background), "\r\n", "\n")
+}
+
+// fillBlankCells keeps the cell grid's leading and trailing spaces explicit.
+// cellbuf normally trims unstyled blank cells when rendering; that would make
+// an overlay jump left on rows where the underlying TUI has no glyph before
+// the modal rectangle.
+func fillBlankCells(buffer *cellbuf.Buffer) {
+	blank := &cellbuf.Cell{Rune: ' ', Width: 1, Style: cellbuf.Style{Attrs: cellbuf.FaintAttr}}
+	for _, line := range buffer.Lines {
+		for i, cell := range line {
+			if cell == nil {
+				line[i] = blank.Clone()
+			}
+		}
+	}
+}
+
+// fillPaletteCells gives every modal cell the same dark surface. Lip Gloss
+// styles do not reliably reach blank cells produced by the viewport, so
+// leaving those cells unstyled allows the composited application underneath
+// to show through as lighter bands.
+func fillPaletteCells(buffer *cellbuf.Buffer) {
+	surface := cellbuf.NewBuffer(1, 1)
+	cellbuf.SetContent(surface, commandPaletteSurfaceStyle.Render(" "))
+	background := surface.Cell(0, 0).Style.Bg
+	blank := &cellbuf.Cell{
+		Rune:  ' ',
+		Width: 1,
+		Style: cellbuf.Style{Attrs: cellbuf.FaintAttr, Bg: background},
+	}
+	for _, line := range buffer.Lines {
+		for i, cell := range line {
+			if cell == nil {
+				line[i] = blank.Clone()
+				continue
+			}
+			if cell.Style.Bg == nil {
+				cell.Style.Bg = background
+			}
+		}
+	}
+}
+
+// renderLineOnSurface renders one full-width UI band after its nested text
+// styles have been applied. Applying the background at cell level prevents
+// foreground-only Lip Gloss styles from resetting it in the middle of a line.
+func renderLineOnSurface(text string, width int, background lipgloss.AdaptiveColor) string {
+	if width < 1 {
+		width = 1
+	}
+	buffer := cellbuf.NewBuffer(width, 1)
+	cellbuf.SetContent(buffer, text)
+
+	backgroundBuffer := cellbuf.NewBuffer(1, 1)
+	cellbuf.SetContent(backgroundBuffer, lipgloss.NewStyle().Background(background).Render(" "))
+	backgroundColor := backgroundBuffer.Cell(0, 0).Style.Bg
+	blank := &cellbuf.Cell{
+		Rune:  ' ',
+		Width: 1,
+		Style: cellbuf.Style{Bg: backgroundColor},
+	}
+	for _, line := range buffer.Lines {
+		for i, cell := range line {
+			if cell == nil {
+				line[i] = blank.Clone()
+				continue
+			}
+			if cell.Style.Bg == nil {
+				cell.Style.Bg = backgroundColor
+			}
+		}
+	}
+	return strings.ReplaceAll(cellbuf.Render(buffer), "\r\n", "\n")
+}
+
+func dimCommandPaletteBackground(buffer *cellbuf.Buffer, x, y, width, height int) {
+	for row, line := range buffer.Lines {
+		for col, cell := range line {
+			if cell == nil || (col >= x && col < x+width && row >= y && row < y+height) {
+				continue
+			}
+			faint := cell.Clone()
+			faint.Style.Attrs |= cellbuf.FaintAttr
+			line[col] = faint
+		}
+	}
+}

@@ -265,6 +265,28 @@ func TestHighlightSourceSelectedRange(t *testing.T) {
 	}
 }
 
+func TestHighlightSourceSelectedRangePreservesSyntaxColors(t *testing.T) {
+	src := []byte("example.test {\n\theader_up X-Frame-Options \"SAMEORIGIN\"\n}\n")
+	got := renderWithANSISelected(src, 2, 2)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("rendered source has no selected line:\n%s", got)
+	}
+	selected := lines[1]
+	bar := strings.Index(selected, "▎")
+	if bar < 0 {
+		t.Fatalf("selected line is missing its gutter bar:\n%s", selected)
+	}
+	code := selected[bar+len("▎ "):]
+	if !strings.Contains(code, "\x1b[") {
+		t.Errorf("selected source code lost syntax styling:\n%s", selected)
+	}
+	if !strings.Contains(stripANSI(code), `"SAMEORIGIN"`) {
+		t.Errorf("selected source code was changed while applying gutter selection:\n%s", selected)
+	}
+	assertSourceLossless(t, src, got)
+}
+
 // TestHighlightSourceSelectedRangeClamped verifies ranges that extend past
 // the end of the file only mark the lines that actually exist.
 func TestHighlightSourceSelectedRangeClamped(t *testing.T) {
