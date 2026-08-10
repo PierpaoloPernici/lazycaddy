@@ -1,0 +1,14 @@
+# Codecov status configuration.
+#
+# The patch check compares the coverage of the lines touched by a pull
+# request against an auto-computed target. Mechanical refactors that move
+# code between files can dip below that target spuriously (moved code is
+# reported as new lines whose per-file coverage may sit below the project
+# average) without any real regression: total coverage stays unchanged.
+# Keep the patch report visible but never blocking; the project check
+# (default: auto target) still enforces that total coverage does not drop.
+coverage:
+  status:
+    patch:
+      default:
+        informational: true
