@@ -820,3 +820,267 @@ func TestBackups_RollbackPassesSnapshotDocumentSet(t *testing.T) {
 		t.Errorf("rollback docs[1] = %+v, want the imported document", rb.rollbackDocs[1])
 	}
 }
+
+// backupReadErrorRollbacker serves the current bytes but fails to read the
+// selected backup, exercising the second error branch of the comparison.
+type backupReadErrorRollbacker struct {
+	current []byte
+}
+
+func (r *backupReadErrorRollbacker) ListBackups(string, []*caddyfile.Document) ([]backup.Entry, error) {
+	return nil, nil
+}
+
+func (r *backupReadErrorRollbacker) ReadCurrent(string) ([]byte, error) {
+	return r.current, nil
+}
+
+func (r *backupReadErrorRollbacker) ReadBackup(backup.Entry) ([]byte, error) {
+	return nil, errors.New("backup unreadable")
+}
+
+func (r *backupReadErrorRollbacker) Rollback(context.Context, string, []byte, string, []*caddyfile.Document) (app.RollbackResult, error) {
+	return app.RollbackResult{}, nil
+}
+
+func TestBackups_NoGraphIsNoOp(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{})
+	m.state = nil
+	updated, cmd := m.startBackups()
+	if updated != m || cmd != nil {
+		t.Fatalf("startBackups without a graph returned (%v, %v), want no-op", updated != m, cmd != nil)
+	}
+}
+
+func TestBackups_BusyGuardIsNoOp(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{})
+	m.rollingBack = true
+	m.startBackups()
+	if m.backupsLoading {
+		t.Error("startBackups while rolling back started a listing")
+	}
+	if m.statusMessage != "" {
+		t.Errorf("startBackups while rolling back set a status: %q", m.statusMessage)
+	}
+}
+
+func TestBackups_NoDocumentShowsHint(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{})
+	m.items = nil
+	m.startBackups()
+	if !strings.Contains(m.statusMessage, "no document selected") {
+		t.Errorf("statusMessage = %q, want the no-document hint", m.statusMessage)
+	}
+}
+
+func TestBackups_QuitKey(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{})
+	m = resize(m, 80, 24)
+	m = pressB(t, m)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("ctrl+c in the backup modal did not request quit")
+	}
+}
+
+func TestBackups_PageKeys(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{entries: []backup.Entry{entry}})
+	m = resize(m, 80, 24)
+	m = pressB(t, m)
+	m.View() // sizes the backup viewport
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if !m.showBackups {
+		t.Fatal("pager keys closed the backup modal")
+	}
+}
+
+func TestBackups_CompareBackupReadError(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	rb := &backupReadErrorRollbacker{current: []byte("example.test {\n\trespond ok\n}\n")}
+	m := newLoadedModel(t, fakeLoader{state: state}, rb)
+	m = resize(m, 80, 24)
+	m = pressB(t, m)
+	m.backups = []backup.Entry{entry}
+	m.backupCursor = 0
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter in the backup modal returned no compare command")
+	}
+	msg := cmd().(backupCompareMsg)
+	if msg.Err == nil {
+		t.Fatal("backup compare command did not report the read failure")
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "✗ backup comparison failed") {
+		t.Errorf("statusMessage = %q, want the comparison failure", m.statusMessage)
+	}
+}
+
+func TestRollbackConfirm_QuitAndNoPending(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{})
+	m.showRollbackConfirm = true
+
+	// ctrl+c quits from the rollback confirmation.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c in the rollback confirmation did not request quit")
+	}
+
+	// Enter without a pending rollback is a no-op.
+	m = updated.(*Model)
+	m.pendingRollback = nil
+	m.showRollbackConfirm = true
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd != nil || m.rollingBack {
+		t.Errorf("Enter without a pending rollback returned (%v, %v)", cmd != nil, m.rollingBack)
+	}
+}
+
+func TestRollback_RetentionError(t *testing.T) {
+	fs := map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}
+	loader := app.NewLoader(config.Settings{ConfigPath: "Caddyfile", ReadOnly: false, BackupDir: "/backups"}, fsReader(fs))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	rb := &fakeRollbacker{
+		entries:  []backup.Entry{entry},
+		contents: map[string][]byte{entry.Path: []byte("example.test {\n\trespond ok\n}\n")},
+		current:  map[string][]byte{"Caddyfile": []byte("example.test {\n\trespond ok\n}\n")},
+		rollbackResult: app.RollbackResult{
+			BackupPath:   "/backups/pre",
+			RestoredFrom: entry.Path,
+			RetentionErr: errors.New("old backups could not be removed"),
+		},
+	}
+	mon := newFakeMonitor()
+	m := newLoadedModel(t, loader, &fakeSaver{}, &fakeFormatter{}, rb, mon)
+	m = resize(m, 80, 24)
+	m = pressB(t, m)
+	m = pressEnter(t, m) // compare
+	m = pressEnter(t, m) // confirmation
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "retention cleanup failed") {
+		t.Errorf("statusMessage = %q, want the retention failure", m.statusMessage)
+	}
+	if len(m.errorHistory) == 0 {
+		t.Error("retention failure did not record an error")
+	}
+}
+
+func TestRollback_RefreshWithoutLoader(t *testing.T) {
+	fs := map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}
+	loader := app.NewLoader(config.Settings{ConfigPath: "Caddyfile", ReadOnly: false, BackupDir: "/backups"}, fsReader(fs))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	rb := &fakeRollbacker{
+		entries:  []backup.Entry{entry},
+		contents: map[string][]byte{entry.Path: []byte("example.test {\n\trespond restored\n}\n")},
+		current:  map[string][]byte{"Caddyfile": []byte("example.test {\n\trespond restored\n}\n")},
+		rollbackResult: app.RollbackResult{
+			BackupPath:   "/backups/pre",
+			RestoredFrom: entry.Path,
+		},
+	}
+	mon := newFakeMonitor()
+	m := newLoadedModel(t, loader, &fakeSaver{}, &fakeFormatter{}, rb, mon)
+	m.loader = nil // the refresh after the restore has no loader
+	m = resize(m, 80, 24)
+	before := mon.updateCalls
+
+	m = pressB(t, m)
+	m = pressEnter(t, m)
+	m = pressEnter(t, m)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+
+	if !strings.Contains(m.statusMessage, "tree refresh failed") {
+		t.Errorf("statusMessage = %q, want the tree refresh failure", m.statusMessage)
+	}
+	if mon.updateCalls == before {
+		t.Error("change monitor was not re-seeded with the restored bytes")
+	}
+}
+
+func TestRollback_SeedWithoutMonitor(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{})
+	m.monitor = nil
+	m.seedMonitorWithRestoredBytes("Caddyfile") // no-op, no panic
+}
+
+func TestRollback_GenericError(t *testing.T) {
+	fs := map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}
+	loader := app.NewLoader(config.Settings{ConfigPath: "Caddyfile", ReadOnly: false, BackupDir: "/backups"}, fsReader(fs))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	rb := &fakeRollbacker{
+		entries:     []backup.Entry{entry},
+		contents:    map[string][]byte{entry.Path: []byte("example.test {\n\trespond ok\n}\n")},
+		current:     map[string][]byte{"Caddyfile": []byte("example.test {\n\trespond ok\n}\n")},
+		rollbackErr: errors.New("permission denied"),
+	}
+	m := newLoadedModel(t, loader, &fakeSaver{}, &fakeFormatter{}, rb)
+	m = resize(m, 80, 24)
+	m = pressB(t, m)
+	m = pressEnter(t, m)
+	m = pressEnter(t, m)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(cmd())
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "✗ rollback failed: permission denied") {
+		t.Errorf("statusMessage = %q, want the generic rollback failure", m.statusMessage)
+	}
+}
+
+func TestBackups_TinySizes(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeRollbacker{entries: []backup.Entry{entry}})
+	m.backups = []backup.Entry{entry}
+	m.pendingRollback = &pendingRollback{path: "Caddyfile", backupPath: entry.Path}
+	for _, size := range []struct{ w, h int }{{1, 2}, {40, 2}, {0, 0}} {
+		if got := m.backupView(size.w, size.h); got == "" {
+			t.Errorf("backupView(%d, %d) rendered empty", size.w, size.h)
+		}
+		if got := m.rollbackConfirmView(size.w, size.h); got == "" {
+			t.Errorf("rollbackConfirmView(%d, %d) rendered empty", size.w, size.h)
+		}
+	}
+	m.syncBackupViewport(1, 1)
+	m.syncBackupViewport(5, 0)
+}

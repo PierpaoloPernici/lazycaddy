@@ -384,3 +384,173 @@ func TestExternalChange_ViewFits(t *testing.T) {
 	}
 	assertFits(t, m, 80, 24)
 }
+
+func TestWatchCmd_WithoutMonitor(t *testing.T) {
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })})
+	m.monitor = nil
+	if cmd := m.watchCmd(); cmd != nil {
+		t.Errorf("watchCmd without a monitor returned a command: %v", cmd != nil)
+	}
+}
+
+func TestExternalChange_StaleWithoutMonitor(t *testing.T) {
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })})
+	m.monitor = nil
+	updated, _ := m.handleExternalChange(externalChangeMsg{change: app.ExternalChange{Path: "Caddyfile", OnDisk: []byte("new\n")}})
+	if updated.(*Model).showChangeConflict {
+		t.Error("a stale message without a monitor opened the conflict modal")
+	}
+}
+
+func TestChangeConflict_QuitKey(t *testing.T) {
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })
+	mon := newFakeMonitor()
+	m := newLoadedModel(t, fakeLoader{state: state}, mon)
+	m.showChangeConflict = true
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("ctrl+c in the conflict modal did not request quit")
+	}
+}
+
+func TestChangeConflict_KeepMissingFileStatus(t *testing.T) {
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })})
+	m.pendingChange = &pendingChange{change: app.ExternalChange{Path: "Caddyfile", Missing: true}}
+	m.resolveChangeKeep()
+	if !strings.Contains(m.statusMessage, "missing on disk") {
+		t.Errorf("statusMessage = %q, want the missing-on-disk keep message", m.statusMessage)
+	}
+}
+
+func TestChangeConflict_ReloadWithoutLoader(t *testing.T) {
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.loader = nil
+	m.pendingChange = &pendingChange{change: app.ExternalChange{Path: "Caddyfile", OnDisk: []byte("new\n")}}
+	m.resolveChangeReload()
+	if !strings.Contains(m.statusMessage, "no configuration loaded") {
+		t.Errorf("statusMessage = %q, want the no-loader message", m.statusMessage)
+	}
+}
+
+func TestChangeConflict_ReloadLoadError(t *testing.T) {
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })
+	loader := &refreshLoader{state: state, refreshErr: errors.New("disk read boom")}
+	m := newLoadedModel(t, loader)
+	m.pendingChange = &pendingChange{change: app.ExternalChange{Path: "Caddyfile", OnDisk: []byte("new\n")}}
+	m.resolveChangeReload()
+	if !strings.Contains(m.statusMessage, "✗ reload failed: disk read boom") {
+		t.Errorf("statusMessage = %q, want the load error message", m.statusMessage)
+	}
+}
+
+func TestChangeConflict_ReloadSuccessWithoutPath(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	loader := app.NewLoader(config.Settings{ConfigPath: "Caddyfile", ReadOnly: true}, fsReader(fs))
+	m := newLoadedModel(t, loader)
+	m.resolveChangeReload() // no pendingChange: path stays empty
+	if !strings.Contains(m.statusMessage, "✓ reloaded from disk") {
+		t.Errorf("statusMessage = %q, want the bare reloaded-from-disk message", m.statusMessage)
+	}
+	if m.loaded != loadedUnknown {
+		t.Errorf("loaded = %v after a disk reload, want loadedUnknown", m.loaded)
+	}
+}
+
+func TestChangeConflict_ViewStates(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	state := stateFor(t, "Caddyfile", fsReader(fs))
+	m := newLoadedModel(t, fakeLoader{state: state})
+
+	// Without a pending change the modal names an unknown file and the
+	// reload-is-safe branch (no unsaved edits).
+	view := stripANSI(m.changeConflictView(80, 24))
+	for _, want := range []string{"unknown", "no unsaved edits", "r reload · Esc keep"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("conflict view missing %q:\n%s", want, view)
+		}
+	}
+
+	// A missing file renders the removed-on-disk body.
+	m.pendingChange = &pendingChange{change: app.ExternalChange{Path: "Caddyfile", Missing: true}}
+	if view := stripANSI(m.changeConflictView(80, 24)); !strings.Contains(view, "removed or moved on disk") {
+		t.Errorf("missing-file conflict view missing the removed marker:\n%s", view)
+	}
+
+	// Tiny windows clamp instead of crashing.
+	for _, size := range []struct{ w, h int }{{1, 2}, {40, 2}, {0, 0}} {
+		if got := m.changeConflictView(size.w, size.h); got == "" {
+			t.Errorf("changeConflictView(%d, %d) rendered empty", size.w, size.h)
+		}
+	}
+}
+
+func TestExternalChange_SecondChangeWhileConflictOpen(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	mon := newFakeMonitor()
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", fsReader(fs))}, mon)
+	m.pendingChange = &pendingChange{change: app.ExternalChange{Path: "Caddyfile", OnDisk: []byte("new\n")}}
+	m.showChangeConflict = true
+	updated, cmd := m.handleExternalChange(externalChangeMsg{change: app.ExternalChange{Path: "Caddyfile", OnDisk: []byte("newer\n")}})
+	if updated.(*Model).showChangeConflict != true {
+		t.Error("a second change replaced the open conflict modal")
+	}
+	if cmd == nil {
+		t.Error("a second change while the conflict is open did not re-arm the watch")
+	}
+}
+
+func TestExternalChange_StalePathIgnored(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	mon := newFakeMonitor()
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", fsReader(fs))}, mon)
+	// A path that is no longer part of the resolved graph is stale.
+	updated, _ := m.handleExternalChange(externalChangeMsg{change: app.ExternalChange{Path: "removed.conf", OnDisk: []byte("x\n")}})
+	if updated.(*Model).showChangeConflict {
+		t.Error("a stale path opened the conflict modal")
+	}
+}
+
+func TestChangeConflict_UnhandledKeyKeepsModal(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", fsReader(fs))})
+	m.showChangeConflict = true
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !m.showChangeConflict {
+		t.Error("an unhandled key closed the conflict modal")
+	}
+}
+
+func TestChangeConflict_ReloadNilGraph(t *testing.T) {
+	state := stateFor(t, "Caddyfile", func(string) ([]byte, error) { return []byte("old\n"), nil })
+	loader := &refreshLoader{state: state, refreshNilGraph: true}
+	m := newLoadedModel(t, loader)
+	m.pendingChange = &pendingChange{change: app.ExternalChange{Path: "Caddyfile", OnDisk: []byte("new\n")}}
+	m.resolveChangeReload()
+	if !strings.Contains(m.statusMessage, "✗ reload failed") {
+		t.Errorf("statusMessage = %q, want a reload failure", m.statusMessage)
+	}
+}
+
+func TestChangeConflict_CompareWithoutPending(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", fsReader(fs))})
+	updated, cmd := m.openChangeCompare()
+	if updated != m || cmd != nil {
+		t.Fatalf("openChangeCompare without a pending change returned (%v, %v)", updated != m, cmd != nil)
+	}
+}
+
+func TestChangeConflict_CompareDeletedFile(t *testing.T) {
+	fs := map[string]string{"Caddyfile": "old {\n}\n"}
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "Caddyfile", fsReader(fs))})
+	m.pendingChange = &pendingChange{
+		change: app.ExternalChange{Path: "Caddyfile", Missing: true},
+		inMem:  []byte("old {\n}\n"),
+	}
+	m.openChangeCompare()
+	if !m.showDiff || !m.changeCompare {
+		t.Errorf("compare for a deleted file did not open the diff (showDiff=%v, changeCompare=%v)", m.showDiff, m.changeCompare)
+	}
+}

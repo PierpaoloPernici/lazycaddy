@@ -630,3 +630,137 @@ func TestModelLogView_CompactLines(t *testing.T) {
 		t.Errorf("compact log view still shows the raw JSON blob:\n%s", visible)
 	}
 }
+
+func TestModelLogView_QuitKeys(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	for _, key := range []tea.KeyType{tea.KeyRunes, tea.KeyCtrlC} {
+		msg := tea.KeyMsg{Type: key}
+		if key == tea.KeyRunes {
+			msg.Runes = []rune("q")
+		}
+		updated, cmd := m.Update(msg)
+		m = updated.(*Model)
+		if cmd == nil {
+			t.Errorf("%s in the log view did not request quit", msg.String())
+		}
+	}
+
+	// The same keys quit from the log detail modal.
+	m.logLines = []logs.Entry{logEntry("handled request")}
+	m.logCursor = 0
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open detail
+	if !m.logDetailOpen {
+		t.Fatal("log detail did not open on Enter")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Error("q in the log detail did not request quit")
+	}
+}
+
+func TestModelLogTail_PageKeysTurnFollowOff(t *testing.T) {
+	state := logStateFor(t)
+	entries := []logs.Entry{logEntry("one"), logEntry("two"), logEntry("three")}
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return entries },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	m.View() // sizes the viewport
+
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.logFollow {
+		t.Error("PgUp left follow enabled")
+	}
+	if !strings.Contains(m.statusMessage, "follow off") {
+		t.Errorf("statusMessage = %q after PgUp, want the follow-off hint", m.statusMessage)
+	}
+	if m.logCursor > len(m.logLines)-1 {
+		t.Errorf("logCursor = %d out of range after PgUp", m.logCursor)
+	}
+
+	// PgDown moves the cursor towards the end and clamps there.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.logCursor > len(m.logLines)-1 {
+		t.Errorf("logCursor = %d out of range after PgDown", m.logCursor)
+	}
+}
+
+func TestModelLogView_TitleStates(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+
+	m.logPaused = true
+	if view := stripANSI(m.View()); !strings.Contains(view, "PAUSED") {
+		t.Errorf("paused log view missing the PAUSED marker:\n%s", view)
+	}
+	m.logPaused = false
+	m.logErr = errors.New("journal poll failed")
+	if view := stripANSI(m.View()); !strings.Contains(view, "poll error") {
+		t.Errorf("log view missing the poll-error marker:\n%s", view)
+	}
+}
+
+func TestModelLogView_TinySizes(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+
+	// Size clamps never panic and always render something.
+	for _, size := range []struct{ w, h int }{{1, 2}, {40, 2}, {0, 0}} {
+		if got := m.logView(size.w, size.h); got == "" {
+			t.Errorf("logView(%d, %d) rendered empty", size.w, size.h)
+		}
+		if got := m.logDetailView(size.w, size.h); got == "" {
+			t.Errorf("logDetailView(%d, %d) rendered empty", size.w, size.h)
+		}
+	}
+	m.syncLogViewport(1, 1)
+	m.syncLogViewport(5, 0)
+	m.syncLogDetailContent(1, 1)
+	m.syncLogDetailContent(5, 0)
+
+	// With follow off, a manual offset survives a re-sync (clamped).
+	m.logFollow = false
+	m.logViewport.SetYOffset(999)
+	m.syncLogViewport(60, 10)
+	if m.logViewport.YOffset > 0 {
+		t.Errorf("manual offset was not clamped into the restored position: %d", m.logViewport.YOffset)
+	}
+}
+
+func TestModelLogDetail_TinyTitle(t *testing.T) {
+	state := logStateFor(t)
+	src := app.LogSourceFunc{
+		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
+		HistoryFn: func() []logs.Entry { return nil },
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, src)
+	m = resize(m, 120, 30)
+	m.logDetailEntry = logEntry("a long message")
+	// A narrow window clamps the summary width to the 30-cell floor.
+	if got := m.logDetailView(20, 10); got == "" {
+		t.Error("logDetailView(20, 10) rendered empty")
+	}
+}

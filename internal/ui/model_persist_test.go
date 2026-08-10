@@ -847,3 +847,174 @@ func TestModelReload_HeaderBadgeUnknown(t *testing.T) {
 		t.Errorf("View shows UNKNOWN badge without a reloader:\n%s", m.View())
 	}
 }
+
+// refreshLoader reloads the initial state once and then switches to the
+// configured failure mode, so a save-triggered structural refresh can fail
+// deterministically after a successful Load.
+type refreshLoader struct {
+	state           *app.State
+	refreshErr      error
+	refreshNilGraph bool
+	calls           int
+}
+
+func (l *refreshLoader) LoadState() (*app.State, error) {
+	l.calls++
+	if l.calls > 1 {
+		if l.refreshErr != nil {
+			return nil, l.refreshErr
+		}
+		if l.refreshNilGraph {
+			st := *l.state
+			st.Graph = nil
+			return &st, nil
+		}
+	}
+	return l.state, nil
+}
+
+func TestSave_StartGuardsWhileBusy(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{})
+	m.workingBytes = []byte("changed\n")
+	m.workingValidated = true
+
+	// A save already in flight is not re-entered.
+	m.saving = true
+	m.startSave()
+	if m.showSaveConfirm {
+		t.Fatal("startSave while saving opened the confirmation modal")
+	}
+	if m.statusMessage != "" {
+		t.Fatalf("startSave while saving set a status: %q", m.statusMessage)
+	}
+
+	// A reload in flight also defers the save.
+	m.saving = false
+	m.reloading = true
+	m.startSave()
+	if m.showSaveConfirm {
+		t.Fatal("startSave while reloading opened the confirmation modal")
+	}
+
+	// Without a loaded graph the save is a no-op.
+	m.reloading = false
+	m.state = nil
+	updated, cmd := m.startSave()
+	if updated != m || cmd != nil {
+		t.Fatalf("startSave without a graph returned (%v, %v), want no-op", updated != m, cmd != nil)
+	}
+}
+
+func TestReload_NoGraphIsNoOp(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeReloader{})
+	m.workingBytes = []byte("example.test {\n\trespond ok\n}\n")
+	m.workingValidated = true
+	m.state = nil
+	updated, cmd := m.startReload()
+	if updated != m || cmd != nil {
+		t.Fatalf("startReload without a graph returned (%v, %v), want no-op", updated != m, cmd)
+	}
+}
+
+func TestSave_StructuralRefreshFailureSurfacesTreeError(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		loader *refreshLoader
+	}{
+		{name: "load error", loader: &refreshLoader{refreshErr: errors.New("refresh boom")}},
+		{name: "nil graph", loader: &refreshLoader{refreshNilGraph: true}},
+		{name: "no loader", loader: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := map[string]string{"config/Caddyfile": "example.test {\n\trespond ok\n}\n"}
+			state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(fs))
+			var m *Model
+			if tc.loader != nil {
+				tc.loader.state = state
+				m = newLoadedModel(t, tc.loader, &fakeSaver{})
+			} else {
+				m = newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{})
+				m.loader = nil
+			}
+			m.pendingEdit = &pendingEdit{
+				path:     "config/Caddyfile",
+				original: []byte("example.test {\n\trespond ok\n}\n"),
+				content:  []byte("example.test {\n\trespond ok\n}\nnew.test {\n}\n"),
+			}
+			updated, _ := m.handleSaveResult(saveResultMsg{Result: app.SaveResult{BackupPath: "config/backups/Caddyfile.bak"}})
+			m = updated.(*Model)
+			if !strings.Contains(m.statusMessage, "tree refresh failed") {
+				t.Errorf("statusMessage = %q, want a tree refresh failure", m.statusMessage)
+			}
+			if m.pendingEdit != nil {
+				t.Error("pendingEdit survived a structural save")
+			}
+		})
+	}
+}
+
+func TestSaveConfirmView_PendingEditTitle(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{})
+	m.pendingEdit = &pendingEdit{path: "config/imported.caddy"}
+	view := stripANSI(m.saveConfirmView(80, 24))
+	for _, want := range []string{"Save edit", "config/imported.caddy", "applies only to the selected node range"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("saveConfirmView missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestConfirmViews_TinySizes(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, &fakeReloader{})
+	for _, size := range []struct{ w, h int }{{0, 0}, {1, 1}, {2, 2}, {40, 4}, {120, 60}} {
+		if got := m.saveConfirmView(size.w, size.h); got == "" {
+			t.Errorf("saveConfirmView(%d, %d) rendered empty", size.w, size.h)
+		}
+		if got := m.reloadConfirmView(size.w, size.h); got == "" {
+			t.Errorf("reloadConfirmView(%d, %d) rendered empty", size.w, size.h)
+		}
+	}
+}
+
+func TestReload_GenericErrorStatus(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeReloader{err: errors.New("admin api exploded")})
+	updated, _ := m.handleReloadResult(reloadResultMsg{Err: errors.New("admin api exploded")})
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "✗ reload failed: admin api exploded") {
+		t.Errorf("statusMessage = %q, want the generic reload failure", m.statusMessage)
+	}
+	if len(m.errorHistory) == 0 {
+		t.Error("generic reload failure did not record an error")
+	}
+}
+
+func TestReload_ConflictErrorMarksUnknown(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	conflict := &app.ReloadError{Endpoint: "http://127.0.0.1:2019/load", Err: app.ErrConflict}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeReloader{err: conflict})
+	updated, _ := m.handleReloadResult(reloadResultMsg{Err: conflict})
+	m = updated.(*Model)
+	if m.loaded != loadedUnknown {
+		t.Errorf("loaded = %v after a conflict, want loadedUnknown", m.loaded)
+	}
+	if !strings.Contains(m.statusMessage, "file changed on disk since save") {
+		t.Errorf("statusMessage = %q, want the on-disk conflict message", m.statusMessage)
+	}
+}
