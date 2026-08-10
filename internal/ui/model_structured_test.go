@@ -24,6 +24,11 @@ func TestStructuredAdd_PlansValidatesAndOpensDiff(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	for _, r := range []rune("@api") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	for _, r := range []rune("localhost:8080") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -41,7 +46,7 @@ func TestStructuredAdd_PlansValidatesAndOpensDiff(t *testing.T) {
 	if m.pendingEdit == nil || m.pendingEdit.operation != "add" {
 		t.Fatalf("pendingEdit = %+v, want structured add", m.pendingEdit)
 	}
-	if !strings.Contains(string(m.pendingEdit.content), "reverse_proxy localhost:8080") {
+	if !strings.Contains(string(m.pendingEdit.content), "reverse_proxy @api localhost:8080") {
 		t.Fatalf("candidate missing reverse_proxy: %q", m.pendingEdit.content)
 	}
 	if !m.showDiff {
@@ -93,11 +98,11 @@ func TestStructuredAddPickerSelectsDirectiveBeforeArguments(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddArgs || m.structuredAddName != "reverse_proxy" {
-		t.Fatalf("picker state = mode:%v name:%q, want arguments/reverse_proxy", m.structuredAddMode, m.structuredAddName)
+	if m.structuredAddMode != structuredAddReverseProxy || m.structuredAddName != "reverse_proxy" {
+		t.Fatalf("picker state = mode:%v name:%q, want reverse_proxy form", m.structuredAddMode, m.structuredAddName)
 	}
-	if !strings.Contains(m.View(), "args>") {
-		t.Fatal("directive picker did not switch to argument prompt")
+	if !strings.Contains(m.View(), "upstreams>") || !strings.Contains(m.View(), "matcher>") {
+		t.Fatal("directive picker did not switch to reverse_proxy form")
 	}
 }
 

@@ -27,6 +27,12 @@ type structuredAddMode int
 const (
 	structuredAddPicker structuredAddMode = iota
 	structuredAddArgs
+	structuredAddReverseProxy
+)
+
+const (
+	structuredReverseProxyMatcher = iota
+	structuredReverseProxyUpstreams
 )
 
 func (i *structuredInput) update(msg tea.KeyMsg) {
@@ -113,6 +119,9 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	m.structuredAddName = ""
 	m.structuredAddItems = caddyfile.InsertableDirectiveNames(sel.node)
 	m.structuredAddCursor = 0
+	m.structuredAddMatcher = structuredInput{}
+	m.structuredAddUpstreams = structuredInput{}
+	m.structuredAddRPField = structuredReverseProxyUpstreams
 	m.showStructuredAdd = true
 	m.statusMessage = ""
 	return m, nil
@@ -124,12 +133,12 @@ func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.structuredAddMode == structuredAddPicker {
 		return m.updateStructuredPickerKey(msg)
 	}
+	if m.structuredAddMode == structuredAddReverseProxy {
+		return m.updateStructuredReverseProxyKey(msg)
+	}
 	switch msg.String() {
 	case "esc":
-		m.structuredAddMode = structuredAddPicker
-		m.structuredAddName = ""
-		m.structuredAddInput = structuredInput{}
-		m.structuredAddCursor = 0
+		m.returnToStructuredPicker()
 		return m, nil
 	case "ctrl+c":
 		m.closeStructuredAdd()
@@ -142,6 +151,16 @@ func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) returnToStructuredPicker() {
+	m.structuredAddMode = structuredAddPicker
+	m.structuredAddName = ""
+	m.structuredAddInput = structuredInput{}
+	m.structuredAddMatcher = structuredInput{}
+	m.structuredAddUpstreams = structuredInput{}
+	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddCursor = 0
+}
+
 func (m *Model) closeStructuredAdd() {
 	m.showStructuredAdd = false
 	m.structuredAddInput = structuredInput{}
@@ -152,6 +171,9 @@ func (m *Model) closeStructuredAdd() {
 	m.structuredAddName = ""
 	m.structuredAddItems = nil
 	m.structuredAddCursor = 0
+	m.structuredAddMatcher = structuredInput{}
+	m.structuredAddUpstreams = structuredInput{}
+	m.structuredAddRPField = structuredReverseProxyUpstreams
 }
 
 func (m *Model) filteredStructuredItems() []string {
@@ -197,8 +219,15 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.structuredAddCursor = len(items) - 1
 		}
 		m.structuredAddName = items[m.structuredAddCursor]
-		m.structuredAddMode = structuredAddArgs
 		m.structuredAddInput = structuredInput{}
+		if m.structuredAddName == "reverse_proxy" {
+			m.structuredAddMode = structuredAddReverseProxy
+			m.structuredAddMatcher = structuredInput{}
+			m.structuredAddUpstreams = structuredInput{}
+			m.structuredAddRPField = structuredReverseProxyUpstreams
+		} else {
+			m.structuredAddMode = structuredAddArgs
+		}
 		m.statusMessage = ""
 		return m, nil
 	}
@@ -212,9 +241,42 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) updateStructuredReverseProxyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.returnToStructuredPicker()
+		return m, nil
+	case "ctrl+c":
+		m.closeStructuredAdd()
+		m.statusMessage = "add cancelled"
+		return m, nil
+	case "tab", "down":
+		m.structuredAddRPField = structuredReverseProxyUpstreams
+		return m, nil
+	case "shift+tab", "up":
+		m.structuredAddRPField = structuredReverseProxyMatcher
+		return m, nil
+	case "enter":
+		if m.structuredAddRPField == structuredReverseProxyMatcher {
+			m.structuredAddRPField = structuredReverseProxyUpstreams
+			return m, nil
+		}
+		return m.submitStructuredAdd()
+	}
+	if m.structuredAddRPField == structuredReverseProxyMatcher {
+		m.structuredAddMatcher.update(msg)
+	} else {
+		m.structuredAddUpstreams.update(msg)
+	}
+	return m, nil
+}
+
 func (m *Model) submitStructuredAdd() (tea.Model, tea.Cmd) {
 	if m.structuredAddBusy {
 		return m, nil
+	}
+	if m.structuredAddMode == structuredAddReverseProxy {
+		return m.submitStructuredReverseProxy()
 	}
 	name := m.structuredAddName
 	args := strings.TrimSpace(m.structuredAddInput.String())
@@ -237,6 +299,38 @@ func (m *Model) submitStructuredAdd() (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ add unavailable: " + err.Error()
 		return m, nil
 	}
+	return m.queueStructuredAddValidation(name, edit)
+}
+
+func (m *Model) submitStructuredReverseProxy() (tea.Model, tea.Cmd) {
+	upstreamText := strings.TrimSpace(m.structuredAddUpstreams.String())
+	if upstreamText == "" {
+		m.statusMessage = "✗ reverse_proxy requires at least one upstream"
+		return m, nil
+	}
+	if m.structuredAddDoc == nil {
+		m.closeStructuredAdd()
+		m.statusMessage = "✗ add failed: source document is unavailable"
+		return m, nil
+	}
+	args := append([]string(nil), strings.Fields(upstreamText)...)
+	if matcher := strings.TrimSpace(m.structuredAddMatcher.String()); matcher != "" {
+		args = append([]string{matcher}, args...)
+	}
+	planner := caddyfile.NewPlanner(m.structuredAddDoc)
+	edit, err := planner.Insert(m.structuredAddParent, caddyfile.DirectiveInsert{
+		Name:     "reverse_proxy",
+		Args:     strings.Join(args, " "),
+		Position: caddyfile.InsertAtEnd,
+	})
+	if err != nil {
+		m.statusMessage = "✗ reverse_proxy unavailable: " + err.Error()
+		return m, nil
+	}
+	return m.queueStructuredAddValidation("reverse_proxy", edit)
+}
+
+func (m *Model) queueStructuredAddValidation(name string, edit *caddyfile.PlannedEdit) (tea.Model, tea.Cmd) {
 	candidate, err := edit.Apply(m.structuredAddDoc.Source)
 	if err != nil {
 		m.statusMessage = "✗ add failed: " + err.Error()
@@ -337,6 +431,15 @@ func (m *Model) structuredAddView(width, height int) string {
 		contentW = 1
 	}
 	target := truncateToWidth("Target: "+m.structuredAddParent.Name, contentW)
+	if m.structuredAddMode == structuredAddReverseProxy {
+		body := target + "\n\n" +
+			structuredAddFieldLine("matcher> ", m.structuredAddMatcher, m.structuredAddRPField == structuredReverseProxyMatcher, contentW) + "\n" +
+			structuredAddFieldLine("upstreams> ", m.structuredAddUpstreams, m.structuredAddRPField == structuredReverseProxyUpstreams, contentW) + "\n\n" +
+			dimStyle.Render("Tab/↑↓ switch field · Enter continue/submit · Esc picker")
+		return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
+			activeTitleStyle.Render("Add reverse_proxy · Esc cancel") + "\n" + body,
+		)
+	}
 	if m.structuredAddMode == structuredAddArgs {
 		body := target + "\n\n" +
 			truncateToWidth("args> "+m.structuredAddInput.View(), contentW) + "\n\n" +
@@ -386,6 +489,18 @@ func (m *Model) structuredAddView(width, height int) string {
 	return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
 		activeTitleStyle.Render(title) + "\n" + body.String(),
 	)
+}
+
+func structuredAddFieldLine(label string, input structuredInput, active bool, width int) string {
+	value := input.String()
+	if active {
+		value = input.View()
+	}
+	prefix := "  "
+	if active {
+		prefix = "› "
+	}
+	return truncateToWidth(prefix+label+value, width)
 }
 
 // structuredPickerRow returns one bounded terminal row. Keeping the cursor,

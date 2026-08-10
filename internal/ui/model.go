@@ -406,16 +406,19 @@ type Model struct {
 	// Structured add modal state. The modal first selects a context-aware
 	// directive from the advisory catalog, then collects its raw arguments.
 	// The caddyfile planner remains authoritative before validation or save.
-	showStructuredAdd   bool
-	structuredAddInput  structuredInput
-	structuredAddDoc    *caddyfile.Document
-	structuredAddParent caddyfile.Node
-	structuredAddKey    string
-	structuredAddBusy   bool
-	structuredAddMode   structuredAddMode
-	structuredAddName   string
-	structuredAddItems  []string
-	structuredAddCursor int
+	showStructuredAdd      bool
+	structuredAddInput     structuredInput
+	structuredAddDoc       *caddyfile.Document
+	structuredAddParent    caddyfile.Node
+	structuredAddKey       string
+	structuredAddBusy      bool
+	structuredAddMode      structuredAddMode
+	structuredAddName      string
+	structuredAddItems     []string
+	structuredAddCursor    int
+	structuredAddMatcher   structuredInput
+	structuredAddUpstreams structuredInput
+	structuredAddRPField   int
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the
