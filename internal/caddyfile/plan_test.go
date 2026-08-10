@@ -157,6 +157,47 @@ func TestPlanSetArgSingleArgument(t *testing.T) {
 	}
 }
 
+func TestPlanReverseProxyFieldsRoundTrip(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\treverse_proxy @api \"app one:8080\" app-02:8080 {\n\t\theader_up Host {host}\n\t}\n}\n")
+	rp := findNode(t, doc, "reverse_proxy")
+	fields, err := p.GetReverseProxyFields(rp)
+	if err != nil {
+		t.Fatalf("GetReverseProxyFields: %v", err)
+	}
+	if fields.Matcher != "@api" {
+		t.Errorf("matcher = %q, want @api", fields.Matcher)
+	}
+	if got, want := strings.Join(fields.Upstreams, "|"), `"app one:8080"|app-02:8080`; got != want {
+		t.Errorf("upstreams = %q, want %q", got, want)
+	}
+
+	e, err := p.SetReverseProxyFields(rp, ReverseProxyFields{
+		Matcher:   "@backend",
+		Upstreams: []string{"app-03:9090", `"app four:9090"`},
+	})
+	if err != nil {
+		t.Fatalf("SetReverseProxyFields: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\treverse_proxy @backend app-03:9090 \"app four:9090\" {\n\t\theader_up Host {host}\n\t}\n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanReverseProxyFieldsRejectsOtherDirective(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\trespond ok\n}\n")
+	respond := findNode(t, doc, "respond")
+	_, err := p.GetReverseProxyFields(respond)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("GetReverseProxyFields error = %v, want ErrUnsupported", err)
+	}
+	_, err = p.SetReverseProxyFields(respond, ReverseProxyFields{Upstreams: []string{"localhost:8080"}})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("SetReverseProxyFields error = %v, want ErrUnsupported", err)
+	}
+}
+
 func TestPlanSetArgOutOfRange(t *testing.T) {
 	doc, p := planDoc(t, "example.test {\n\theader X-Frame-Options \"SAMEORIGIN\"\n}\n")
 	h := findNode(t, doc, "header")

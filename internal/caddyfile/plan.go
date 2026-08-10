@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Sentinel errors reported by the structured edit planner. Every operation
@@ -266,6 +267,68 @@ func (p *Planner) SetArg(n Node, index int, newValue string) (*PlannedEdit, erro
 		NewText: newValue,
 		Op:      EditSetValue,
 	}, nil
+}
+
+// ReverseProxyFields is the editable positional portion of a reverse_proxy
+// directive. Values are raw Caddyfile tokens, so callers can retain quotes,
+// placeholders and other spelling that the lexer recognizes as one token.
+// Nested reverse_proxy options are intentionally outside this value model.
+type ReverseProxyFields struct {
+	Matcher   string
+	Upstreams []string
+}
+
+// GetReverseProxyFields reads the optional named matcher and upstream tokens
+// from a reverse_proxy directive without interpreting the nested block.
+func (p *Planner) GetReverseProxyFields(n Node) (ReverseProxyFields, error) {
+	located, err := p.locate(n)
+	if err != nil {
+		return ReverseProxyFields{}, err
+	}
+	if located.Kind != KindDirective || located.Name != "reverse_proxy" {
+		return ReverseProxyFields{}, fmt.Errorf("%w: node %q is not a reverse_proxy directive", ErrUnsupported, located.Name)
+	}
+	toks, openBrace, err := p.headerTokens(*located)
+	if err != nil {
+		return ReverseProxyFields{}, err
+	}
+	end := len(toks)
+	if openBrace >= 0 {
+		end = openBrace
+	}
+	var fields ReverseProxyFields
+	for i, tok := range toks[1:end] {
+		raw := string(p.doc.Source[located.Range.Start+tok.Start : located.Range.Start+tok.End])
+		if i == 0 && strings.HasPrefix(tok.Text, "@") {
+			fields.Matcher = raw
+			continue
+		}
+		fields.Upstreams = append(fields.Upstreams, raw)
+	}
+	return fields, nil
+}
+
+// SetReverseProxyFields plans a replacement of the positional fields of a
+// reverse_proxy directive. The existing block opener, nested options and
+// surrounding source bytes are preserved by SetArgs.
+func (p *Planner) SetReverseProxyFields(n Node, fields ReverseProxyFields) (*PlannedEdit, error) {
+	located, err := p.locate(n)
+	if err != nil {
+		return nil, err
+	}
+	if located.Kind != KindDirective || located.Name != "reverse_proxy" {
+		return nil, fmt.Errorf("%w: node %q is not a reverse_proxy directive", ErrUnsupported, located.Name)
+	}
+	args := make([]string, 0, 1+len(fields.Upstreams))
+	if strings.TrimSpace(fields.Matcher) != "" {
+		args = append(args, strings.TrimSpace(fields.Matcher))
+	}
+	for _, upstream := range fields.Upstreams {
+		if strings.TrimSpace(upstream) != "" {
+			args = append(args, strings.TrimSpace(upstream))
+		}
+	}
+	return p.SetArgs(*located, strings.Join(args, " "))
 }
 
 // insertCtx is the bitmask of block kinds a directive may be inserted into.
