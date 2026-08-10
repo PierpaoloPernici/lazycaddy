@@ -634,3 +634,29 @@ func TestPlanCreateNodePreservesUnrelatedBytesAcrossPlans(t *testing.T) {
 		t.Errorf("comment was lost: %q", out)
 	}
 }
+
+func TestPlanCreateNodeRejectsHeaderWithoutTrailingBrace(t *testing.T) {
+	// A trailing comment swallows the generated opening brace, so the spec
+	// is rejected instead of producing a brace-less site.
+	_, p := planDoc(t, "")
+	if _, err := p.CreateNode(nil, NodeSpec{Kind: KindSite, Name: "foo # comment", Position: InsertAtEnd}); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("CreateNode error = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanCreateNodeRejectsNestedAnchorAtTopLevel(t *testing.T) {
+	doc, p := planDoc(t, "a.test {\n\trespond ok\n}\n")
+	respond := findNode(t, doc, "respond")
+	if _, err := p.CreateNode(nil, NodeSpec{Kind: KindSite, Name: "new.test", Position: InsertBefore, Anchor: respond}); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("CreateNode nested anchor error = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanIsBracelessSiteDegradesOnLexError(t *testing.T) {
+	raw := "x \"unterminated"
+	p := NewPlanner(craftedDoc(raw))
+	n := Node{Kind: KindSite, Name: "x", Range: SourceRange{Start: 0, End: len(raw)}}
+	if p.isBracelessSite(n) {
+		t.Error("an un-lexable site must not be treated as brace-less")
+	}
+}

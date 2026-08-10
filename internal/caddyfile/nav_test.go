@@ -303,3 +303,47 @@ func TestFoldsCompatFixture(t *testing.T) {
 		t.Errorf("fold names = %v, want the nested directive blocks too", names)
 	}
 }
+
+func TestIsBlockNodeUnlexableDirectiveIsNotBlock(t *testing.T) {
+	src := []byte("x \"unterminated")
+	n := Node{Kind: KindDirective, Name: "x", Range: SourceRange{Start: 0, End: len(src)}}
+	if isBlockNode(src, n) {
+		t.Error("an un-lexable directive must not fold as a block")
+	}
+}
+
+func TestFoldsStrayBraceInLeafDirective(t *testing.T) {
+	// A partially parsed file keeps the tree: the respond leaf contains an
+	// unquoted brace, so it folds as a block even without children.
+	src := []byte("example.test {\n\trespond ok {\n}\n")
+	doc := Parse(src)
+	folds := Folds(doc)
+	if len(folds) != 2 {
+		t.Fatalf("folds = %d, want 2 (%+v)", len(folds), folds)
+	}
+	findFold(t, folds, 15, 31)
+}
+
+func TestLandmarksUnclosedBlock(t *testing.T) {
+	doc := Parse([]byte("example.test {"))
+	if len(doc.Nodes) == 0 {
+		t.Fatal("expected a site node for an unclosed block")
+	}
+	l := LandmarksOf(doc.Source, doc.Nodes[0])
+	if l.CloseBraceLine != 0 {
+		t.Errorf("unclosed block close brace line = %d, want 0", l.CloseBraceLine)
+	}
+	if l.ChildIndent != "\t" {
+		t.Errorf("unclosed block child indent = %q, want \\t", l.ChildIndent)
+	}
+}
+
+func TestMatchersSkipsUnlexableDirective(t *testing.T) {
+	raw := "respond \"unterminated"
+	doc := &Document{Source: []byte(raw + "\n"), Nodes: []Node{
+		{Kind: KindDirective, Name: "respond", Range: SourceRange{Start: 0, End: len(raw)}},
+	}}
+	if refs := Matchers(doc); len(refs) != 0 {
+		t.Fatalf("Matchers = %v, want none for an un-lexable directive", refs)
+	}
+}

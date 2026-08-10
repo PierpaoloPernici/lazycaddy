@@ -368,3 +368,129 @@ func TestSelectionString(t *testing.T) {
 		t.Errorf("selected String = %q", got)
 	}
 }
+
+func TestLineWidthOutOfRange(t *testing.T) {
+	p := testPane(t, "ab\ncd\n", 2, 0)
+	if w := p.lineWidth(-1); w != 0 {
+		t.Errorf("lineWidth(-1) = %d, want 0", w)
+	}
+	if w := p.lineWidth(2); w != 0 {
+		t.Errorf("lineWidth(2) = %d, want 0", w)
+	}
+}
+
+func TestRowsEmptyWrappedLineIsOneRow(t *testing.T) {
+	p := testPane(t, "\nabcd\n", 2, 0)
+	p.WrapWidth = 3
+	if got := p.Rows(0); got != 1 {
+		t.Errorf("Rows(empty wrapped line) = %d, want 1", got)
+	}
+	if got := p.Rows(1); got != 2 {
+		t.Errorf("Rows(abcd with wrap 3) = %d, want 2", got)
+	}
+}
+
+func TestRowsBeforeBelowScroll(t *testing.T) {
+	p := testPane(t, "a\nb\nc\n", 3, 0)
+	p.Scroll = 1
+	if got := p.rowsBefore(0); got != 0 {
+		t.Errorf("rowsBefore(0) below scroll = %d, want 0", got)
+	}
+	if got := p.rowsBefore(2); got != 1 {
+		t.Errorf("rowsBefore(2) = %d, want 1", got)
+	}
+}
+
+func TestCellToOffsetGuards(t *testing.T) {
+	p := testPane(t, "ab\n", 1, 0)
+	if got := p.cellToOffset(5, 0); got != 0 {
+		t.Errorf("cellToOffset(out-of-range line) = %d, want 0", got)
+	}
+	if got := p.cellToOffset(0, -4); got != 0 {
+		t.Errorf("cellToOffset(negative cell) = %d, want 0", got)
+	}
+}
+
+func TestCellToOffsetSnapsInsideWideRune(t *testing.T) {
+	p := testPane(t, "ab界c\n", 1, 0)
+	p.CellWidth = func(r rune) int {
+		if r >= 0x2E80 && r <= 0xA4CF {
+			return 2
+		}
+		return 1
+	}
+	// Cell 3 falls inside the wide rune (cells 2-3); it snaps to the rune's
+	// start at byte 2.
+	if got := p.cellToOffset(0, 3); got != 2 {
+		t.Errorf("cellToOffset(0,3) = %d, want 2", got)
+	}
+}
+
+func TestOffsetToCellClamps(t *testing.T) {
+	p := testPane(t, "ab\n", 1, 0)
+	if got := p.offsetToCell(5, 0); got != 0 {
+		t.Errorf("offsetToCell(out-of-range line) = %d, want 0", got)
+	}
+	if got := p.offsetToCell(0, -3); got != 0 {
+		t.Errorf("offsetToCell(negative offset) = %d, want 0", got)
+	}
+	if got := p.offsetToCell(0, 99); got != 2 {
+		t.Errorf("offsetToCell(overflow offset) = %d, want 2", got)
+	}
+}
+
+func TestPositionWrapClampsPastSegmentEnd(t *testing.T) {
+	p := testPane(t, "abcdefghijklmno\nx\n", 6, 0)
+	p.WrapWidth = 6
+	// The last segment holds 3 cells (12,13,14); columns beyond it clamp to
+	// the line end.
+	pos, ok := p.Position(2, 9)
+	if !ok || pos != (Position{Line: 0, Offset: 15}) {
+		t.Errorf("Position(2,9) = %+v, %v, want end of line 0", pos, ok)
+	}
+}
+
+func TestPositionClampsNegativeHorizontalScroll(t *testing.T) {
+	p := testPane(t, "abcdef\nx\n", 2, 0)
+	p.Offset = -2
+	pos, ok := p.Position(0, 0)
+	if !ok || pos != (Position{Line: 0, Offset: 0}) {
+		t.Errorf("Position(0,0) with offset -2 = %+v, %v, want offset 0", pos, ok)
+	}
+}
+
+func TestCellRejectsRowsBelowViewport(t *testing.T) {
+	p := testPane(t, "a\nb\nc\n", 1, 0)
+	if _, _, ok := p.Cell(Position{Line: 1, Offset: 0}); ok {
+		t.Error("Cell of a row below the 1-row viewport must be rejected")
+	}
+}
+
+func TestCellRejectsWrappedSegmentBeyondViewport(t *testing.T) {
+	p := testPane(t, "abcdefghijklmno\nx\n", 2, 0)
+	p.WrapWidth = 5
+	// Line 0 wraps into 3 segments (rows 0-2); the last segment is beyond
+	// the 2-row viewport.
+	if _, _, ok := p.Cell(Position{Line: 0, Offset: 13}); ok {
+		t.Error("Cell in a wrapped segment beyond the viewport must be rejected")
+	}
+}
+
+func TestRangeBytesClampsOffsets(t *testing.T) {
+	p := testPane(t, "hello world\nsecond\n", 2, 0)
+	// Negative start offsets clamp to the line start.
+	got, ok := p.RangeBytes(Range{Position{0, -3}, Position{0, 5}})
+	if !ok || string(got) != "hello" {
+		t.Errorf("negative start = %q, %v, want %q", got, ok, "hello")
+	}
+	// Overlong offsets clamp to their line content.
+	got, ok = p.RangeBytes(Range{Position{0, 1}, Position{1, 99}})
+	if !ok || string(got) != "ello world\nsecond" {
+		t.Errorf("clamped range = %q, %v, want %q", got, ok, "ello world\nsecond")
+	}
+	// A start offset past the line end clamps before joining the next line.
+	got, _ = p.RangeBytes(Range{Position{0, 99}, Position{1, 3}})
+	if string(got) != "\nsec" {
+		t.Errorf("start past end = %q, want %q", got, "\nsec")
+	}
+}

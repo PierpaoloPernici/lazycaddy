@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -46,5 +47,41 @@ func TestCaddyfileHelpReportsBrowserFailure(t *testing.T) {
 	m = updated.(*Model)
 	if m.statusMessage != "✗ could not open Caddyfile help: opener failed" {
 		t.Errorf("statusMessage = %q, want browser error", m.statusMessage)
+	}
+}
+
+func TestCaddyfileDirectiveHelpURLForGlobalOptions(t *testing.T) {
+	if got := caddyfileDirectiveHelpURL(caddyfile.Node{Kind: caddyfile.KindGlobalOptions}, "log"); got != caddyfileOptionsHelpURL {
+		t.Errorf("global options URL = %q, want %q", got, caddyfileOptionsHelpURL)
+	}
+	if got := caddyfileDirectiveHelpURL(caddyfile.Node{Kind: caddyfile.KindSite}, "reverse_proxy"); got != caddyfileHelpURL+"/directives/reverse_proxy" {
+		t.Errorf("directive URL = %q, want the directives page", got)
+	}
+}
+
+func TestStartHelpURLWithoutBrowser(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}) // m.browser stays nil
+	updated, cmd := m.startHelpURL(caddyfileHelpURL, "Caddyfile help")
+	if cmd != nil {
+		t.Fatal("startHelpURL without a browser must not return a command")
+	}
+	m = updated.(*Model)
+	if m.statusMessage != "✗ browser help unavailable on this host" {
+		t.Errorf("statusMessage = %q, want the browser-unavailable message", m.statusMessage)
+	}
+}
+
+func TestHandleBrowserResultDefaultsLabel(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	updated, _ := m.handleBrowserResult(browserResultMsg{err: nil, label: ""})
+	m = updated.(*Model)
+	if m.statusMessage != "✓ opened Caddyfile help in the browser" {
+		t.Errorf("statusMessage = %q, want the default success message", m.statusMessage)
 	}
 }
