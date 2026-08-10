@@ -27,6 +27,7 @@ const (
 	commandLogs          commandID = "logs"
 	commandEdit          commandID = "edit"
 	commandFullEdit      commandID = "full-edit"
+	commandAdd           commandID = "add-structured"
 	commandDelete        commandID = "delete"
 	commandBackups       commandID = "backups"
 	commandErrors        commandID = "errors"
@@ -89,6 +90,17 @@ func commandDefinitions() []uiCommand {
 				return "editor unavailable"
 			}
 			return "requires writable mode and a document selection"
+		}},
+		{ID: commandAdd, Category: "Source & validation", Label: "Add directive", Description: "context-aware", Keys: []string{"a"}, Enabled: func(m *Model) bool {
+			return m.canAddStructured()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a supported block"
 		}},
 		{ID: commandDelete, Category: "Source & validation", Label: "Delete selected block", Description: "validate then diff", Keys: []string{"d"}, Enabled: func(m *Model) bool {
 			return m.canDeleteSelected()
@@ -162,6 +174,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startEditor()
 	case commandFullEdit:
 		return m.startFullEdit()
+	case commandAdd:
+		return m.startStructuredAdd()
 	case commandDelete:
 		return m.startDelete()
 	case commandBackups:

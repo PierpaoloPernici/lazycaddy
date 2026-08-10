@@ -209,6 +209,7 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		nodeName:     nodeName,
 		startLine:    startLine,
 		itemKey:      itemKey,
+		operation:    "edit",
 	}
 	lines, err := diff.Unified(result.Original, result.Content, session.DocPath, session.DocPath+" (edited)")
 	if err != nil {

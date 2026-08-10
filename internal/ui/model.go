@@ -161,8 +161,22 @@ type deleteValidatedMsg struct {
 	Err         error
 }
 
+// structuredAddValidatedMsg is delivered after a planned structured
+// insertion has passed the same format+validate boundary as other edits.
+type structuredAddValidatedMsg struct {
+	Path        string
+	Original    []byte
+	Content     []byte
+	Formatted   []byte
+	Diagnostics []validator.Diagnostic
+	Name        string
+	Parent      caddyfile.Node
+	ItemKey     string
+	Err         error
+}
+
 // pendingEdit holds a validated, recomposed document that came out of an
-// $EDITOR round-trip and is awaiting the diff review and the save
+// edit workflow and is awaiting the diff review and the save
 // confirmation. path may be an imported file; it is the exact document the
 // edit targets. nodeName and startLine carry the identity of the edited
 // node so the tree can re-anchor the selection after a structural save.
@@ -178,6 +192,7 @@ type pendingEdit struct {
 	nodeName     string
 	startLine    int
 	itemKey      string
+	operation    string
 }
 
 // pendingDelete holds a validated document with the selected node removed,
@@ -387,6 +402,16 @@ type Model struct {
 	// removed, awaiting the delete-diff confirmation and the normal save
 	// pipeline. nil means no delete is pending.
 	pendingDelete *pendingDelete
+
+	// Structured add modal state. The modal collects one raw directive line;
+	// the caddyfile planner decides whether its directive and context are
+	// supported before any validation or save workflow begins.
+	showStructuredAdd   bool
+	structuredAddInput  structuredInput
+	structuredAddDoc    *caddyfile.Document
+	structuredAddParent caddyfile.Node
+	structuredAddKey    string
+	structuredAddBusy   bool
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the

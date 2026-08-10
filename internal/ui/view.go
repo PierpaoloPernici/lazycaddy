@@ -133,6 +133,9 @@ func (m *Model) View() string {
 	if m.searchActive {
 		return m.searchOverlay(view, width, height)
 	}
+	if m.showStructuredAdd {
+		return m.structuredAddOverlay(view, width, height)
+	}
 	if m.showReloadConfirm {
 		return m.reloadOverlay(view, width, height)
 	}
@@ -480,7 +483,7 @@ func (m *Model) footer(width int) string {
 		} else if m.pendingDelete != nil {
 			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Enter delete · Esc cancel"
 		} else if m.pendingEdit != nil {
-			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Enter save · Esc discard"
+			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Enter " + pendingEditVerb(m.pendingEdit) + " · Esc discard"
 		} else {
 			keys = "↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Esc close"
 		}
@@ -488,6 +491,8 @@ func (m *Model) footer(width int) string {
 		keys = "Enter save · Esc cancel"
 	case m.showReloadConfirm:
 		keys = "Enter reload · Esc cancel"
+	case m.showStructuredAdd:
+		keys = "type directive · Enter plan & validate · Esc cancel"
 	case m.showRollbackConfirm:
 		keys = "Enter rollback · Esc cancel"
 	case m.showCommandPalette:
