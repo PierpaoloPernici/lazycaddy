@@ -619,6 +619,11 @@ func (p *Planner) Reorder(a, b Node) (*PlannedEdit, error) {
 		return nil, fmt.Errorf("%w: node ranges overlap; cannot reorder safely", ErrInvalidContext)
 	}
 	span := SourceRange{Start: earlier.Range.Start, End: later.Range.End}
-	text := later.Range.Text(p.doc.Source) + earlier.Range.Text(p.doc.Source)
+	// Keep the original bytes between the two nodes in place relative to
+	// the reordered constructs. This preserves comments, blank lines and
+	// unknown directives instead of silently dropping the gap.
+	text := later.Range.Text(p.doc.Source) +
+		string(p.doc.Source[earlier.Range.End:later.Range.Start]) +
+		earlier.Range.Text(p.doc.Source)
 	return &PlannedEdit{DocID: p.doc.Path, Range: span, NewText: text, Op: EditReorder}, nil
 }

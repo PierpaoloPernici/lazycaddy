@@ -475,6 +475,22 @@ func TestPlanReorderSiblingDirectives(t *testing.T) {
 	}
 }
 
+func TestPlanReorderPreservesIntermediateBytes(t *testing.T) {
+	src := "example.test {\n\tfile_server\n\t# keep between\n\tcustom_plugin thing\n\trespond ok\n}\n"
+	doc, p := planDoc(t, src)
+	fs := findNode(t, doc, "file_server")
+	respond := findNode(t, doc, "respond")
+	e, err := p.Reorder(fs, respond)
+	if err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\trespond ok\n\t# keep between\n\tcustom_plugin thing\n\tfile_server\n}\n"
+	if string(out) != want {
+		t.Errorf("result = %q, want %q", out, want)
+	}
+}
+
 func TestPlanReorderSiblingBlocks(t *testing.T) {
 	doc, p := planDoc(t, "a.test {\n\trespond a\n}\nb.test {\n\trespond b\n}\n")
 	siteA := findNode(t, doc, "a.test")
