@@ -397,3 +397,63 @@ func TestEditorCancelled_SnapshotSurfaced(t *testing.T) {
 		t.Errorf("error history missing the snapshot next-action: %+v", m.errorHistory)
 	}
 }
+
+func TestErrorHistory_EmptyStateAndKeys(t *testing.T) {
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))})
+	m = resize(m, 80, 24)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
+	if !m.showErrorHistory {
+		t.Fatal("showErrorHistory = false after H")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "no recorded errors") {
+		t.Errorf("empty error history should show the empty state:\n%s", view)
+	}
+
+	// Scrolling keys keep the view open; ctrl+c requests quit.
+	m.recordError("op", "boom", "run make check")
+	m.recordError("op2", "boom again", "")
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if !m.showErrorHistory {
+		t.Fatal("scroll keys closed the error history")
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !updated.(*Model).showErrorHistory {
+		t.Fatal("ctrl+c closed the error history before quitting")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+c from the error history did not request quit")
+	}
+}
+
+func TestErrorHistory_TinyWindow(t *testing.T) {
+	m := newLoadedModel(t, fakeLoader{state: stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))})
+	m.recordError("op", "a long failure message that overflows the pane", "next action")
+
+	// Narrow and short windows clamp the panes instead of crashing.
+	if got := m.errorHistoryView(1, 2); got == "" {
+		t.Error("errorHistoryView(1, 2) rendered empty")
+	}
+	if got := m.errorHistoryView(40, 2); got == "" {
+		t.Error("errorHistoryView(40, 2) rendered empty")
+	}
+	m.syncErrorHistoryViewport(1, 2)
+	m.syncErrorHistoryViewport(5, 0)
+
+	// The unsaved-confirmation modal clamps the same way.
+	m.showUnsavedConfirm = true
+	if got := m.unsavedConfirmView(2, 2); got == "" {
+		t.Error("unsavedConfirmView(2, 2) rendered empty")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if !m.showUnsavedConfirm {
+		t.Fatal("an unhandled key closed the unsaved-changes confirmation")
+	}
+}

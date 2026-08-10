@@ -34,6 +34,10 @@ func TestScanString(t *testing.T) {
 		{name: "invalid escape", line: `"bad\q"`, wantIndex: 0, wantOK: false},
 		{name: "unterminated", line: `"missing`, wantIndex: 0, wantOK: false},
 		{name: "offset", line: `x "value"`, start: 2, want: "value", wantIndex: 9, wantOK: true},
+		{name: "backspace formfeed cr", line: `"a\bb\fc\rd"`, want: "a\bb\fc\rd", wantIndex: 12, wantOK: true},
+		{name: "trailing backslash", line: `"abc\`, wantIndex: 0, wantOK: false},
+		{name: "truncated unicode escape", line: `"a\u12`, wantIndex: 0, wantOK: false},
+		{name: "invalid unicode hex", line: `"a\u12zz"`, wantIndex: 0, wantOK: false},
 	}
 
 	for _, tt := range tests {
@@ -388,6 +392,62 @@ func TestHighlightJSON_PartialMalformed(t *testing.T) {
 	if len(got) != 1 || got[0].Kind != SpanNumber || got[0].Start != 0 || got[0].End != 4 {
 		t.Errorf("HighlightJSON(console line) = %v, want a single number span [0,4)", got)
 	}
+}
+
+// TestHighlightJSON_MalformedStructures locks the span behaviour for
+// structurally broken lines: unmatched closers fail without spans when
+// nothing preceded them, and return the partial span set otherwise.
+func TestHighlightJSON_MalformedStructures(t *testing.T) {
+	for _, line := range []string{"}", "]"} {
+		if got := HighlightJSON([]byte(line)); got != nil {
+			t.Errorf("HighlightJSON(%q) = %v, want nil", line, got)
+		}
+	}
+	checkSpans(t, `{"a":1}}`, []Span{
+		{SpanDelimiter, 0, 1},
+		{SpanKey, 1, 4},
+		{SpanDelimiter, 4, 5},
+		{SpanNumber, 5, 6},
+		{SpanDelimiter, 6, 7},
+	})
+	checkSpans(t, `{"a":1]`, []Span{
+		{SpanDelimiter, 0, 1},
+		{SpanKey, 1, 4},
+		{SpanDelimiter, 4, 5},
+		{SpanNumber, 5, 6},
+	})
+	// A string token that fails to terminate and a malformed number both
+	// return the spans produced before the error.
+	checkSpans(t, `{"a":"x}`, []Span{
+		{SpanDelimiter, 0, 1},
+		{SpanKey, 1, 4},
+		{SpanDelimiter, 4, 5},
+	})
+	checkSpans(t, `{"a":-}`, []Span{
+		{SpanDelimiter, 0, 1},
+		{SpanKey, 1, 4},
+		{SpanDelimiter, 4, 5},
+	})
+	// Whitespace between a key and its colon is skipped when deciding
+	// whether the token is a key, and after a value before a comma.
+	checkSpans(t, `{"a" : 1}`, []Span{
+		{SpanDelimiter, 0, 1},
+		{SpanKey, 1, 4},
+		{SpanDelimiter, 5, 6},
+		{SpanNumber, 7, 8},
+		{SpanDelimiter, 8, 9},
+	})
+	checkSpans(t, `{"a":"x" ,"b":1}`, []Span{
+		{SpanDelimiter, 0, 1},
+		{SpanKey, 1, 4},
+		{SpanDelimiter, 4, 5},
+		{SpanString, 5, 8},
+		{SpanDelimiter, 9, 10},
+		{SpanKey, 10, 13},
+		{SpanDelimiter, 13, 14},
+		{SpanNumber, 14, 15},
+		{SpanDelimiter, 15, 16},
+	})
 }
 
 // TestHighlightJSON_Consistency asserts the span-set invariants for a variety
