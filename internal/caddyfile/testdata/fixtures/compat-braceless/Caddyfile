@@ -1,0 +1,5 @@
+# Brace-less site: the address line is the header and every following
+# directive belongs to that single site (Caddy semantics).
+localhost:8080
+	respond "brace-less" 200
+	file_server

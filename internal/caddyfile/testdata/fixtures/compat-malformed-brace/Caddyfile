@@ -1,0 +1,3 @@
+# Malformed fixture: a site address ending in a curly brace without a
+# separating space is an explicit parse error.
+http://a.test{

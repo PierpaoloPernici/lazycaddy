@@ -1,0 +1,5 @@
+app.example.test {
+	# Nested relative import into a sibling directory.
+	import ../fragments/upstream.caddy
+	import common-headers
+}

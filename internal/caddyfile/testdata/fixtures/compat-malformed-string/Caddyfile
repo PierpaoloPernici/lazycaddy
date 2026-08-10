@@ -1,0 +1,3 @@
+# Malformed fixture: an unterminated double-quoted string. Lexing fails
+# before any node can be built.
+respond "unterminated

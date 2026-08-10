@@ -1,0 +1,73 @@
+# Sanitized compatibility corpus for the v0.3 structured-editing surface:
+# heredocs, quoted braces, escaped input, placeholders, matchers, snippets,
+# named routes, nested blocks and unknown/plugin directives. Uses
+# documentation-only domains and is not required to validate with Caddy.
+
+{
+	log {
+		output stdout
+		level DEBUG
+	}
+}
+
+# Snippet with a placeholder header and a heredoc response body.
+(template) {
+	header X-Template {env.TEMPLATE_NAME}
+	respond <<HTML
+		<html>{placeholder}</html>
+	HTML 200
+}
+
+# Named route reused through invoke.
+&(app-route) {
+	reverse_proxy app-01.example.test:8080 {
+		header_up Host {host}
+	}
+}
+
+# Matcher definitions, handler blocks, quoted braces, escaped newlines,
+# heredocs and an unknown plugin directive.
+example.test {
+	@api path /api/*
+	@static path /static/*
+
+	handle @api {
+		reverse_proxy 192.0.2.10:8080
+	}
+	handle @static {
+		file_server {
+			root /var/www
+		}
+	}
+
+	# Quoted braces are literal string content, not block tokens.
+	respond "literal } brace { text" 200
+
+	# A trailing backslash chains the following line into this directive.
+	header X-Chained first \
+		second
+
+	# An escaped heredoc opener stays a plain word.
+	fake_heredoc \<< literal
+
+	# Unknown/plugin directives stay opaque and lossless.
+	custom_plugin_directive "keep this raw"
+
+	# Nested handler blocks.
+	route {
+		handle /admin/* {
+			redir /admin/login 302
+		}
+	}
+
+	# Snippet import with arguments.
+	import template frontpage
+}
+
+other.example.test {
+	respond <<EOM
+		hello world
+	EOM
+	invoke app-route
+	reverse_proxy {env.BACKEND}:8080
+}

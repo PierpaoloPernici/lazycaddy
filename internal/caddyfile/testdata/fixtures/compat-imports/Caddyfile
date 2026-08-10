@@ -1,0 +1,6 @@
+# Import corpus: plain imports, nested relative imports, glob imports and
+# cross-document snippet references. The base file is imported first so the
+# common-headers snippet is visible to the site files loaded afterwards.
+import fragments/base.caddy
+import sites/*.caddy
+import fragments/nested/*.caddy
