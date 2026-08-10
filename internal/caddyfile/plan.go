@@ -569,9 +569,12 @@ type DirectiveInsert struct {
 	Anchor Node
 }
 
-// insertPoint resolves the byte offset where an insertion lands.
-func (p *Planner) insertPoint(parent Node, ins DirectiveInsert, geo blockGeometry) (int, error) {
-	switch ins.Position {
+// insertPoint resolves the byte offset where an insertion lands inside a
+// block. Both directive insertion (Insert) and structural node creation
+// (CreateNode) share this resolution so their placement semantics stay
+// identical.
+func (p *Planner) insertPoint(parent Node, pos InsertPosition, anchor Node, geo blockGeometry) (int, error) {
+	switch pos {
 	case InsertAtStart:
 		return geo.interiorStart, nil
 	case InsertAtEnd:
@@ -584,14 +587,14 @@ func (p *Planner) insertPoint(parent Node, ins DirectiveInsert, geo blockGeometr
 		}
 		return last.Range.End, nil
 	case InsertBefore, InsertAfter:
-		idx := indexOfChild(parent, ins.Anchor)
+		idx := indexOfChild(parent, anchor)
 		if idx < 0 {
-			if _, err := p.locate(ins.Anchor); err != nil {
+			if _, err := p.locate(anchor); err != nil {
 				return -1, err
 			}
 			return -1, fmt.Errorf("%w: anchor is not a direct child of the target block", ErrInvalidContext)
 		}
-		if ins.Position == InsertBefore {
+		if pos == InsertBefore {
 			return parent.Children[idx].Range.Start, nil
 		}
 		if parent.Children[idx].Range.End > geo.interiorEnd {
@@ -599,7 +602,7 @@ func (p *Planner) insertPoint(parent Node, ins DirectiveInsert, geo blockGeometr
 		}
 		return parent.Children[idx].Range.End, nil
 	}
-	return -1, fmt.Errorf("%w: unknown insertion position %d", ErrAmbiguous, ins.Position)
+	return -1, fmt.Errorf("%w: unknown insertion position %d", ErrAmbiguous, pos)
 }
 
 // Insert plans inserting a new supported directive line into a block. The
@@ -626,7 +629,7 @@ func (p *Planner) Insert(parent Node, ins DirectiveInsert) (*PlannedEdit, error)
 	if err != nil {
 		return nil, err
 	}
-	pos, err := p.insertPoint(*plocated, ins, geo)
+	pos, err := p.insertPoint(*plocated, ins.Position, ins.Anchor, geo)
 	if err != nil {
 		return nil, err
 	}
