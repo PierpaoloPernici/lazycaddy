@@ -777,7 +777,7 @@ mutating service action without a verified service adapter.
 
 ## Caddy compatibility monitoring
 
-Compatibility with Caddy is an ongoing maintenance responsibility. Maintain a supported-version record and review Caddy changes through these sources, in descending order of authority:
+Compatibility with Caddy is an ongoing maintenance responsibility. Maintain the [supported-version record](docs/caddy-compatibility.md) and review Caddy changes through these sources, in descending order of authority:
 
 1. GitHub Releases and official release notes for new versions, deprecations and breaking changes;
 2. official Caddy documentation for Caddyfile syntax, directives, modules and Admin API behavior;
