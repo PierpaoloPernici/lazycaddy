@@ -159,6 +159,40 @@ func TestStructuredAddPickerKeepsLetterHInFilter(t *testing.T) {
 	}
 }
 
+func TestStructuredReverseProxyFormOpensHelp(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	var gotURL string
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m.browser = app.BrowserFunc(func(_ context.Context, url string) error {
+		gotURL = url
+		return nil
+	})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	for _, r := range []rune("reverse") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.structuredAddMode != structuredAddReverseProxy {
+		t.Fatalf("structured add mode = %v, want reverse_proxy form", m.structuredAddMode)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("reverse_proxy form help did not return browser command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if gotURL != "https://caddyserver.com/docs/caddyfile/directives/reverse_proxy" {
+		t.Errorf("opened URL = %q, want reverse_proxy documentation", gotURL)
+	}
+	if !m.showStructuredAdd {
+		t.Fatal("reverse_proxy form help closed the form")
+	}
+}
+
 func TestStructuredAddPickerRowsDoNotWrap(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",

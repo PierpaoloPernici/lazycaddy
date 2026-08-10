@@ -174,6 +174,12 @@ func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.structuredAddMode == structuredAddPicker {
 		return m.updateStructuredPickerKey(msg)
 	}
+	if msg.String() == "ctrl+h" {
+		return m.startHelpURL(
+			caddyfileDirectiveHelpURL(m.structuredAddParent, m.structuredAddName),
+			m.structuredAddName+" help",
+		)
+	}
 	if m.structuredAddMode == structuredAddReverseProxy {
 		return m.updateStructuredReverseProxyKey(msg)
 	}
