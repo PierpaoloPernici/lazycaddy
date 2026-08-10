@@ -14,6 +14,19 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
+// Injectable filesystem operations. Production code calls through these
+// vars; tests swap them (with t.Cleanup restore) to force each error
+// branch deterministically instead of relying on permission-dependent
+// failures.
+var (
+	createTemp = os.CreateTemp
+	mkdirAll   = os.MkdirAll
+	removePath = os.Remove
+	writePath  = os.WriteFile
+	fileWrite  = (*os.File).Write
+	fileClose  = (*os.File).Close
+)
+
 // ErrNoEditor reports that neither $VISUAL nor $EDITOR names a command, so
 // there is no editor to launch.
 var ErrNoEditor = errors.New("no editor configured (set $VISUAL or $EDITOR)")
@@ -213,17 +226,17 @@ func (e *editor) prepare(ctx context.Context, doc *caddyfile.Document, r caddyfi
 		return nil, fmt.Errorf("editor: snapshot: %w", err)
 	}
 	rangeBytes := doc.Source[r.Start:r.End]
-	tempFile, err := os.CreateTemp(e.tempDir, "lazycaddy-editor-*")
+	tempFile, err := createTemp(e.tempDir, "lazycaddy-editor-*")
 	if err != nil {
 		return nil, fmt.Errorf("editor: create temp file: %w", err)
 	}
-	if _, err := tempFile.Write(rangeBytes); err != nil {
-		tempFile.Close()
-		os.Remove(tempFile.Name())
+	if _, err := fileWrite(tempFile, rangeBytes); err != nil {
+		fileClose(tempFile)
+		removePath(tempFile.Name())
 		return nil, fmt.Errorf("editor: write temp file: %w", err)
 	}
-	if err := tempFile.Close(); err != nil {
-		os.Remove(tempFile.Name())
+	if err := fileClose(tempFile); err != nil {
+		removePath(tempFile.Name())
 		return nil, fmt.Errorf("editor: close temp file: %w", err)
 	}
 	cmd := make([]string, 0, len(argv)+1)
@@ -251,28 +264,28 @@ func (e *editor) writeSnapshot(src []byte, r caddyfile.SourceRange) (string, err
 	if e.snapshotDir != "" {
 		// The snapshot holds the full Caddyfile, which may contain
 		// secrets: the directory must be private to the operator.
-		if err := os.MkdirAll(e.snapshotDir, 0o700); err != nil {
+		if err := mkdirAll(e.snapshotDir, 0o700); err != nil {
 			return "", err
 		}
 	}
 	pattern := fmt.Sprintf("editor-%s-*.snapshot", e.clock().Format("20060102-150405"))
-	tmp, err := os.CreateTemp(e.snapshotDir, pattern)
+	tmp, err := createTemp(e.snapshotDir, pattern)
 	if err != nil {
 		return "", err
 	}
 	name := tmp.Name()
-	if _, err := tmp.Write(src); err != nil {
-		tmp.Close()
-		os.Remove(name)
+	if _, err := fileWrite(tmp, src); err != nil {
+		fileClose(tmp)
+		removePath(name)
 		return "", err
 	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(name)
+	if err := fileClose(tmp); err != nil {
+		removePath(name)
 		return "", err
 	}
 	sidecar := name + ".range"
 	content := strconv.Itoa(r.Start) + " " + strconv.Itoa(r.End) + "\n"
-	if err := os.WriteFile(sidecar, []byte(content), 0o600); err != nil {
+	if err := writePath(sidecar, []byte(content), 0o600); err != nil {
 		return "", err
 	}
 	return name, nil

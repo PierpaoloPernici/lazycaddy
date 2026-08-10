@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -913,5 +914,108 @@ func TestRetention_ListFailure(t *testing.T) {
 	r := Retention{Dir: file, Keep: 1}
 	if _, err := r.Apply(); err == nil {
 		t.Error("Apply over a file: expected an error, got nil")
+	}
+}
+
+// swap temporarily replaces an injectable package var and restores it when
+// the test finishes.
+func swap[T any](t *testing.T, dst *T, val T) {
+	t.Helper()
+	orig := *dst
+	*dst = val
+	t.Cleanup(func() { *dst = orig })
+}
+
+func TestCreate_ErrorBranches(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(t.TempDir(), "Caddyfile")
+	if err := os.WriteFile(src, []byte("example.test {\n\trespond ok\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+
+	t.Run("atomic write", func(t *testing.T) {
+		c, err := New(Options{Dir: dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		swap(t, &atomicWrite, func(string, []byte) error { return boom })
+		if _, err := c.Create(src); !strings.Contains(err.Error(), "backup: write") {
+			t.Errorf("err = %v, want the backup-write failure", err)
+		}
+	})
+	t.Run("sequence scan", func(t *testing.T) {
+		c, err := New(Options{Dir: dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		swap(t, &readDir, func(string) ([]os.DirEntry, error) { return nil, boom })
+		if _, err := c.Create(src); !strings.Contains(err.Error(), "backup: scan") {
+			t.Errorf("err = %v, want the sequence-scan failure", err)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		fail func(t *testing.T)
+	}{
+		{
+			name: "sidecar chmod",
+			fail: func(t *testing.T) {
+				swap(t, &fileChmod, func(*os.File, os.FileMode) error { return boom })
+			},
+		},
+		{
+			name: "sidecar write",
+			fail: func(t *testing.T) {
+				swap(t, &fileWrite, func(*os.File, []byte) (int, error) { return 0, boom })
+			},
+		},
+		{
+			name: "sidecar sync",
+			fail: func(t *testing.T) {
+				swap(t, &fileSync, func(*os.File) error { return boom })
+			},
+		},
+		{
+			name: "sidecar close",
+			fail: func(t *testing.T) {
+				swap(t, &fileClose, func(*os.File) error { return boom })
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := New(Options{Dir: dir})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.fail(t)
+			if _, err := c.Create(src); !strings.Contains(err.Error(), "backup: identity") {
+				t.Errorf("err = %v, want the sidecar failure", err)
+			}
+			// An orphaned backup must never survive a sidecar failure.
+			leftover, err := filepath.Glob(filepath.Join(dir, "*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(leftover) != 0 {
+				t.Errorf("sidecar failure left backup files behind: %v", leftover)
+			}
+		})
+	}
+}
+
+func TestParseName_RejectsMalformed(t *testing.T) {
+	for _, name := range []string{
+		"",
+		"garbage",
+		"2026-08-01T20-10-00",               // missing sequence + source
+		"2026-08-01T20-10-00-Caddyfile",     // missing sequence
+		"2026-13-99T99-99-99-001-Caddyfile", // invalid date
+		"2026-08-01T20-10-00-abc-Caddyfile", // non-numeric sequence
+		"2026-08-01T20-10-00--1-Caddyfile",  // negative sequence
+	} {
+		if _, ok := parseName(name); ok {
+			t.Errorf("parseName(%q) = ok, want false", name)
+		}
 	}
 }
