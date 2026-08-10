@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
@@ -20,6 +21,13 @@ type structuredInput struct {
 }
 
 const maxStructuredInputRunes = 512
+
+type structuredAddMode int
+
+const (
+	structuredAddPicker structuredAddMode = iota
+	structuredAddArgs
+)
 
 func (i *structuredInput) update(msg tea.KeyMsg) {
 	switch msg.Type {
@@ -89,9 +97,8 @@ func (m *Model) canAddStructured() bool {
 		sel.node.Kind == caddyfile.KindNamedRoute || sel.node.Kind == caddyfile.KindGlobalOptions
 }
 
-// startStructuredAdd opens the raw one-line directive prompt. The planner,
-// rather than the UI, decides whether the requested directive is supported in
-// the selected context.
+// startStructuredAdd opens the context-aware directive picker. The planner,
+// rather than the UI, remains authoritative about the selected context.
 func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	if !m.canAddStructured() {
 		m.statusMessage = "✗ add unavailable: select a supported block in writable mode"
@@ -102,6 +109,10 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	m.structuredAddDoc = sel.doc
 	m.structuredAddParent = sel.node
 	m.structuredAddKey = sel.key
+	m.structuredAddMode = structuredAddPicker
+	m.structuredAddName = ""
+	m.structuredAddItems = caddyfile.InsertableDirectiveNames(sel.node)
+	m.structuredAddCursor = 0
 	m.showStructuredAdd = true
 	m.statusMessage = ""
 	return m, nil
@@ -110,8 +121,17 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 // updateStructuredAddKey handles the text prompt and starts validation when
 // the operator submits a directive line.
 func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.structuredAddMode == structuredAddPicker {
+		return m.updateStructuredPickerKey(msg)
+	}
 	switch msg.String() {
-	case "esc", "ctrl+c":
+	case "esc":
+		m.structuredAddMode = structuredAddPicker
+		m.structuredAddName = ""
+		m.structuredAddInput = structuredInput{}
+		m.structuredAddCursor = 0
+		return m, nil
+	case "ctrl+c":
 		m.closeStructuredAdd()
 		m.statusMessage = "add cancelled"
 		return m, nil
@@ -128,27 +148,78 @@ func (m *Model) closeStructuredAdd() {
 	m.structuredAddDoc = nil
 	m.structuredAddParent = caddyfile.Node{}
 	m.structuredAddKey = ""
+	m.structuredAddMode = structuredAddPicker
+	m.structuredAddName = ""
+	m.structuredAddItems = nil
+	m.structuredAddCursor = 0
 }
 
-func splitStructuredDirective(line string) (name, args string, ok bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || strings.ContainsAny(line, "\r\n") {
-		return "", "", false
+func (m *Model) filteredStructuredItems() []string {
+	query := strings.ToLower(strings.TrimSpace(m.structuredAddInput.String()))
+	if query == "" {
+		return append([]string(nil), m.structuredAddItems...)
 	}
-	idx := strings.IndexAny(line, " \t")
-	if idx < 0 {
-		return line, "", true
+	var filtered []string
+	for _, name := range m.structuredAddItems {
+		meta := caddyfile.Catalog(name)
+		if strings.Contains(strings.ToLower(name), query) ||
+			(meta != nil && strings.Contains(strings.ToLower(meta.Description), query)) {
+			filtered = append(filtered, name)
+		}
 	}
-	return line[:idx], strings.TrimSpace(line[idx:]), true
+	return filtered
+}
+
+func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.closeStructuredAdd()
+		m.statusMessage = "add cancelled"
+		return m, nil
+	case "up", "ctrl+k":
+		if m.structuredAddCursor > 0 {
+			m.structuredAddCursor--
+		}
+		return m, nil
+	case "down", "ctrl+j":
+		items := m.filteredStructuredItems()
+		if m.structuredAddCursor < len(items)-1 {
+			m.structuredAddCursor++
+		}
+		return m, nil
+	case "enter":
+		items := m.filteredStructuredItems()
+		if len(items) == 0 {
+			m.statusMessage = "✗ no supported directives match the current filter"
+			return m, nil
+		}
+		if m.structuredAddCursor >= len(items) {
+			m.structuredAddCursor = len(items) - 1
+		}
+		m.structuredAddName = items[m.structuredAddCursor]
+		m.structuredAddMode = structuredAddArgs
+		m.structuredAddInput = structuredInput{}
+		m.statusMessage = ""
+		return m, nil
+	}
+	m.structuredAddInput.update(msg)
+	items := m.filteredStructuredItems()
+	if len(items) == 0 {
+		m.structuredAddCursor = 0
+	} else if m.structuredAddCursor >= len(items) {
+		m.structuredAddCursor = len(items) - 1
+	}
+	return m, nil
 }
 
 func (m *Model) submitStructuredAdd() (tea.Model, tea.Cmd) {
 	if m.structuredAddBusy {
 		return m, nil
 	}
-	name, args, ok := splitStructuredDirective(m.structuredAddInput.String())
-	if !ok {
-		m.statusMessage = "✗ add requires one directive line"
+	name := m.structuredAddName
+	args := strings.TrimSpace(m.structuredAddInput.String())
+	if name == "" {
+		m.statusMessage = "✗ add requires a directive selection"
 		return m, nil
 	}
 	if m.structuredAddDoc == nil {
@@ -257,7 +328,7 @@ func (m *Model) structuredAddView(width, height int) string {
 	if boxW < 1 {
 		boxW = 1
 	}
-	boxH := 8
+	boxH := 14
 	if height < boxH {
 		boxH = height
 	}
@@ -265,9 +336,58 @@ func (m *Model) structuredAddView(width, height int) string {
 	if contentW < 1 {
 		contentW = 1
 	}
-	parent := m.structuredAddParent.Name
-	body := "Target: " + parent + "\n\n" + "directive> " + m.structuredAddInput.View() + "\n\n" + dimStyle.Render("Example: reverse_proxy localhost:8080 · Enter plans and validates")
-	return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(activeTitleStyle.Render("Add structured directive · Esc cancel") + "\n" + body)
+	if m.structuredAddMode == structuredAddArgs {
+		body := "Target: " + m.structuredAddParent.Name + "\n\n" +
+			"args> " + m.structuredAddInput.View() + "\n\n" +
+			dimStyle.Render("Enter arguments only · Esc returns to directive picker")
+		return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
+			activeTitleStyle.Render("Add "+m.structuredAddName+" · Esc cancel") + "\n" + body,
+		)
+	}
+
+	items := m.filteredStructuredItems()
+	rows := boxH - 6
+	if rows < 1 {
+		rows = 1
+	}
+	start := m.structuredAddCursor - rows/2
+	if start < 0 {
+		start = 0
+	}
+	if start+rows > len(items) {
+		start = len(items) - rows
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + rows
+	if end > len(items) {
+		end = len(items)
+	}
+	var body strings.Builder
+	body.WriteString("Target: " + m.structuredAddParent.Name + "\n")
+	body.WriteString("filter> " + m.structuredAddInput.View() + "\n\n")
+	if len(items) == 0 {
+		body.WriteString(dimStyle.Render("no supported directives match this filter"))
+	} else {
+		for i := start; i < end; i++ {
+			meta := caddyfile.Catalog(items[i])
+			description := ""
+			if meta != nil {
+				description = truncateToWidth(meta.Description, max(1, contentW-18))
+			}
+			line := fmt.Sprintf("%-16s %s", items[i], description)
+			if i == m.structuredAddCursor {
+				body.WriteString(cursorStyle.Render("› ") + line)
+			} else {
+				body.WriteString("  " + line)
+			}
+			body.WriteByte('\n')
+		}
+	}
+	return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
+		activeTitleStyle.Render("Add directive · ↑/↓ choose · Enter select · Esc cancel") + "\n" + body.String(),
+	)
 }
 
 func (m *Model) structuredAddOverlay(base string, width, height int) string {

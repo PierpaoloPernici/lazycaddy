@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -372,6 +373,22 @@ func TestPlanInsertContextValidation(t *testing.T) {
 			t.Errorf("result = %q, want %q", out, want)
 		}
 	})
+}
+
+func TestInsertableDirectiveNamesAreContextAware(t *testing.T) {
+	doc, _ := planDoc(t, "{\n\tdebug\n}\nexample.test {\n\troute {\n\t\trespond ok\n\t}\n}\n")
+	globals := findNode(t, doc, "")
+	site := findNode(t, doc, "example.test")
+	route := findNode(t, doc, "route")
+	if got := InsertableDirectiveNames(globals); !reflect.DeepEqual(got, []string{"log"}) {
+		t.Fatalf("global insertable directives = %v, want [log]", got)
+	}
+	if got := InsertableDirectiveNames(site); len(got) != 9 || got[0] != "encode" || got[len(got)-1] != "tls" {
+		t.Fatalf("site insertable directives = %v, want sorted common directives", got)
+	}
+	if got := InsertableDirectiveNames(route); len(got) != 7 {
+		t.Fatalf("route insertable directives = %v, want 7 handler directives", got)
+	}
 }
 
 func TestPlanInsertUnsupportedDirective(t *testing.T) {

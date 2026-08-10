@@ -3,6 +3,7 @@ package caddyfile
 import (
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // Sentinel errors reported by the structured edit planner. Every operation
@@ -306,23 +307,52 @@ var insertSpecs = map[string]struct {
 
 // parentCtx classifies the block kind of a node as an insertion context.
 func (p *Planner) parentCtx(n Node) (insertCtx, error) {
+	ctx, ok := insertionContext(n)
+	if ok {
+		return ctx, nil
+	}
+	if n.Kind == KindDirective {
+		return 0, fmt.Errorf("%w: %q is not a block that accepts inserted directives", ErrInvalidContext, n.Name)
+	}
+	return 0, fmt.Errorf("%w: unsupported parent kind %v", ErrInvalidContext, n.Kind)
+}
+
+func insertionContext(n Node) (insertCtx, bool) {
 	switch n.Kind {
 	case KindSite:
-		return ctxSite, nil
+		return ctxSite, true
 	case KindSnippet:
-		return ctxSnippet, nil
+		return ctxSnippet, true
 	case KindNamedRoute:
-		return ctxNamedRoute, nil
+		return ctxNamedRoute, true
 	case KindGlobalOptions:
-		return ctxGlobal, nil
+		return ctxGlobal, true
 	case KindDirective:
 		if handlerContainers[n.Name] {
-			return ctxHandler, nil
+			return ctxHandler, true
 		}
-		return 0, fmt.Errorf("%w: %q is not a block that accepts inserted directives", ErrInvalidContext, n.Name)
-	default:
-		return 0, fmt.Errorf("%w: unsupported parent kind %v", ErrInvalidContext, n.Kind)
+		return 0, false
 	}
+	return 0, false
+}
+
+// InsertableDirectiveNames returns the advisory catalog names that the
+// planner permits in the supplied parent context. The result is sorted for a
+// deterministic picker; the final operation must still go through Insert,
+// which remains the authority for the exact document and node identity.
+func InsertableDirectiveNames(parent Node) []string {
+	ctx, ok := insertionContext(parent)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for name, spec := range insertSpecs {
+		if spec.ctx&ctx != 0 && Catalog(name) != nil {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // blockGeometry describes where insertions may land inside a block node.

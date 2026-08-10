@@ -19,7 +19,11 @@ func TestStructuredAdd_PlansValidatesAndOpensDiff(t *testing.T) {
 	if !m.showStructuredAdd {
 		t.Fatal("showStructuredAdd = false after a")
 	}
-	for _, r := range []rune("reverse_proxy localhost:8080") {
+	for _, r := range []rune("reverse") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range []rune("localhost:8080") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -55,7 +59,7 @@ func TestStructuredAdd_InvalidDirectiveDoesNotValidate(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter, &fakeSaver{})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	for _, r := range []rune("unknown_directive value") {
+	for _, r := range []rune("unknown_directive") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -69,8 +73,30 @@ func TestStructuredAdd_InvalidDirectiveDoesNotValidate(t *testing.T) {
 	if formatter.calls != 0 {
 		t.Fatalf("formatter calls = %d, want 0", formatter.calls)
 	}
-	if !strings.Contains(m.statusMessage, "unsupported") {
-		t.Fatalf("statusMessage = %q, want unsupported error", m.statusMessage)
+	if !strings.Contains(m.statusMessage, "no supported directives") {
+		t.Fatalf("statusMessage = %q, want no-match error", m.statusMessage)
+	}
+}
+
+func TestStructuredAddPickerSelectsDirectiveBeforeArguments(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if !strings.Contains(m.View(), "reverse_proxy") {
+		t.Fatal("directive picker does not show reverse_proxy")
+	}
+	for _, r := range []rune("reverse") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.structuredAddMode != structuredAddArgs || m.structuredAddName != "reverse_proxy" {
+		t.Fatalf("picker state = mode:%v name:%q, want arguments/reverse_proxy", m.structuredAddMode, m.structuredAddName)
+	}
+	if !strings.Contains(m.View(), "args>") {
+		t.Fatal("directive picker did not switch to argument prompt")
 	}
 }
 
@@ -83,7 +109,11 @@ func TestStructuredAddDiffEnterSaves(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	for _, r := range []rune("reverse_proxy localhost:8080") {
+	for _, r := range []rune("reverse") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range []rune("localhost:8080") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
