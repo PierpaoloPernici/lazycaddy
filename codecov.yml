@@ -12,3 +12,10 @@ coverage:
     patch:
       default:
         informational: true
+
+# tmp/ is a scratch area for manual experiments and one-off development
+# tools (e.g. tmp/parsecheck) that never ship: excluding it keeps the
+# coverage metric honest about the product code without changing what
+# tests or CI run.
+ignore:
+  - "tmp/**"
