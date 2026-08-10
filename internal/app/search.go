@@ -24,8 +24,12 @@ const (
 	SearchLog
 )
 
-// SearchItem is one flattened tree row the UI builds from its items: a
-// document row (HasNode false) or a site/snippet/named-route row.
+// SearchItem is one flattened tree row the UI builds for the search
+// scope: a document row (HasNode false) or any node of the parse tree
+// (site, snippet, named route, global options, structural directive,
+// import, anonymous block, and terminal directives that are hidden from
+// the tree pane). Search covers every node; hidden leaves select their
+// nearest structural ancestor on activation.
 type SearchItem struct {
 	Label   string
 	Doc     *caddyfile.Document
