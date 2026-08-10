@@ -78,9 +78,12 @@ func commandDefinitions() []uiCommand {
 		{ID: commandValidate, Category: "Validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {
 			return m.formatter != nil
 		}, Reason: func(*Model) string { return "Caddy binary unavailable" }},
-		{ID: commandDiff, Category: "Source", Label: "Show diff", Description: "working copy or disk", Keys: []string{"D"}, Enabled: func(m *Model) bool {
+		{ID: commandDiff, Category: "Validation", Label: "Show diff", Description: "working copy or disk", Keys: []string{"D"}, Enabled: func(m *Model) bool {
 			return m.state != nil && m.state.Graph != nil
 		}, Reason: func(*Model) string { return "no configuration loaded" }},
+		{ID: commandSave, Category: "Validation", Label: "Save validated changes", Description: "write to disk", Keys: []string{"s"}, Enabled: func(m *Model) bool {
+			return m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly
+		}, Reason: func(*Model) string { return "read-only mode" }},
 		{ID: commandEdit, Category: "Source", Label: "Edit selected block", Description: "$EDITOR", Keys: []string{"e"}, Enabled: func(m *Model) bool {
 			return m.canEditSelection()
 		}, Reason: func(m *Model) string {
@@ -141,9 +144,6 @@ func commandDefinitions() []uiCommand {
 			}
 			return "select a deletable node"
 		}},
-		{ID: commandSave, Category: "Source", Label: "Save validated changes", Description: "write to disk", Keys: []string{"s"}, Enabled: func(m *Model) bool {
-			return m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly
-		}, Reason: func(*Model) string { return "read-only mode" }},
 		{ID: commandCopy, Category: "Source", Label: "Copy selected block", Description: "exact source bytes", Keys: []string{"y"}, Enabled: func(m *Model) bool {
 			return m.clipboard != nil
 		}, Reason: func(*Model) string { return "clipboard unavailable" }},

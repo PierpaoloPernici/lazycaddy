@@ -140,6 +140,12 @@ func TestCommandPalette_CategoriesAndCompactKeys(t *testing.T) {
 	if command, ok := commandDefinition(commandValidate); !ok || command.Category != "Validation" {
 		t.Fatalf("validate command = %+v, want Validation category", command)
 	}
+	if command, ok := commandDefinition(commandDiff); !ok || command.Category != "Validation" {
+		t.Fatalf("diff command = %+v, want Validation category", command)
+	}
+	if command, ok := commandDefinition(commandSave); !ok || command.Category != "Validation" {
+		t.Fatalf("save command = %+v, want Validation category", command)
+	}
 	toggleCommand, ok := commandDefinition(commandToggleBranch)
 	if !ok {
 		t.Fatal("toggle command missing from catalog")
