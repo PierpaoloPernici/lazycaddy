@@ -14,6 +14,21 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 )
 
+// Injectable filesystem operations. Production code calls through these
+// vars; tests swap them (with t.Cleanup restore) to force each error
+// branch deterministically instead of relying on permission-dependent
+// failures.
+var (
+	createTemp  = os.CreateTemp
+	removePath  = os.Remove
+	readDir     = os.ReadDir
+	fileWrite   = (*os.File).Write
+	fileChmod   = (*os.File).Chmod
+	fileSync    = (*os.File).Sync
+	fileClose   = (*os.File).Close
+	atomicWrite = caddyfile.WriteAtomic
+)
+
 // layout is the timestamp embedded in every backup name,
 // e.g. "2026-08-01T20-10-00". The dashes (not colons) keep the name
 // valid as a filename on every platform.
@@ -90,7 +105,7 @@ func (c *creator) Create(srcPath string) (string, error) {
 	}
 	name := nameFor(now, seq, srcPath)
 	path := filepath.Join(c.opts.Dir, name)
-	if err := caddyfile.WriteAtomic(path, data); err != nil {
+	if err := atomicWrite(path, data); err != nil {
 		return "", fmt.Errorf("backup: write: %w", err)
 	}
 	// Identity sidecar: the exact canonical source path, so the backup
@@ -102,8 +117,8 @@ func (c *creator) Create(srcPath string) (string, error) {
 	// whole Create and remove the already-written backup — an orphaned,
 	// un-attributable copy is worse than no copy.
 	if err := writeSidecar(path, srcPath); err != nil {
-		_ = os.Remove(path)
-		_ = os.Remove(path + sourceSuffix)
+		_ = removePath(path)
+		_ = removePath(path + sourceSuffix)
 		return "", fmt.Errorf("backup: identity: %w", err)
 	}
 	return path, nil
@@ -121,25 +136,25 @@ func writeSidecar(path, srcPath string) error {
 		mode = fi.Mode().Perm()
 	}
 	data := []byte(filepath.Clean(srcPath) + "\n")
-	f, err := os.CreateTemp(filepath.Dir(path), ".lazycaddy-*.tmp")
+	f, err := createTemp(filepath.Dir(path), ".lazycaddy-*.tmp")
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if err := f.Chmod(mode); err != nil {
-		f.Close()
+	defer func() { _ = removePath(tmp) }()
+	if err := fileChmod(f, mode); err != nil {
+		fileClose(f)
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	if _, err := fileWrite(f, data); err != nil {
+		fileClose(f)
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
+	if err := fileSync(f); err != nil {
+		fileClose(f)
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := fileClose(f); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path+sourceSuffix); err != nil {
@@ -155,7 +170,7 @@ func writeSidecar(path, srcPath string) error {
 // state is preferable to silently overwriting an existing backup.
 func (c *creator) nextSequence(t time.Time) (int, error) {
 	prefix := t.Format(layout) + "-"
-	des, err := os.ReadDir(c.opts.Dir)
+	des, err := readDir(c.opts.Dir)
 	if err != nil {
 		return 0, fmt.Errorf("backup: scan: %w", err)
 	}

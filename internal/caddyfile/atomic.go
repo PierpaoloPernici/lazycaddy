@@ -6,6 +6,19 @@ import (
 	"path/filepath"
 )
 
+// Injectable filesystem operations. Production code calls through these
+// vars; tests swap them (with t.Cleanup restore) to force each error
+// branch deterministically instead of relying on permission-dependent
+// failures.
+var (
+	createTemp = os.CreateTemp
+	removePath = os.Remove
+	fileWrite  = (*os.File).Write
+	fileChmod  = (*os.File).Chmod
+	fileSync   = (*os.File).Sync
+	fileClose  = (*os.File).Close
+)
+
 // CheckWritePreflight inspects path and returns nil when an atomic
 // replacement is safe to attempt. It reports an error when path
 // resolves through a symbolic link, when the target exists but is not
@@ -35,16 +48,16 @@ func CheckWritePreflight(path string) error {
 	// removing it immediately. This mirrors what WriteAtomic will do and
 	// fails fast on an unwritable or missing directory, without touching
 	// the target.
-	probe, err := os.CreateTemp(filepath.Dir(path), ".lazycaddy-*.tmp")
+	probe, err := createTemp(filepath.Dir(path), ".lazycaddy-*.tmp")
 	if err != nil {
 		return fmt.Errorf("directory %q not writable: %w", filepath.Dir(path), err)
 	}
 	name := probe.Name()
-	if err := probe.Close(); err != nil {
-		_ = os.Remove(name)
+	if err := fileClose(probe); err != nil {
+		_ = removePath(name)
 		return fmt.Errorf("closing write probe %q: %w", name, err)
 	}
-	if err := os.Remove(name); err != nil {
+	if err := removePath(name); err != nil {
 		return fmt.Errorf("removing write probe %q: %w", name, err)
 	}
 	return nil
@@ -70,7 +83,7 @@ func WriteAtomic(path string, data []byte) error {
 	// CreateTemp places the file in the same directory as path, which is
 	// what makes the final rename atomic (a rename across filesystems is
 	// a copy, not an atomic swap).
-	f, err := os.CreateTemp(filepath.Dir(path), ".lazycaddy-*.tmp")
+	f, err := createTemp(filepath.Dir(path), ".lazycaddy-*.tmp")
 	if err != nil {
 		return fmt.Errorf("write temp: %w", err)
 	}
@@ -78,26 +91,26 @@ func WriteAtomic(path string, data []byte) error {
 	// From here on every failure path must remove the temporary file so
 	// a crash or error does not leak partial content next to the real
 	// Caddyfile.
-	defer func() { _ = os.Remove(tempName) }()
+	defer func() { _ = removePath(tempName) }()
 
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	if _, err := fileWrite(f, data); err != nil {
+		fileClose(f)
 		return fmt.Errorf("write temp: %w", err)
 	}
 	if mode != 0 {
-		if err := f.Chmod(mode); err != nil {
-			f.Close()
+		if err := fileChmod(f, mode); err != nil {
+			fileClose(f)
 			return fmt.Errorf("chmod temp: %w", err)
 		}
 	}
 	// fsync before rename so the data is durable before it is published
 	// under path; otherwise a crash could leave a renamed file with
 	// missing or partial content.
-	if err := f.Sync(); err != nil {
-		f.Close()
+	if err := fileSync(f); err != nil {
+		fileClose(f)
 		return fmt.Errorf("sync temp: %w", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := fileClose(f); err != nil {
 		return fmt.Errorf("close temp: %w", err)
 	}
 	if err := os.Rename(tempName, path); err != nil {

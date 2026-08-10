@@ -1,8 +1,10 @@
 package caddyfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -250,4 +252,73 @@ func TestWriteAtomic_MissingDirectoryExtra(t *testing.T) {
 	if err := WriteAtomic(path, []byte("data")); err == nil {
 		t.Error("WriteAtomic in a missing directory: expected an error, got nil")
 	}
+}
+
+// swap temporarily replaces an injectable package var and restores it when
+// the test finishes.
+func swap[T any](t *testing.T, dst *T, val T) {
+	t.Helper()
+	orig := *dst
+	*dst = val
+	t.Cleanup(func() { *dst = orig })
+}
+
+func TestWriteAtomic_ErrorBranches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	boom := errors.New("boom")
+
+	t.Run("create temp", func(t *testing.T) {
+		swap(t, &createTemp, func(string, string) (*os.File, error) { return nil, boom })
+		if err := WriteAtomic(path, []byte("x")); !strings.Contains(err.Error(), "write temp") {
+			t.Errorf("err = %v, want the write-temp failure", err)
+		}
+	})
+	t.Run("write", func(t *testing.T) {
+		swap(t, &fileWrite, func(*os.File, []byte) (int, error) { return 0, boom })
+		if err := WriteAtomic(path, []byte("x")); !strings.Contains(err.Error(), "write temp") {
+			t.Errorf("err = %v, want the write-temp failure", err)
+		}
+	})
+	t.Run("chmod", func(t *testing.T) {
+		if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+			t.Fatalf("seed file: %v", err)
+		}
+		swap(t, &fileChmod, func(*os.File, os.FileMode) error { return boom })
+		if err := WriteAtomic(path, []byte("new")); !strings.Contains(err.Error(), "chmod temp") {
+			t.Errorf("err = %v, want the chmod-temp failure", err)
+		}
+	})
+	t.Run("sync", func(t *testing.T) {
+		swap(t, &fileSync, func(*os.File) error { return boom })
+		if err := WriteAtomic(path, []byte("x")); !strings.Contains(err.Error(), "sync temp") {
+			t.Errorf("err = %v, want the sync-temp failure", err)
+		}
+	})
+	t.Run("close", func(t *testing.T) {
+		swap(t, &fileClose, func(*os.File) error { return boom })
+		if err := WriteAtomic(path, []byte("x")); !strings.Contains(err.Error(), "close temp") {
+			t.Errorf("err = %v, want the close-temp failure", err)
+		}
+	})
+	assertNoTempFiles(t, dir)
+}
+
+func TestCheckWritePreflight_ErrorBranches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	boom := errors.New("boom")
+
+	t.Run("probe close", func(t *testing.T) {
+		swap(t, &fileClose, func(*os.File) error { return boom })
+		if err := CheckWritePreflight(path); !strings.Contains(err.Error(), "closing write probe") {
+			t.Errorf("err = %v, want the probe-close failure", err)
+		}
+	})
+	t.Run("probe remove", func(t *testing.T) {
+		swap(t, &removePath, func(string) error { return boom })
+		if err := CheckWritePreflight(path); !strings.Contains(err.Error(), "removing write probe") {
+			t.Errorf("err = %v, want the probe-remove failure", err)
+		}
+	})
 }

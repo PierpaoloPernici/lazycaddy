@@ -828,3 +828,108 @@ func TestExecRunner_ExitWithExpiredContext(t *testing.T) {
 		}
 	})
 }
+
+// swap temporarily replaces an injectable package var and restores it when
+// the test finishes.
+func swap[T any](t *testing.T, dst *T, val T) {
+	t.Helper()
+	orig := *dst
+	*dst = val
+	t.Cleanup(func() { *dst = orig })
+}
+
+func TestFormat_WriteTempFails(t *testing.T) {
+	runner := &fakeRunner{fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+		return nil, nil, 0, nil
+	}}
+	v := newValidator(t, runner)
+	swap(t, &createTemp, func(string, string) (*os.File, error) { return nil, errors.New("boom") })
+	if _, err := v.Format(context.Background(), []byte("x")); !strings.Contains(err.Error(), "validator: write temp") {
+		t.Errorf("err = %v, want the write-temp failure", err)
+	}
+}
+
+func TestFormat_ReadFormattedFails(t *testing.T) {
+	runner := &fakeRunner{fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+		return nil, nil, 0, nil
+	}}
+	v := newValidator(t, runner)
+	swap(t, &readPath, func(string) ([]byte, error) { return nil, errors.New("boom") })
+	if _, err := v.Format(context.Background(), []byte("x")); !strings.Contains(err.Error(), "validator: read formatted file") {
+		t.Errorf("err = %v, want the read-formatted failure", err)
+	}
+}
+
+func TestValidateConfig_ErrorBranches(t *testing.T) {
+	ctx := context.Background()
+	runner := &fakeRunner{fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+		return nil, nil, 0, nil
+	}}
+	boom := errors.New("boom")
+
+	t.Run("mkdir temp", func(t *testing.T) {
+		v := newValidator(t, runner)
+		swap(t, &mkdirTemp, func(string, string) (string, error) { return "", boom })
+		_, err := v.ValidateConfig(ctx, "Caddyfile", []File{{Path: "Caddyfile", Source: []byte("x")}})
+		if !strings.Contains(err.Error(), "validator: mkdir temp") {
+			t.Errorf("err = %v, want the mkdir-temp failure", err)
+		}
+	})
+	t.Run("mkdir mirror", func(t *testing.T) {
+		v := newValidator(t, runner)
+		swap(t, &mkdirAll, func(string, os.FileMode) error { return boom })
+		_, err := v.ValidateConfig(ctx, "Caddyfile", []File{{Path: "Caddyfile", Source: []byte("x")}})
+		if !strings.Contains(err.Error(), "validator: mkdir mirror") {
+			t.Errorf("err = %v, want the mkdir-mirror failure", err)
+		}
+	})
+	t.Run("write mirror", func(t *testing.T) {
+		v := newValidator(t, runner)
+		swap(t, &writePath, func(string, []byte, os.FileMode) error { return boom })
+		_, err := v.ValidateConfig(ctx, "Caddyfile", []File{{Path: "Caddyfile", Source: []byte("x")}})
+		if !strings.Contains(err.Error(), "validator: write mirror") {
+			t.Errorf("err = %v, want the write-mirror failure", err)
+		}
+	})
+}
+
+func TestFormatAndValidate_WriteTempFails(t *testing.T) {
+	runner := &fakeRunner{fn: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+		return nil, nil, 0, nil
+	}}
+	v := newValidator(t, runner)
+	// Format's own temp file (lazycaddy-fmt-*) succeeds; the validation
+	// temp file (lazycaddy-validate-*) fails.
+	swap(t, &createTemp, func(dir, pattern string) (*os.File, error) {
+		if strings.Contains(pattern, "lazycaddy-validate-") {
+			return nil, errors.New("boom")
+		}
+		return os.CreateTemp(dir, pattern)
+	})
+	_, _, err := v.FormatAndValidate(context.Background(), "Caddyfile", []byte("x"))
+	if !strings.Contains(err.Error(), "validator: write temp") {
+		t.Errorf("err = %v, want the write-temp failure", err)
+	}
+}
+
+func TestWriteTemp_ErrorBranches(t *testing.T) {
+	boom := errors.New("boom")
+
+	t.Run("write", func(t *testing.T) {
+		swap(t, &fileWrite, func(*os.File, []byte) (int, error) { return 0, boom })
+		if _, _, err := writeTemp("lazycaddy-fmt-*.caddy", []byte("x")); err == nil {
+			t.Error("writeTemp write failure not surfaced")
+		}
+	})
+	t.Run("close", func(t *testing.T) {
+		swap(t, &fileClose, func(*os.File) error { return boom })
+		if _, _, err := writeTemp("lazycaddy-fmt-*.caddy", []byte("x")); err == nil {
+			t.Error("writeTemp close failure not surfaced")
+		}
+	})
+	t.Run("empty name", func(t *testing.T) {
+		if _, _, err := writeTemp("", []byte("x")); err == nil {
+			t.Error("writeTemp with an empty name did not fail")
+		}
+	})
+}

@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+// Injectable filesystem operations. Production code calls through these
+// vars; tests swap them (with t.Cleanup restore) to force each error
+// branch deterministically instead of relying on permission-dependent
+// failures.
+var (
+	createTemp = os.CreateTemp
+	mkdirAll   = os.MkdirAll
+	mkdirTemp  = os.MkdirTemp
+	removePath = os.Remove
+	readPath   = os.ReadFile
+	writePath  = os.WriteFile
+	fileWrite  = (*os.File).Write
+	fileClose  = (*os.File).Close
+)
+
 // Options configure a Validator. The zero value is not usable: callers must
 // supply BinaryPath and may override the other fields.
 type Options struct {
@@ -97,7 +112,7 @@ func (v *Validator) Format(ctx context.Context, src []byte) ([]byte, error) {
 			ExitCode: exit,
 		}
 	}
-	formatted, err := os.ReadFile(path)
+	formatted, err := readPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("validator: read formatted file: %w", err)
 	}
@@ -162,7 +177,7 @@ func (v *Validator) ValidateConfig(ctx context.Context, rootPath string, files [
 	if len(files) == 0 {
 		return nil, fmt.Errorf("validator: validate config: no documents")
 	}
-	tmpDir, err := os.MkdirTemp("", "lazycaddy-validate-config-*")
+	tmpDir, err := mkdirTemp("", "lazycaddy-validate-config-*")
 	if err != nil {
 		return nil, fmt.Errorf("validator: mkdir temp: %w", err)
 	}
@@ -188,10 +203,10 @@ func (v *Validator) ValidateConfig(ctx context.Context, rootPath string, files [
 			return nil, fmt.Errorf("validator: mirror path escapes temp dir: %s", f.Path)
 		}
 		mirrored[m] = clean
-		if err := os.MkdirAll(filepath.Dir(m), 0o755); err != nil {
+		if err := mkdirAll(filepath.Dir(m), 0o755); err != nil {
 			return nil, fmt.Errorf("validator: mkdir mirror %s: %w", filepath.Dir(m), err)
 		}
-		if err := os.WriteFile(m, f.Source, 0o600); err != nil {
+		if err := writePath(m, f.Source, 0o600); err != nil {
 			return nil, fmt.Errorf("validator: write mirror %s: %w", m, err)
 		}
 	}
@@ -267,17 +282,17 @@ func writeTemp(name string, data []byte) (string, func(), error) {
 	if name == "" {
 		return "", nil, errors.New("validator: empty temp name")
 	}
-	f, err := os.CreateTemp("", name)
+	f, err := createTemp("", name)
 	if err != nil {
 		return "", nil, err
 	}
-	cleanup := func() { _ = os.Remove(f.Name()) }
-	if _, err := f.Write(data); err != nil {
-		f.Close()
+	cleanup := func() { _ = removePath(f.Name()) }
+	if _, err := fileWrite(f, data); err != nil {
+		fileClose(f)
 		cleanup()
 		return "", nil, err
 	}
-	if err := f.Close(); err != nil {
+	if err := fileClose(f); err != nil {
 		cleanup()
 		return "", nil, err
 	}

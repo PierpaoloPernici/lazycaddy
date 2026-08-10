@@ -800,3 +800,119 @@ func TestEditorComplete_NodeEmptyStillCancels(t *testing.T) {
 		t.Errorf("empty node edit must yield no Content/Diagnostics: %+v", result)
 	}
 }
+
+// swap temporarily replaces an injectable package var and restores it when
+// the test finishes.
+func swap[T any](t *testing.T, dst *T, val T) {
+	t.Helper()
+	orig := *dst
+	*dst = val
+	t.Cleanup(func() { *dst = orig })
+}
+
+func TestEditorPrepare_TempFileErrorBranches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+	boom := errors.New("boom")
+
+	t.Run("create temp", func(t *testing.T) {
+		e := newTestEditor(t)
+		doc := sampleDoc(t, path, src)
+		swap(t, &createTemp, func(dir, pattern string) (*os.File, error) {
+			if strings.Contains(pattern, "lazycaddy-editor-") {
+				return nil, boom
+			}
+			return os.CreateTemp(dir, pattern)
+		})
+		if _, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range); !strings.Contains(err.Error(), "create temp file") {
+			t.Errorf("err = %v, want the create-temp failure", err)
+		}
+	})
+	t.Run("write", func(t *testing.T) {
+		e := newTestEditor(t)
+		doc := sampleDoc(t, path, src)
+		swap(t, &fileWrite, func(f *os.File, b []byte) (int, error) {
+			if strings.Contains(f.Name(), "lazycaddy-editor-") {
+				return 0, boom
+			}
+			return f.Write(b)
+		})
+		if _, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range); !strings.Contains(err.Error(), "write temp file") {
+			t.Errorf("err = %v, want the write-temp failure", err)
+		}
+	})
+	t.Run("close", func(t *testing.T) {
+		e := newTestEditor(t)
+		doc := sampleDoc(t, path, src)
+		swap(t, &fileClose, func(f *os.File) error {
+			if strings.Contains(f.Name(), "lazycaddy-editor-") {
+				return boom
+			}
+			return f.Close()
+		})
+		if _, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range); !strings.Contains(err.Error(), "close temp file") {
+			t.Errorf("err = %v, want the close-temp failure", err)
+		}
+	})
+	t.Run("whitespace command", func(t *testing.T) {
+		e := newTestEditor(t, EditorOptions{
+			LookupEnv: func(key string) (string, bool) {
+				switch key {
+				case "VISUAL":
+					return "", true // set but empty: treated as unset
+				case "EDITOR":
+					return "   ", true // splits to an empty argv
+				}
+				return "", false
+			},
+		})
+		doc := sampleDoc(t, path, src)
+		if _, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range); !errors.Is(err, ErrNoEditor) {
+			t.Fatalf("err = %v, want ErrNoEditor for a whitespace-only command", err)
+		}
+	})
+}
+
+func TestEditorWriteSnapshot_ErrorBranches(t *testing.T) {
+	boom := errors.New("boom")
+	src := []byte("example.test {\n\trespond ok\n}\n")
+	r := caddyfile.SourceRange{Start: 0, End: len(src)}
+
+	t.Run("mkdir", func(t *testing.T) {
+		e := newTestEditor(t, EditorOptions{SnapshotDir: filepath.Join(t.TempDir(), "snap")})
+		swap(t, &mkdirAll, func(string, os.FileMode) error { return boom })
+		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the mkdir failure", err)
+		}
+	})
+	t.Run("create temp", func(t *testing.T) {
+		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
+		swap(t, &createTemp, func(string, string) (*os.File, error) { return nil, boom })
+		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the create-temp failure", err)
+		}
+	})
+	t.Run("write", func(t *testing.T) {
+		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
+		swap(t, &fileWrite, func(*os.File, []byte) (int, error) { return 0, boom })
+		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the write failure", err)
+		}
+	})
+	t.Run("close", func(t *testing.T) {
+		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
+		swap(t, &fileClose, func(*os.File) error { return boom })
+		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the close failure", err)
+		}
+	})
+	t.Run("sidecar", func(t *testing.T) {
+		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
+		swap(t, &writePath, func(string, []byte, os.FileMode) error { return boom })
+		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the sidecar write failure", err)
+		}
+	})
+}
