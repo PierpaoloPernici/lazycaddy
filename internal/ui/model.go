@@ -31,14 +31,47 @@ const logMaxLines = 1000
 // view is open and following.
 const logPollInterval = 500 * time.Millisecond
 
-// item is one row of the document tree: a document row (depth 0) or one of
-// its site blocks, snippets or named routes (depth 1).
+// Tree vocabulary (canonical):
+//
+//	ParsedNode — any parser node, including leaves (caddyfile.Node).
+//	TreeRow    — a visible row in the UI tree (this struct).
+//	Branch     — a visible row with children; only branches expand,
+//	             collapse and respond to Enter/Space.
+//	Leaf       — a node without children; leaves are not visible tree
+//	             rows in the main tree, but stay in the parse tree, the
+//	             source view and the search scope.
+//	Document   — a root branch (one TreeRow per caddyfile.Document).
+//
+// Markers: › selected row, - expanded branch, + collapsed branch; blank
+// for visible leaf rows. ASCII -/+ are used (not ▾/▸ or −) for terminal
+// readability.
+//
+// item is a TreeRow: a document row, or a branch of the parse tree
+// (site blocks, snippets, named routes, global options, and any node
+// with children such as a directive with a nested block), nested
+// recursively. Leaves are never rows. depth is purely a rendering
+// indent; expansion logic uses hasChildren and the stable key.
 type item struct {
-	label     string
-	depth     int
-	doc       *caddyfile.Document
-	node      caddyfile.Node
-	hasNode   bool
+	// key is the stable identity of the row: the document path for a
+	// document row, or document path + kind + name + exact source range
+	// for a node row. The cursor and the collapsed map anchor on it, so
+	// a rebuild after a save, a search jump or a reload re-selects the
+	// same row.
+	key string
+	// label is the concise row text shown in the tree pane.
+	label string
+	// depth is the nesting level used only for the graphical indent.
+	depth int
+	doc   *caddyfile.Document
+	node  caddyfile.Node
+	// hasNode is true for every node row (document rows carry no node).
+	hasNode bool
+	// hasChildren is true when the row can expand: a document with
+	// parsed nodes, or a block node with children. Leaf rows have no
+	// expansion marker and cannot be toggled.
+	hasChildren bool
+	// collapsed is the current expand/collapse state of the row, kept in
+	// sync with the model's collapsed map.
 	collapsed bool
 }
 
@@ -185,6 +218,10 @@ type deleteValidatedMsg struct {
 // confirmation. path may be an imported file; it is the exact document the
 // edit targets. nodeName and startLine carry the identity of the edited
 // node so the tree can re-anchor the selection after a structural save.
+// itemKey is the pre-edit stable key of the selected row; the post-save
+// re-anchor tries it first (the node survived at the same range) and
+// falls back to the node name and then the document row when the edit
+// moved or resized the node.
 type pendingEdit struct {
 	path         string
 	original     []byte
@@ -192,6 +229,7 @@ type pendingEdit struct {
 	snapshotPath string
 	nodeName     string
 	startLine    int
+	itemKey      string
 }
 
 // pendingDelete holds a validated document with the selected node removed,
@@ -558,7 +596,11 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 // Load resolves the configuration through the injected loader and
 // builds the document tree. Parse errors are kept inside the state so
 // the raw source view remains available; only a read failure (missing
-// file) is returned.
+// file) is returned. The initial tree layout is deterministic: every
+// document root is expanded, every visible branch below the document
+// roots starts collapsed, and the cursor starts on the first document
+// row. Expansion state is derived per session and never persisted across
+// sessions unless explicitly configured.
 func (m *Model) Load() error {
 	state, err := m.loader.LoadState()
 	m.state = state
@@ -570,6 +612,10 @@ func (m *Model) Load() error {
 		// Copy the root source so later disk changes can be detected
 		// by comparing against this snapshot.
 		m.loadedBytes = append([]byte(nil), state.Graph.Root.Source...)
+		// A fresh session never inherits expansion state: seed the
+		// startup layout and start on the first visible document row.
+		m.collapsed = map[string]bool{}
+		seedCollapsedState(state.Graph, m.collapsed)
 		m.items = buildItems(state.Graph, m.collapsed)
 		m.cursor = 0
 		// A fresh load never inherits a stale loaded claim: whether the
@@ -828,6 +874,14 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter", " ":
 		m.toggleCursor()
+	case "left":
+		m.collapseOrExpand(false)
+	case "right":
+		m.collapseOrExpand(true)
+	case "+":
+		m.expandAllBranches()
+	case "-":
+		m.collapseDescendants()
 	case "pgup":
 		m.viewport.PageUp()
 	case "pgdown":
@@ -1172,10 +1226,14 @@ func (m *Model) resolveChangeReload() (tea.Model, tea.Cmd) {
 		return m, m.watchCmd()
 	}
 	m.state.Graph = state.Graph
-	m.items = buildItems(state.Graph, m.collapsed)
-	if m.cursor >= len(m.items) && len(m.items) > 0 {
-		m.cursor = len(m.items) - 1
+	// Re-anchor the cursor on the previously selected row's stable key; a
+	// rebuild must never lose the selection, and the key survives a graph
+	// reload as long as the row still exists.
+	prevKey := ""
+	if sel := m.selectedItem(); sel != nil {
+		prevKey = sel.key
 	}
+	m.rebuildTree(prevKey)
 	// Discard the in-memory working state: the graph now reflects disk.
 	m.loadedBytes = append([]byte(nil), state.Graph.Root.Source...)
 	m.workingBytes = nil
@@ -1253,16 +1311,26 @@ func (m *Model) recomputeSearch() {
 			}
 			// Document row: path and content matches.
 			scope.Items = append(scope.Items, app.SearchItem{Label: doc.Path, Doc: doc})
-			// Every node, independent of the collapsed UI state: a global
-			// search must cover collapsed documents too.
-			for _, n := range doc.Nodes {
-				scope.Items = append(scope.Items, app.SearchItem{Label: nodeLabel(n), Doc: doc, Node: n, HasNode: true})
-			}
+			// Every node, recursively, independent of the collapsed UI
+			// state: a global search must cover collapsed documents and
+			// collapsed blocks too, including leaf directives, imports
+			// and anonymous blocks.
+			appendSearchItems(&scope.Items, doc, doc.Nodes)
 		}
 	}
 	m.searchResults = m.searcher.Search(string(m.searchQuery), scope)
 	m.searchCursor = 0
 	m.searchViewport.GotoTop()
+}
+
+// appendSearchItems adds one SearchItem per node in nodes, recursing into
+// children, so the global search scope covers the whole parse tree of
+// every document with the same labels the tree would show.
+func appendSearchItems(items *[]app.SearchItem, doc *caddyfile.Document, nodes []caddyfile.Node) {
+	for _, n := range nodes {
+		*items = append(*items, app.SearchItem{Label: nodeLabel(n), Doc: doc, Node: n, HasNode: true})
+		appendSearchItems(items, doc, n.Children)
+	}
 }
 
 // closeSearch dismisses the search modal and clears its state. It never
@@ -1285,29 +1353,52 @@ func (m *Model) activateSearchResult(r app.SearchResult) {
 	m.sourceRevealLine = 0
 	switch r.Kind {
 	case app.SearchNode:
-		// A search covers collapsed documents too; expand the containing
-		// document first so its node row exists in the tree.
-		if r.Doc != nil && m.collapsed[r.Doc.Path] {
-			delete(m.collapsed, r.Doc.Path)
-			if m.state != nil && m.state.Graph != nil {
-				m.items = buildItems(m.state.Graph, m.collapsed)
-			}
+		// A search covers every node, including collapsed rows and hidden
+		// leaf directives. Expand every ancestor of the node (the document
+		// row first, then each parent block) so the containing rows exist
+		// in the tree.
+		if r.Doc == nil || m.state == nil || m.state.Graph == nil {
+			return
 		}
-		for i := range m.items {
-			it := &m.items[i]
-			if it.doc == r.Doc && it.hasNode && it.node.Range == r.Node.Range {
-				m.cursor = i
-				return
-			}
+		expandNodeAncestors(r.Doc, r.Node, m.collapsed)
+		if nodeIsTreeRow(&r.Node) {
+			// A structural node: its own row is visible, select it by its
+			// stable key.
+			m.rebuildTree(itemKey(r.Doc, &r.Node))
+			return
 		}
+		// A leaf directive has no tree row of its own: select the nearest
+		// visible ancestor (the deepest enclosing branch, or the document
+		// row for a top-level leaf such as an import) and reveal the exact
+		// source line of the hit without creating a new row.
+		parent := nearestVisibleAncestor(r.Doc, r.Node)
+		if parent != nil {
+			m.rebuildTree(itemKey(r.Doc, parent))
+		} else {
+			m.rebuildTree(itemKey(r.Doc, nil))
+		}
+		m.sourceRevealLine = r.Node.Range.StartLine
+		return
 	case app.SearchDocument:
-		for i := range m.items {
-			it := &m.items[i]
-			if it.doc != nil && !it.hasNode && it.doc.Path == r.Doc.Path {
-				m.cursor = i
-				break
+		// A path hit (no line) selects the document row. A line hit
+		// selects the deepest tree row containing the line, so the cursor
+		// lands on the structural node instead of the document row, and
+		// reveals the exact source line. The target document and every
+		// structural ancestor are expanded first (mirroring the
+		// SearchNode branch), so the row exists in the rebuilt tree even
+		// when the document or a containing branch is collapsed; a line
+		// outside every tree row (for example inside a hidden top-level
+		// leaf such as an import) expands the document root only.
+		var node *caddyfile.Node
+		if r.Line > 0 {
+			node = structuralNodeAtLine(r.Doc, r.Line)
+			if node != nil {
+				expandNodeAncestors(r.Doc, *node, m.collapsed)
+			} else {
+				delete(m.collapsed, itemKey(r.Doc, nil))
 			}
 		}
+		m.rebuildTree(itemKey(r.Doc, node))
 		if r.Line > 0 {
 			m.sourceRevealLine = r.Line
 		}
@@ -1323,6 +1414,69 @@ func (m *Model) activateSearchResult(r app.SearchResult) {
 	}
 }
 
+// expandNodeAncestors removes the collapsed state of every row on the
+// path from the document row down to target, so the target row exists in
+// the visible tree after the next rebuild. Search covers collapsed rows,
+// so activating a nested hit must reveal the whole ancestor chain. It is
+// a no-op when doc is nil or the node is not found.
+func expandNodeAncestors(doc *caddyfile.Document, target caddyfile.Node, collapsed map[string]bool) {
+	if doc == nil {
+		return
+	}
+	delete(collapsed, itemKey(doc, nil))
+	targetKey := nodeKey(&target)
+	var walk func(nodes []caddyfile.Node, chain []caddyfile.Node) bool
+	walk = func(nodes []caddyfile.Node, chain []caddyfile.Node) bool {
+		for i := range nodes {
+			n := nodes[i]
+			if nodeKey(&n) == targetKey {
+				for _, a := range chain {
+					delete(collapsed, itemKey(doc, &a))
+				}
+				return true
+			}
+			if len(n.Children) > 0 {
+				if walk(n.Children, append(chain, n)) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	walk(doc.Nodes, nil)
+}
+
+// nearestVisibleAncestor returns the deepest ancestor of target that is
+// rendered as a visible tree row: for a nested leaf directive the
+// enclosing block (the immediate parent always has children, so it always
+// renders). Top-level leaves are caught by nodeIsTreeRow before this
+// helper is reached; only nested leaves land here. It is used when a
+// search hit activates a leaf directive, which has no tree row of its own.
+func nearestVisibleAncestor(doc *caddyfile.Document, target caddyfile.Node) *caddyfile.Node {
+	targetKey := nodeKey(&target)
+	var found *caddyfile.Node
+	var walk func(nodes []caddyfile.Node, chain []caddyfile.Node) bool
+	walk = func(nodes []caddyfile.Node, chain []caddyfile.Node) bool {
+		for i := range nodes {
+			n := nodes[i]
+			if nodeKey(&n) == targetKey {
+				if len(chain) > 0 {
+					found = &chain[len(chain)-1]
+				}
+				return true
+			}
+			if len(n.Children) > 0 {
+				if walk(n.Children, append(chain, n)) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	walk(doc.Nodes, nil)
+	return found
+}
+
 // revealSearchCursor scrolls the search viewport just enough so that the
 // row under searchCursor is visible, mirroring revealLogCursor.
 func (m *Model) revealSearchCursor() {
@@ -1335,9 +1489,9 @@ func (m *Model) revealSearchCursor() {
 
 // startEditor begins the $EDITOR round-trip for the selected node. It is
 // gated on a configured editor, writable mode, a free busy state and a
-// selected node. A document row (depth 0, no node) has no range to edit,
-// so the command is disabled there by design: there is no fallback to
-// opening the whole file.
+// selected node. A document row (no node) has no range to edit, so the
+// command is disabled there by design: there is no fallback to opening
+// the whole file.
 func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 	if m.state == nil || m.state.Graph == nil {
 		return m, nil
@@ -1515,10 +1669,12 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	// the document row instead.
 	nodeName := ""
 	startLine := 0
+	itemKey := ""
 	if session.Mode == app.EditNode {
 		if sel := m.selectedItem(); sel != nil && sel.hasNode {
 			nodeName = sel.node.Name
 			startLine = sel.node.Range.StartLine
+			itemKey = sel.key
 		}
 	}
 	m.pendingEdit = &pendingEdit{
@@ -1528,6 +1684,7 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		snapshotPath: result.SnapshotPath,
 		nodeName:     nodeName,
 		startLine:    startLine,
+		itemKey:      itemKey,
 	}
 	lines, err := diff.Unified(result.Original, result.Content, session.DocPath, session.DocPath+" (edited)")
 	if err != nil {
@@ -1912,25 +2069,214 @@ func (m *Model) closeDetail() {
 	m.showDetail = false
 }
 
-// toggleCursor expands or collapses the document row under the cursor,
-// then re-anchors the cursor on that row.
+// toggleCursor expands or collapses the row under the cursor, then
+// re-anchors the cursor on that row's stable key. Only rows with children
+// toggle; on a leaf row it is a no-op — nothing is collapsed and no
+// workflow is started, the existing selection keeps showing the source
+// pane.
 func (m *Model) toggleCursor() {
-	if m.cursor >= len(m.items) || m.state == nil || m.state.Graph == nil {
+	cur := m.selectedItem()
+	if cur == nil || !cur.hasChildren {
 		return
 	}
-	cur := m.items[m.cursor]
-	if cur.depth != 0 || cur.doc == nil {
+	m.collapsed[cur.key] = !m.collapsed[cur.key]
+	m.rebuildTree(cur.key)
+}
+
+// collapseOrExpand collapses (expand=false, Left) or expands
+// (expand=true, Right) the selected row when it has children. Rows
+// already in the requested state and leaf rows are no-ops. The cursor
+// stays anchored on the row's key.
+func (m *Model) collapseOrExpand(expand bool) {
+	cur := m.selectedItem()
+	if cur == nil || !cur.hasChildren {
 		return
 	}
-	path := cur.doc.Path
-	m.collapsed[path] = !m.collapsed[path]
+	if expand {
+		if !cur.collapsed {
+			return
+		}
+		delete(m.collapsed, cur.key)
+	} else {
+		if cur.collapsed {
+			return
+		}
+		m.collapsed[cur.key] = true
+	}
+	m.rebuildTree(cur.key)
+}
+
+// rebuildTree re-flattens the visible tree from the graph and re-anchors
+// the cursor on the row carrying anchorKey. Every tree rebuild goes
+// through here so the selection is always recovered by the item key;
+// when the key is gone (for example after a delete removed the node) the
+// cursor is clamped to the last row.
+func (m *Model) rebuildTree(anchorKey string) {
+	if m.state == nil || m.state.Graph == nil {
+		return
+	}
 	m.items = buildItems(m.state.Graph, m.collapsed)
-	for i, it := range m.items {
-		if it.doc != nil && it.doc.Path == path && it.depth == 0 {
-			m.cursor = i
-			break
+	if anchorKey != "" {
+		for i := range m.items {
+			if m.items[i].key == anchorKey {
+				m.cursor = i
+				return
+			}
 		}
 	}
+	if len(m.items) == 0 {
+		m.cursor = 0
+		return
+	}
+	if m.cursor >= len(m.items) {
+		m.cursor = len(m.items) - 1
+	}
+}
+
+// expandAllBranches expands every visible branch recursively, document
+// roots included. It is a no-op when no branch is collapsed, and the
+// selection is preserved: an expansion never hides a row.
+func (m *Model) expandAllBranches() {
+	if m.state == nil || m.state.Graph == nil {
+		return
+	}
+	changed := false
+	for _, doc := range m.state.Graph.Documents {
+		if doc == nil {
+			continue
+		}
+		if key := itemKey(doc, nil); m.collapsed[key] {
+			delete(m.collapsed, key)
+			changed = true
+		}
+		var walk func(nodes []caddyfile.Node)
+		walk = func(nodes []caddyfile.Node) {
+			for i := range nodes {
+				n := &nodes[i]
+				if len(visibleTreeChildren(n.Children)) > 0 {
+					if key := itemKey(doc, n); m.collapsed[key] {
+						delete(m.collapsed, key)
+						changed = true
+					}
+				}
+				walk(n.Children)
+			}
+		}
+		walk(doc.Nodes)
+	}
+	if !changed {
+		return // no collapsed branch: no-op
+	}
+	anchor := ""
+	if sel := m.selectedItem(); sel != nil {
+		anchor = sel.key
+	}
+	m.rebuildTree(anchor)
+}
+
+// collapseDescendants collapses every visible branch below the document
+// roots recursively, keeping the document roots expanded. It is a no-op
+// when no branch exists below the roots or everything is already
+// collapsed. The selection is preserved when its row survives; a hidden
+// selection moves to the nearest visible ancestor.
+func (m *Model) collapseDescendants() {
+	if m.state == nil || m.state.Graph == nil {
+		return
+	}
+	var branchKeys []string
+	for _, doc := range m.state.Graph.Documents {
+		if doc == nil {
+			continue
+		}
+		var walk func(nodes []caddyfile.Node)
+		walk = func(nodes []caddyfile.Node) {
+			for i := range nodes {
+				n := &nodes[i]
+				if len(visibleTreeChildren(n.Children)) > 0 {
+					branchKeys = append(branchKeys, itemKey(doc, n))
+				}
+				walk(n.Children)
+			}
+		}
+		walk(doc.Nodes)
+	}
+	if len(branchKeys) == 0 {
+		return // no expandable branch below the roots: no-op
+	}
+	changed := false
+	for _, key := range branchKeys {
+		if !m.collapsed[key] {
+			changed = true
+		}
+		m.collapsed[key] = true
+	}
+	for _, doc := range m.state.Graph.Documents {
+		if doc == nil {
+			continue
+		}
+		// Document roots stay expanded.
+		if key := itemKey(doc, nil); m.collapsed[key] {
+			delete(m.collapsed, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return // already collapsed below the roots: no-op
+	}
+	// Re-anchor the selection: keep the row when it survives the rebuild,
+	// otherwise move to the nearest visible ancestor.
+	prev := m.selectedItem()
+	selKey := ""
+	if prev != nil {
+		selKey = prev.key
+	}
+	m.rebuildTree(selKey)
+	if prev == nil {
+		return
+	}
+	if cur := m.selectedItem(); cur == nil || cur.key != selKey {
+		if prev.hasNode {
+			m.rebuildTree(m.nearestVisibleAncestorKey(prev.doc, prev.node))
+		} else {
+			m.rebuildTree(selKey)
+		}
+	}
+}
+
+// nearestVisibleAncestorKey returns the item key of the deepest ancestor
+// row of node that is present in the current tree (m.items), falling back
+// to the document row. It is used when a collapse-all rebuild hides the
+// selected row: the selection moves to the closest row that is still
+// visible.
+func (m *Model) nearestVisibleAncestorKey(doc *caddyfile.Document, target caddyfile.Node) string {
+	targetKey := nodeKey(&target)
+	var chain []caddyfile.Node
+	var walk func(nodes []caddyfile.Node, ancestors []caddyfile.Node) bool
+	walk = func(nodes []caddyfile.Node, ancestors []caddyfile.Node) bool {
+		for i := range nodes {
+			n := nodes[i]
+			if nodeKey(&n) == targetKey {
+				chain = append(chain, ancestors...)
+				return true
+			}
+			if len(n.Children) > 0 {
+				if walk(n.Children, append(ancestors, n)) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	walk(doc.Nodes, nil)
+	for i := len(chain) - 1; i >= 0; i-- {
+		key := itemKey(doc, &chain[i])
+		for j := range m.items {
+			if m.items[j].key == key {
+				return key
+			}
+		}
+	}
+	return itemKey(doc, nil)
 }
 
 // startFormatAndValidate triggers a caddy fmt + caddy validate
@@ -2488,8 +2834,19 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 	pe := m.pendingEdit
 	cleanPath := filepath.Clean(path)
 	idx := -1
-	if pe != nil && pe.nodeName != "" {
-		// Prefer the edited node: same name in the saved document.
+	if pe != nil && pe.itemKey != "" {
+		// Prefer the exact pre-edit row identity: the node survived at
+		// the same range, so its stable key still matches.
+		for i := range m.items {
+			if m.items[i].key == pe.itemKey {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 && pe != nil && pe.nodeName != "" {
+		// The edit moved or resized the node: fall back to the same name
+		// in the saved document.
 		for i := range m.items {
 			it := &m.items[i]
 			if it.doc != nil && filepath.Clean(it.doc.Path) == cleanPath && it.hasNode && it.node.Name == pe.nodeName {
@@ -3084,32 +3441,33 @@ func (m *Model) treePane(width, height int) string {
 			end = len(m.items)
 		}
 		for i := start; i < end; i++ {
-			it := m.items[i]
-			line := renderItem(it)
-			if i == m.cursor {
-				line = cursorStyle.Render("▸ " + line)
-			} else {
-				line = "  " + line
-			}
-			body.WriteString(line + "\n")
+			body.WriteString(renderTreeRow(m.items[i], i == m.cursor) + "\n")
 		}
 	}
 	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
 }
 
-func renderItem(it item) string {
-	indent := strings.Repeat("  ", it.depth)
-	if it.depth == 0 {
-		marker := "−" // expanded
-		if it.collapsed {
-			marker = "+" // collapsed
+// renderTreeRow renders one visible tree row: the selection marker in
+// its own column, the expansion marker in its own column, then the
+// depth indent and the label. The two columns keep the row state
+// explicit: › marks the selected row, - an expanded branch and + a
+// collapsed branch. Rows without visible children (for example an empty
+// site block or a block holding only hidden leaf directives) carry no
+// expansion marker. The reserved leaf marker · is not rendered because
+// leaves are not tree rows yet.
+func renderTreeRow(it item, selected bool) string {
+	sel := "  "
+	if selected {
+		sel = "› "
+	}
+	exp := "  "
+	if it.hasChildren {
+		exp = "+ " // collapsed branch
+		if !it.collapsed {
+			exp = "- " // expanded branch
 		}
-		return fmt.Sprintf("%s%s %s", indent, marker, filepath.Base(it.doc.Path))
 	}
-	if it.hasNode {
-		return fmt.Sprintf("%s%s", indent, it.label)
-	}
-	return indent + it.label
+	return fmt.Sprintf("%s%s%s%s", sel, exp, strings.Repeat("  ", it.depth), it.label)
 }
 
 // sourcePane renders the raw, unmodified source of the selected
@@ -3185,23 +3543,23 @@ func (m *Model) syncSource(srcW, paneH int) {
 	}
 
 	// Reveal-if-needed, but only when the selection changed, the source
-	// was refreshed, or a search activated a document line: after a manual
-	// scroll the viewport must stay where the user left it, while a save
-	// or a search activation must re-position the viewport on the
-	// selected node / line.
+	// was refreshed, or a search activated a line: after a manual scroll
+	// the viewport must stay where the user left it, while a save or a
+	// search activation must re-position the viewport on the selected
+	// node / line. A one-shot search-activated line (a document content
+	// hit or a leaf-directive hit, which selects a structural ancestor
+	// without a row of its own) takes precedence over the node reveal so
+	// the exact hit line is always shown.
 	if key != prevSel || refresh || m.sourceRevealLine > 0 {
-		if key.hasNode {
-			m.sourceRevealLine = 0
-			m.revealRange(key.start, key.end)
-		} else if m.sourceRevealLine > 0 {
-			// A search result activated a document content line: reveal
-			// it (one-shot) instead of resetting to the top.
+		if m.sourceRevealLine > 0 {
 			offset := m.sourceRevealLine - 1 // 1-based line → 0-based offset
 			if offset < 0 {
 				offset = 0
 			}
 			m.viewport.SetYOffset(offset)
 			m.sourceRevealLine = 0
+		} else if key.hasNode {
+			m.revealRange(key.start, key.end)
 		} else {
 			// Returning to a document row: reset the source view to the top
 			// (the "home" position) instead of keeping a stale node reveal.
@@ -3322,7 +3680,7 @@ func (m *Model) syncLogViewport(width, height int) {
 		for i, entry := range m.logLines {
 			gutter := "  "
 			if i == m.logCursor {
-				gutter = cursorStyle.Render("▸ ")
+				gutter = cursorStyle.Render("› ")
 			}
 			// renderCompactLogLine truncates the plain text before
 			// styling, so a long line can never cut an ANSI escape
@@ -3509,9 +3867,17 @@ func (m *Model) footer(width int) string {
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.state != nil && m.state.Graph != nil:
-		keys = fmt.Sprintf("↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s%s · q quit%s · %d items", reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, backupSuffix, errorHistorySuffix, len(m.items))
+		// The navigation hint is context-aware: expand/collapse is
+		// advertised only when the selected row has children. On a leaf
+		// row Enter/←/→ do nothing, so no toggle key is advertised. The
+		// tree-wide + expand all / - collapse all keys always apply.
+		navKeys := "↑/↓ move"
+		if sel := m.selectedItem(); sel != nil && sel.hasChildren {
+			navKeys = "↑/↓ move · Enter/←/→ toggle"
+		}
+		keys = fmt.Sprintf("%s · PgUp/PgDown scroll · v format & validate · D diff%s%s%s%s · s save%s%s%s%s · + expand all · - collapse all · q quit%s · %d items", navKeys, reloadSuffix, editSuffix, fullEditSuffix, deleteSuffix, logSuffix, searchSuffix, copySuffix, backupSuffix, errorHistorySuffix, len(m.items))
 	default:
-		keys = "↑/↓ move · Enter toggle · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + backupSuffix + " · q quit" + errorHistorySuffix
+		keys = "↑/↓ move · PgUp/PgDown scroll · v format & validate · D diff" + reloadSuffix + " · s save" + logSuffix + searchSuffix + copySuffix + backupSuffix + " · q quit" + errorHistorySuffix
 	}
 	return footerStyle.Width(width).Render(renderFooterKeys(keys))
 }
@@ -3559,7 +3925,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 	// (matching the tree+source pane math elsewhere), pass
 	// width - 2 here so the total comes out to width.
 	//
-	// Within the pane, the cursor prefix ("▸ " or "  ") eats 2 more
+	// Within the pane, the cursor prefix ("› " or "  ") eats 2 more
 	// cells, so the available text width is width - 6. Truncate
 	// each diagnostic string to that width to keep long messages
 	// from pushing the pane past its right border.
@@ -3587,7 +3953,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 			d := m.diagnostics[i]
 			line := truncateToWidth(d.String(), textW)
 			if i == m.diagCursor {
-				line = cursorStyle.Render("▸ " + line)
+				line = cursorStyle.Render("› " + line)
 			} else {
 				line = "  " + line
 			}
@@ -3739,14 +4105,14 @@ func (m *Model) syncSearchViewport(width, height int) {
 			content.WriteString(dimStyle.Render("type to search across sites, files and logs"))
 		}
 	} else {
-		textW := contentW - 2 // cursor prefix ("▸ ")
+		textW := contentW - 2 // cursor prefix ("› ")
 		if textW < 1 {
 			textW = 1
 		}
 		for i, r := range m.searchResults {
 			line := truncateToWidth(r.Label, textW)
 			if i == m.searchCursor {
-				line = cursorStyle.Render("▸ " + line)
+				line = cursorStyle.Render("› " + line)
 			} else {
 				line = "  " + line
 			}
@@ -3806,37 +4172,188 @@ func wrapText(text string, width int) string {
 	return b.String()
 }
 
-// buildItems flattens the graph into the visible tree: one row per
-// document (root first, then imported files in resolution order),
-// with site blocks, global options, snippets and named routes nested
-// under their document.
+// buildItems flattens the graph into the visible tree: one TreeRow per
+// document (root first, then imported files in resolution order), with
+// every branch of every document nested recursively underneath it (site
+// blocks, global options, snippets, named routes and nodes with
+// children). Leaves are never rows: they stay in the parse tree, the
+// source view and the search scope. Document rows and branches can
+// expand and collapse; rows without children cannot. The cursor and the
+// collapsed state anchor on each row's stable key, so a rebuild never
+// loses the selection or the expand/collapse state. Imported files stay
+// separate top-level rows: the import graph is never duplicated into a
+// synthetic syntax tree.
 func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 	var items []item
 	for _, doc := range g.Documents {
-		items = append(items, item{
-			depth:     0,
-			doc:       doc,
-			collapsed: collapsed[doc.Path],
-		})
-		if collapsed[doc.Path] {
+		if doc == nil {
 			continue
 		}
-		for _, n := range doc.Nodes {
-			// Only the rendered block kinds appear in the tree; opaque
-			// directive rows (e.g. top-level import) stay out, exactly as
-			// before. nodeLabel still labels them for global search.
-			switch n.Kind {
-			case caddyfile.KindGlobalOptions, caddyfile.KindSite, caddyfile.KindSnippet, caddyfile.KindNamedRoute:
-				items = append(items, item{label: nodeLabel(n), depth: 1, doc: doc, node: n, hasNode: true})
-			}
+		docKey := itemKey(doc, nil)
+		docCollapsed := collapsed[docKey]
+		items = append(items, item{
+			key:         docKey,
+			label:       filepath.Base(doc.Path),
+			doc:         doc,
+			hasChildren: len(visibleTreeChildren(doc.Nodes)) > 0,
+			collapsed:   docCollapsed,
+		})
+		if docCollapsed {
+			continue
 		}
+		appendNodeItems(&items, doc, doc.Nodes, 1, collapsed)
 	}
 	return items
 }
 
+// visibleTreeChildren filters children through the tree visibility
+// policy, returning the ones that themselves become tree rows. Hidden
+// leaf directives are dropped, so a row's expandable state depends only
+// on children that are actually visible: the rows shown underneath it.
+func visibleTreeChildren(nodes []caddyfile.Node) []caddyfile.Node {
+	var out []caddyfile.Node
+	for i := range nodes {
+		if renderedNode(nodes[i]) {
+			out = append(out, nodes[i])
+		}
+	}
+	return out
+}
+
+// seedCollapsedState initializes the startup expand/collapse layout for
+// a fresh session: every document root is expanded and every visible
+// branch below the document roots starts collapsed. Leaves carry no
+// state and no marker. The layout is derived from the graph and never
+// persisted across sessions unless explicitly configured.
+func seedCollapsedState(g *caddyfile.ImportGraph, collapsed map[string]bool) {
+	for _, doc := range g.Documents {
+		if doc == nil {
+			continue
+		}
+		var walk func(nodes []caddyfile.Node)
+		walk = func(nodes []caddyfile.Node) {
+			for i := range nodes {
+				n := &nodes[i]
+				if len(visibleTreeChildren(n.Children)) > 0 {
+					collapsed[itemKey(doc, n)] = true
+				}
+				walk(n.Children)
+			}
+		}
+		walk(doc.Nodes)
+	}
+}
+
+// appendNodeItems appends one visible tree row per branch in nodes,
+// recursing into the visible children. A ParsedNode is a TreeRow when it
+// can carry children: the top-level block kinds (sites, global options,
+// snippets, named routes) always render, and any other node renders only
+// when it has children. Its expandable state (hasChildren) depends on
+// the visible children only: a site whose only children are hidden
+// leaves (for example a lone import directive) renders as a leaf row
+// without an expansion marker. Leaves are never TreeRows: they stay in
+// the parse tree, the source view and the search scope. depth is only
+// the rendering indent, and a row is collapsible exactly when it has
+// visible children (they are hidden while it is collapsed).
+func appendNodeItems(items *[]item, doc *caddyfile.Document, nodes []caddyfile.Node, depth int, collapsed map[string]bool) {
+	for i := range nodes {
+		n := &nodes[i]
+		if !renderedNode(*n) {
+			continue
+		}
+		key := itemKey(doc, n)
+		visible := visibleTreeChildren(n.Children)
+		*items = append(*items, item{
+			key:         key,
+			label:       nodeLabel(*n),
+			depth:       depth,
+			doc:         doc,
+			node:        *n,
+			hasNode:     true,
+			hasChildren: len(visible) > 0,
+			collapsed:   collapsed[key],
+		})
+		if len(visible) > 0 && !collapsed[key] {
+			appendNodeItems(items, doc, visible, depth+1, collapsed)
+		}
+	}
+}
+
+// renderedNode reports whether a nested node becomes a visible tree row
+// (a Branch or an empty block-kind row). The top-level block kinds
+// (sites, global options, snippets, named routes) always render, and any
+// other node renders only when it has children (a structural block such
+// as a directive with a nested block). Terminal directives without
+// children (header_up, tls_insecure_skip_verify, protocols, respond,
+// import, …) are Leaves: they stay in the parse tree, the source view
+// and the search scope, but never become tree rows.
+func renderedNode(n caddyfile.Node) bool {
+	switch n.Kind {
+	case caddyfile.KindGlobalOptions, caddyfile.KindSite, caddyfile.KindSnippet, caddyfile.KindNamedRoute:
+		return true
+	}
+	return len(n.Children) > 0
+}
+
+// nodeIsTreeRow reports whether a node has a visible tree row of its
+// own: block kinds and any node with children. Leaves never render, so a
+// leaf search hit selects its nearest visible ancestor instead.
+func nodeIsTreeRow(n *caddyfile.Node) bool {
+	return renderedNode(*n)
+}
+
+// structuralNodeAtLine returns the deepest tree row whose source range
+// contains the 1-based line, or nil when the line falls outside every
+// tree row (the caller then selects the document row). It is used when a
+// search hit activates a source line: the tree cursor lands on the
+// containing branch instead of jumping to the document row.
+func structuralNodeAtLine(doc *caddyfile.Document, line int) *caddyfile.Node {
+	var best *caddyfile.Node
+	var walk func(nodes []caddyfile.Node)
+	walk = func(nodes []caddyfile.Node) {
+		for i := range nodes {
+			n := &nodes[i]
+			if line < n.Range.StartLine || line > n.Range.EndLine {
+				continue
+			}
+			if renderedNode(*n) {
+				best = n
+			}
+			walk(n.Children)
+		}
+	}
+	walk(doc.Nodes)
+	return best
+}
+
+// itemKey returns the stable identity of a tree row: the document path
+// for a document row, or the document path plus kind, name and exact
+// source range for a node row. The two spaces cannot collide (node keys
+// are prefixed), so a document and a node never share an anchor.
+func itemKey(doc *caddyfile.Document, n *caddyfile.Node) string {
+	path := ""
+	if doc != nil {
+		path = doc.Path
+	}
+	if n == nil {
+		return "doc:" + path
+	}
+	return nodeKey(n) + "@" + path
+}
+
+// nodeKey identifies a node within its document by kind, name and exact
+// source range. It is the per-node part of itemKey and is shared by the
+// search activation, which expands every collapsed ancestor of a hit.
+func nodeKey(n *caddyfile.Node) string {
+	return fmt.Sprintf("node:%d:%s:%d:%d", n.Kind, n.Name, n.Range.Start, n.Range.End)
+}
+
 // nodeLabel renders the tree label for a node. buildItems and the search
 // scope share it, so a collapsed document still contributes its nodes to
-// global search with the same labels the tree would show.
+// global search with the same labels the tree would show. Directive rows
+// carry a concise label made of the directive name plus its arguments,
+// truncated so a long argument list never overflows the tree pane; the
+// source pane always shows the exact bytes.
 func nodeLabel(n caddyfile.Node) string {
 	switch n.Kind {
 	case caddyfile.KindGlobalOptions:
@@ -3847,10 +4364,25 @@ func nodeLabel(n caddyfile.Node) string {
 		return "snippet (" + n.Name + ")"
 	case caddyfile.KindNamedRoute:
 		return "route &(" + n.Name + ")"
+	case caddyfile.KindDirective:
+		if n.Name == "" {
+			// An anonymous `{ ... }` block inside a block: it has no
+			// header to name it, so it needs an explicit label.
+			return "anonymous block"
+		}
+		label := n.Name
+		if args := strings.TrimSpace(n.Args); args != "" {
+			label += " " + args
+		}
+		return truncateToWidth(label, maxDirectiveLabel)
 	default:
 		return n.Name // KindSite and unknown kinds
 	}
 }
+
+// maxDirectiveLabel bounds the tree label of a directive row so a long
+// argument list (or an import path) never overflows the tree pane.
+const maxDirectiveLabel = 40
 
 // numberedSource renders the source pane content: line numbers, the exact
 // source bytes and syntax highlighting. It is a thin wrapper around

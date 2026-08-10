@@ -386,8 +386,8 @@ func TestEditorCancelled_SnapshotSurfaced(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	done := pressEditorKey(t, m)
 	m.Update(done)
 	if !strings.Contains(m.statusMessage, "recovery snapshot: editor-snapshot-9") {

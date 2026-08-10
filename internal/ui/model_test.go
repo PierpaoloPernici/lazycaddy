@@ -958,7 +958,7 @@ func TestModelSourceScrollsWithViewport(t *testing.T) {
 	readFile := func(p string) ([]byte, error) { return []byte(src.String()), nil }
 	state := stateFor(t, "config/Caddyfile", readFile)
 	m := newLoadedModel(t, fakeLoader{state: state})
-	m = resize(m, 120, 12) // short window: the source overflows the pane
+	m = resize(m, 120, 14) // short window: the source overflows the pane (the two-line footer at 120 cols shrinks the pane)
 
 	if m.viewport.YOffset != 0 {
 		t.Errorf("YOffset = %d, want 0 at the top", m.viewport.YOffset)
@@ -1160,7 +1160,9 @@ func TestModelManualScrollNotOverriddenByReveal(t *testing.T) {
 	readFile := func(p string) ([]byte, error) { return []byte(src.String()), nil }
 	state := stateFor(t, "config/Caddyfile", readFile)
 	m := newLoadedModel(t, fakeLoader{state: state})
-	m = resize(m, 120, 12)
+	// A taller window so the 20-PgUp budget reaches the top with the
+	// two-line footer at 120 columns.
+	m = resize(m, 120, 14)
 
 	// Select pbs.example.test: the reveal scrolls the viewport to it.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test
@@ -2012,7 +2014,7 @@ func TestModelFooter_GlobalWhenModalClosed(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
 	view := stripANSI(m.View())
-	for _, want := range []string{"v format & validate", "Enter toggle"} {
+	for _, want := range []string{"v format & validate", "toggle"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("global footer should show %q, got:\n%s", want, view)
 		}
@@ -2066,8 +2068,8 @@ func TestModelFooter_DetailContext(t *testing.T) {
 	if strings.Contains(view, "v format & validate") {
 		t.Errorf("detail footer must not show the global 'v format & validate' key, got:\n%s", view)
 	}
-	if strings.Contains(view, "Enter toggle") {
-		t.Errorf("detail footer must not show the global 'Enter toggle' key, got:\n%s", view)
+	if strings.Contains(view, "toggle") {
+		t.Errorf("detail footer must not show the global toggle key, got:\n%s", view)
 	}
 }
 
@@ -3394,8 +3396,10 @@ func TestModelFooter_TruncatesOnNarrow(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
 
-	view := stripANSI(m.View())
-	for _, hint := range []string{"q quit", "v format & validate", "Enter toggle"} {
+	// The footer wraps onto additional lines; flatten the whitespace so a
+	// hint split across a line break is still found intact.
+	view := strings.Join(strings.Fields(stripANSI(m.View())), " ")
+	for _, hint := range []string{"q quit", "v format & validate", "toggle"} {
 		if !strings.Contains(view, hint) {
 			t.Errorf("wrapped footer missing critical hint %q:\n%s", hint, view)
 		}
@@ -4381,8 +4385,8 @@ func TestEditorFlow_CancelledNoSave(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	done := pressEditorKey(t, m)
 	m.Update(done)
 	if m.showDiff {
@@ -4414,8 +4418,8 @@ func TestEditorFlow_InvalidShowsDiagnostics(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	done := pressEditorKey(t, m)
 	m.Update(done)
 	if !m.showDiagnostics {
@@ -4443,8 +4447,8 @@ func TestEditorFlow_NoChanges(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	done := pressEditorKey(t, m)
 	m.Update(done)
 	if m.showDiff {
@@ -4474,8 +4478,8 @@ func TestEditorFlow_DiscardViaEsc(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	done := pressEditorKey(t, m)
 	m.Update(done)
 	if !m.showDiff {
@@ -4501,8 +4505,8 @@ func TestEditorFlow_CouldNotStart(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
 	msg := cmd()
 	ready, ok := msg.(editorReadyMsg)
@@ -4549,8 +4553,8 @@ func TestEditorFlow_FooterShowsKey(t *testing.T) {
 		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
 	}
 	// On a node row the key appears.
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	if !strings.Contains(stripANSI(m.View()), "e edit") {
 		t.Errorf("footer missing 'e edit' on a node row:\n%s", m.View())
 	}
@@ -4592,8 +4596,8 @@ func TestEditorFlow_FailedSaveReopensDiff(t *testing.T) {
 			saver := &fakeSaver{err: tt.err}
 			m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 			m = resize(m, 120, 30)
-			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 			done := pressEditorKey(t, m)
 			m.Update(done)
 			if !m.showDiff {
@@ -4711,8 +4715,8 @@ func TestEditorFlow_WarningsOnlyNotSaved(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
 	done := pressEditorKey(t, m)
 	m.Update(done)
 	if m.showDiagnostics {
@@ -5018,17 +5022,21 @@ func TestSearch_EnterDocumentSelectsAndRevealsLine(t *testing.T) {
 	for _, r := range []rune("respond target") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if len(m.searchResults) != 1 {
-		t.Fatalf("results = %d, want exactly the imported-file content hit", len(m.searchResults))
+	// Results: the imported-file content line hit first (the doc item
+	// precedes the node rows), then the "respond target" node label hit.
+	if len(m.searchResults) != 2 {
+		t.Fatalf("results = %d, want the content hit plus the leaf node label hit", len(m.searchResults))
 	}
-	if m.searchResults[0].Doc == nil || m.searchResults[0].Doc.Path != "config/sites/a.caddy" {
-		t.Fatalf("hit Doc = %v, want the imported file", m.searchResults[0].Doc)
+	if m.searchResults[0].Kind != app.SearchDocument || m.searchResults[0].Doc == nil || m.searchResults[0].Doc.Path != "config/sites/a.caddy" {
+		t.Fatalf("hit[0] = %+v, want the imported-file content hit", m.searchResults[0])
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	sel := m.selectedItem()
-	if sel == nil || sel.hasNode || sel.doc == nil || sel.doc.Path != "config/sites/a.caddy" {
-		t.Errorf("selection = %+v, want the imported document row", sel)
+	// The line hit lands on the structural node containing the line (the
+	// target.example.test site of the imported file), not the document row.
+	if sel == nil || !sel.hasNode || sel.node.Name != "target.example.test" || sel.doc == nil || sel.doc.Path != "config/sites/a.caddy" {
+		t.Errorf("selection = %+v, want the target.example.test node of the imported file", sel)
 	}
 	if m.sourceRevealLine == 0 {
 		t.Error("sourceRevealLine = 0, want the hit line pending reveal")
@@ -5288,7 +5296,7 @@ func TestSearch_CollapsedDocumentStillSearched(t *testing.T) {
 
 	// Collapse the imported document: its node rows disappear from the
 	// visible tree.
-	m.collapsed["config/sites/a.caddy"] = true
+	m.collapsed[itemKey(m.state.Graph.Documents[1], nil)] = true
 	m.items = buildItems(m.state.Graph, m.collapsed)
 	if len(m.items) != 2 {
 		t.Fatalf("items = %d, want 2 (both document rows, no node rows)", len(m.items))
@@ -5314,7 +5322,7 @@ func TestSearch_CollapsedDocumentStillSearched(t *testing.T) {
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	// The document was expanded so the node row exists and is selected.
-	if m.collapsed["config/sites/a.caddy"] {
+	if m.collapsed[itemKey(m.state.Graph.Documents[1], nil)] {
 		t.Error("document still collapsed after activating its node hit")
 	}
 	sel := m.selectedItem()
@@ -5857,8 +5865,9 @@ func TestDeleteKey_DisabledOnDocumentRow(t *testing.T) {
 }
 
 // TestDelete_ImportDirectiveRejected verifies the defensive guard: an
-// import directive can never be deleted. The tree never renders import
-// rows, so the selection is set directly to exercise the guard.
+// import directive can never be deleted. Import directives are leaves
+// (not visible tree rows), so the selection is set directly to exercise
+// the guard.
 func TestDelete_ImportDirectiveRejected(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
 		"config/Caddyfile": "import sites/a.caddy\n",
@@ -5873,8 +5882,8 @@ func TestDelete_ImportDirectiveRejected(t *testing.T) {
 		Range: caddyfile.SourceRange{Start: 0, End: 18, StartLine: 1, EndLine: 1},
 	}
 	m.items = []item{
-		{depth: 0, doc: m.state.Graph.Root},
-		{depth: 1, doc: m.state.Graph.Root, node: importNode, hasNode: true},
+		{key: itemKey(m.state.Graph.Root, nil), label: "Caddyfile", doc: m.state.Graph.Root, hasChildren: true},
+		{key: itemKey(m.state.Graph.Root, &importNode), label: "import sites/a.caddy", depth: 1, doc: m.state.Graph.Root, node: importNode, hasNode: true},
 	}
 	m.cursor = 1
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})

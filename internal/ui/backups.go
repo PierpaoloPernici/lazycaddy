@@ -314,10 +314,12 @@ func (m *Model) refreshAfterRollback(targetPath string) bool {
 		return false
 	}
 	m.state.Graph = state.Graph
-	m.items = buildItems(state.Graph, m.collapsed)
-	if m.cursor >= len(m.items) && len(m.items) > 0 {
-		m.cursor = len(m.items) - 1
+	// Re-anchor the cursor on the previously selected row's stable key.
+	prevKey := ""
+	if sel := m.selectedItem(); sel != nil {
+		prevKey = sel.key
 	}
+	m.rebuildTree(prevKey)
 	// The restored file is now the graph state: re-align the root
 	// snapshots. loadedBytes/workingBytes deliberately track only the
 	// root document (the diff/save/reload guards compare against them);
@@ -406,14 +408,14 @@ func (m *Model) syncBackupViewport(width, height int) {
 	if len(m.backups) == 0 {
 		content.WriteString(dimStyle.Render("no backups for this document yet"))
 	} else {
-		textW := contentW - 2 // cursor prefix ("▸ ")
+		textW := contentW - 2 // cursor prefix ("› ")
 		if textW < 1 {
 			textW = 1
 		}
 		for i, e := range m.backups {
 			line := backupEntryLine(e, textW)
 			if i == m.backupCursor {
-				line = cursorStyle.Render("▸ " + line)
+				line = cursorStyle.Render("› " + line)
 			} else {
 				line = "  " + line
 			}
