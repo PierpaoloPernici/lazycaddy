@@ -71,7 +71,7 @@ func commandDefinitions() []uiCommand {
 		{ID: commandSearch, Category: "Navigation", Label: "Search Caddyfile", Description: "read-only search", Keys: []string{"/", "Ctrl-F"}, Enabled: func(m *Model) bool {
 			return m.searcher != nil
 		}, Reason: func(*Model) string { return "search unavailable" }},
-		{ID: commandHelp, Category: "Navigation", Label: "Open Caddyfile help", Description: "official Caddy documentation", Keys: []string{"h"}, Enabled: func(m *Model) bool {
+		{ID: commandHelp, Category: "Navigation", Label: "Open Caddyfile help", Description: "official Caddy documentation", Keys: []string{"F1"}, Enabled: func(m *Model) bool {
 			return m.browser != nil
 		}, Reason: func(*Model) string { return "browser help unavailable" }},
 		{ID: commandValidate, Category: "Source & validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {

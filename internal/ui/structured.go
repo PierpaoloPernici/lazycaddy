@@ -252,7 +252,7 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.structuredAddCursor++
 		}
 		return m, nil
-	case "h":
+	case "f1":
 		items := m.filteredStructuredItems()
 		if len(items) == 0 {
 			m.statusMessage = "✗ no supported directive is selected"
@@ -557,7 +557,7 @@ func (m *Model) structuredAddView(width, height int) string {
 			body.WriteByte('\n')
 		}
 	}
-	title := truncateToWidth("Add directive · ↑/↓ choose · h help · Enter select · Esc cancel", contentW)
+	title := truncateToWidth("Add directive · ↑/↓ choose · F1 help · Enter select · Esc cancel", contentW)
 	return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
 		activeTitleStyle.Render(title) + "\n" + body.String(),
 	)

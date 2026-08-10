@@ -452,7 +452,7 @@ type Model struct {
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard
-	// browser opens the official Caddyfile help page for the h keybinding.
+	// browser opens the official Caddyfile help page for the F1 keybinding.
 	// It is nil when no platform browser opener is available.
 	browser app.Browser
 

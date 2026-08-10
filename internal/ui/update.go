@@ -243,7 +243,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandCopy)
 	case "/", "ctrl+f":
 		return m.runCommand(commandSearch)
-	case "h":
+	case "f1":
 		return m.runCommand(commandHelp)
 	case "?":
 		return m.runCommand(commandPalette)

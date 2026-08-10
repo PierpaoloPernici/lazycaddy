@@ -19,7 +19,7 @@ func TestCaddyfileHelpOpensOfficialPage(t *testing.T) {
 		gotURL = url
 		return nil
 	})
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF1})
 	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("help key did not return browser command")
@@ -40,7 +40,7 @@ func TestCaddyfileHelpReportsBrowserFailure(t *testing.T) {
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m.browser = app.BrowserFunc(func(context.Context, string) error { return errors.New("opener failed") })
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF1})
 	m = updated.(*Model)
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)

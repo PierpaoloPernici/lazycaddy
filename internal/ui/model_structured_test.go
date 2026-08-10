@@ -122,7 +122,7 @@ func TestStructuredAddPickerOpensDirectiveHelp(t *testing.T) {
 	for _, r := range []rune("reverse") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF1})
 	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("directive help did not return browser command")
@@ -134,6 +134,28 @@ func TestStructuredAddPickerOpensDirectiveHelp(t *testing.T) {
 	}
 	if !m.showStructuredAdd {
 		t.Fatal("directive help closed the add picker")
+	}
+}
+
+func TestStructuredAddPickerKeepsLetterHInFilter(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	opened := false
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m.browser = app.BrowserFunc(func(context.Context, string) error {
+		opened = true
+		return nil
+	})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = updated.(*Model)
+	if cmd != nil || opened {
+		t.Fatal("typing h in the picker unexpectedly opened help")
+	}
+	if m.structuredAddInput.String() != "h" || !m.showStructuredAdd {
+		t.Fatalf("picker filter = %q, open = %v; want h and open", m.structuredAddInput.String(), m.showStructuredAdd)
 	}
 }
 
