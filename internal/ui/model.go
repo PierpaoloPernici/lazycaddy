@@ -87,6 +87,12 @@ type copyResultMsg struct {
 	err  error
 }
 
+// browserResultMsg is delivered after the external help URL opener returns.
+type browserResultMsg struct {
+	err   error
+	label string
+}
+
 // externalChangeMsg is delivered when the change monitor detects an
 // external modification of a watched document. err is nil exactly when
 // change carries a meaningful detection; a non-nil err reports a monitor
@@ -161,8 +167,23 @@ type deleteValidatedMsg struct {
 	Err         error
 }
 
+// structuredAddValidatedMsg is delivered after a planned structured add or
+// edit has passed the same format+validate boundary as other edits.
+type structuredAddValidatedMsg struct {
+	Path        string
+	Original    []byte
+	Content     []byte
+	Formatted   []byte
+	Diagnostics []validator.Diagnostic
+	Name        string
+	Operation   string
+	Parent      caddyfile.Node
+	ItemKey     string
+	Err         error
+}
+
 // pendingEdit holds a validated, recomposed document that came out of an
-// $EDITOR round-trip and is awaiting the diff review and the save
+// edit workflow and is awaiting the diff review and the save
 // confirmation. path may be an imported file; it is the exact document the
 // edit targets. nodeName and startLine carry the identity of the edited
 // node so the tree can re-anchor the selection after a structural save.
@@ -178,6 +199,7 @@ type pendingEdit struct {
 	nodeName     string
 	startLine    int
 	itemKey      string
+	operation    string
 }
 
 // pendingDelete holds a validated document with the selected node removed,
@@ -388,6 +410,30 @@ type Model struct {
 	// pipeline. nil means no delete is pending.
 	pendingDelete *pendingDelete
 
+	// Structured add modal state. The modal first selects a context-aware
+	// directive from the advisory catalog, then collects its raw arguments.
+	// The caddyfile planner remains authoritative before validation or save.
+	showStructuredAdd      bool
+	structuredAddInput     structuredInput
+	structuredAddDoc       *caddyfile.Document
+	structuredAddParent    caddyfile.Node
+	structuredAddKey       string
+	structuredAddBusy      bool
+	structuredAddMode      structuredAddMode
+	structuredAddName      string
+	structuredAddItems     []string
+	structuredAddCursor    int
+	structuredAddMatcher   structuredInput
+	structuredAddUpstreams structuredInput
+	structuredAddRPField   int
+	structuredAddEditing   bool
+	structuredAddCreating  bool
+	structuredAddNewKind   caddyfile.Kind
+	structuredAddNewName   structuredInput
+	structuredAddNewArgs   structuredInput
+	structuredAddNewField  int
+	structuredAddNewTop    bool
+
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the
 	// / keybinding.
@@ -412,6 +458,9 @@ type Model struct {
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard
+	// browser opens the official Caddyfile help page for the Ctrl-H keybinding.
+	// It is nil when no platform browser opener is available.
+	browser app.Browser
 
 	// monitor detects external changes to the resolved configuration
 	// documents (root and imports) and feeds the conflict modal; nil
@@ -549,6 +598,15 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		rollbacker:           rollbacker,
 		readFile:             readFile,
 	}
+}
+
+// NewWithBrowser is New with an injected external browser opener. Keeping the
+// original constructor preserves the small test and plugin surface for
+// callers that do not need browser help.
+func NewWithBrowser(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, rollbacker app.Rollbacker, readFile app.FileReader, browser app.Browser, clipboards ...app.Clipboard) *Model {
+	m := New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, readFile, clipboards...)
+	m.browser = browser
+	return m
 }
 
 // Load resolves the configuration through the injected loader and

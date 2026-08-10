@@ -23,10 +23,11 @@ func TestCommandPalette_OpensAndFilters(t *testing.T) {
 	for _, want := range []string{
 		"COMMANDS",
 		"NAVIGATION",
-		"SOURCE & VALIDATION",
-		"RUNTIME & RECOVERY",
+		"SOURCE",
+		"VALIDATION",
 		"Move selection",
 		"Format & validate",
+		"Edit reverse_proxy fields",
 		"Save validated changes",
 		"Esc close",
 		"Documents",
@@ -98,6 +99,9 @@ func TestCommandPalette_KeyCatalogKeepsDirectHotkeys(t *testing.T) {
 		{key: "v", id: commandValidate},
 		{key: "D", id: commandDiff},
 		{key: "s", id: commandSave},
+		{key: "m", id: commandEditReverse},
+		{key: "n", id: commandNew},
+		{key: "Ctrl-H", id: commandHelp},
 		{key: "?", id: commandPalette},
 		{key: "q", id: commandQuit},
 	} {
@@ -130,6 +134,18 @@ func TestCommandPalette_CategoriesAndCompactKeys(t *testing.T) {
 	if !ok || copyCommand.Label != "Copy selected block" {
 		t.Fatalf("copy command = %+v, want label %q", copyCommand, "Copy selected block")
 	}
+	if command, ok := commandDefinition(commandEditReverse); !ok || command.Category != "Source" {
+		t.Fatalf("reverse_proxy command = %+v, want Source category", command)
+	}
+	if command, ok := commandDefinition(commandValidate); !ok || command.Category != "Validation" {
+		t.Fatalf("validate command = %+v, want Validation category", command)
+	}
+	if command, ok := commandDefinition(commandDiff); !ok || command.Category != "Validation" {
+		t.Fatalf("diff command = %+v, want Validation category", command)
+	}
+	if command, ok := commandDefinition(commandSave); !ok || command.Category != "Validation" {
+		t.Fatalf("save command = %+v, want Validation category", command)
+	}
 	toggleCommand, ok := commandDefinition(commandToggleBranch)
 	if !ok {
 		t.Fatal("toggle command missing from catalog")
@@ -150,6 +166,34 @@ func TestCommandPalette_CategoriesAndCompactKeys(t *testing.T) {
 	}
 	if strings.Contains(view, "Space") {
 		t.Errorf("palette should hide Space from the toggle label while keeping the hotkey:\n%s", view)
+	}
+}
+
+func TestCommandPalette_ShowsReverseProxyCommandWhenUnavailable(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+
+	command, ok := commandDefinition(commandEditReverse)
+	if !ok {
+		t.Fatal("reverse_proxy command missing from catalog")
+	}
+	if command.Enabled(m) {
+		t.Fatal("reverse_proxy command unexpectedly enabled without a reverse_proxy selection")
+	}
+	if got := command.Reason(m); got != "read-only mode" {
+		t.Errorf("reverse_proxy command reason = %q, want read-only mode", got)
+	}
+	found := false
+	for _, visible := range m.filteredCommands() {
+		if visible.ID == commandEditReverse {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("reverse_proxy command was filtered out when unavailable")
 	}
 }
 
@@ -277,8 +321,8 @@ func TestCommandPalette_KeyHandling(t *testing.T) {
 		t.Fatalf("cursor = %d after home, want 0", m.commandCursor)
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnd})
-	if m.commandCursor != len(commandDefinitions())-1 {
-		t.Fatalf("cursor = %d after end, want %d", m.commandCursor, len(commandDefinitions())-1)
+	if m.commandCursor != len(m.filteredCommands())-1 {
+		t.Fatalf("cursor = %d after end, want %d", m.commandCursor, len(m.filteredCommands())-1)
 	}
 
 	// Backspace edits the query; backspacing an empty query is a no-op.

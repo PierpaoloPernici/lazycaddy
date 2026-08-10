@@ -27,11 +27,15 @@ const (
 	commandLogs          commandID = "logs"
 	commandEdit          commandID = "edit"
 	commandFullEdit      commandID = "full-edit"
+	commandAdd           commandID = "add-structured"
+	commandNew           commandID = "new-node"
+	commandEditReverse   commandID = "edit-reverse-proxy"
 	commandDelete        commandID = "delete"
 	commandBackups       commandID = "backups"
 	commandErrors        commandID = "errors"
 	commandCopy          commandID = "copy"
 	commandSearch        commandID = "search"
+	commandHelp          commandID = "caddyfile-help"
 	commandQuit          commandID = "quit"
 	commandPalette       commandID = "command-palette"
 )
@@ -68,13 +72,19 @@ func commandDefinitions() []uiCommand {
 		{ID: commandSearch, Category: "Navigation", Label: "Search Caddyfile", Description: "read-only search", Keys: []string{"/", "Ctrl-F"}, Enabled: func(m *Model) bool {
 			return m.searcher != nil
 		}, Reason: func(*Model) string { return "search unavailable" }},
-		{ID: commandValidate, Category: "Source & validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {
+		{ID: commandHelp, Category: "Navigation", Label: "Open Caddyfile help", Description: "official Caddy documentation", Keys: []string{"Ctrl-H"}, Enabled: func(m *Model) bool {
+			return m.browser != nil
+		}, Reason: func(*Model) string { return "browser help unavailable" }},
+		{ID: commandValidate, Category: "Validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {
 			return m.formatter != nil
 		}, Reason: func(*Model) string { return "Caddy binary unavailable" }},
-		{ID: commandDiff, Category: "Source & validation", Label: "Show diff", Description: "working copy or disk", Keys: []string{"D"}, Enabled: func(m *Model) bool {
+		{ID: commandDiff, Category: "Validation", Label: "Show diff", Description: "working copy or disk", Keys: []string{"D"}, Enabled: func(m *Model) bool {
 			return m.state != nil && m.state.Graph != nil
 		}, Reason: func(*Model) string { return "no configuration loaded" }},
-		{ID: commandEdit, Category: "Source & validation", Label: "Edit selected block", Description: "$EDITOR", Keys: []string{"e"}, Enabled: func(m *Model) bool {
+		{ID: commandSave, Category: "Validation", Label: "Save validated changes", Description: "write to disk", Keys: []string{"s"}, Enabled: func(m *Model) bool {
+			return m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly
+		}, Reason: func(*Model) string { return "read-only mode" }},
+		{ID: commandEdit, Category: "Source", Label: "Edit selected block", Description: "$EDITOR", Keys: []string{"e"}, Enabled: func(m *Model) bool {
 			return m.canEditSelection()
 		}, Reason: func(m *Model) string {
 			if m.editor == nil {
@@ -82,7 +92,7 @@ func commandDefinitions() []uiCommand {
 			}
 			return "requires writable mode and a node selection"
 		}},
-		{ID: commandFullEdit, Category: "Source & validation", Label: "Edit selected document", Description: "$EDITOR", Keys: []string{"E"}, Enabled: func(m *Model) bool {
+		{ID: commandFullEdit, Category: "Source", Label: "Edit selected document", Description: "$EDITOR", Keys: []string{"E"}, Enabled: func(m *Model) bool {
 			return m.canEditDocument()
 		}, Reason: func(m *Model) string {
 			if m.editor == nil {
@@ -90,7 +100,40 @@ func commandDefinitions() []uiCommand {
 			}
 			return "requires writable mode and a document selection"
 		}},
-		{ID: commandDelete, Category: "Source & validation", Label: "Delete selected block", Description: "validate then diff", Keys: []string{"d"}, Enabled: func(m *Model) bool {
+		{ID: commandAdd, Category: "Source", Label: "Add directive", Description: "context-aware", Keys: []string{"a"}, Enabled: func(m *Model) bool {
+			return m.canAddStructured()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a supported block"
+		}},
+		{ID: commandNew, Category: "Source", Label: "New structural node", Description: "site, snippet or handler", Keys: []string{"n"}, Enabled: func(m *Model) bool {
+			return m.canNewNode()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a document or structural block"
+		}},
+		{ID: commandEditReverse, Category: "Source", Label: "Edit reverse_proxy fields", Description: "matcher and upstreams", Keys: []string{"m"}, Enabled: func(m *Model) bool {
+			return m.canEditReverseProxy()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a reverse_proxy directive"
+		}},
+		{ID: commandDelete, Category: "Source", Label: "Delete selected block", Description: "validate then diff", Keys: []string{"d"}, Enabled: func(m *Model) bool {
 			return m.canDeleteSelected()
 		}, Reason: func(m *Model) string {
 			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
@@ -101,10 +144,7 @@ func commandDefinitions() []uiCommand {
 			}
 			return "select a deletable node"
 		}},
-		{ID: commandSave, Category: "Source & validation", Label: "Save validated changes", Description: "write to disk", Keys: []string{"s"}, Enabled: func(m *Model) bool {
-			return m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly
-		}, Reason: func(*Model) string { return "read-only mode" }},
-		{ID: commandCopy, Category: "Source & validation", Label: "Copy selected block", Description: "exact source bytes", Keys: []string{"y"}, Enabled: func(m *Model) bool {
+		{ID: commandCopy, Category: "Source", Label: "Copy selected block", Description: "exact source bytes", Keys: []string{"y"}, Enabled: func(m *Model) bool {
 			return m.clipboard != nil
 		}, Reason: func(*Model) string { return "clipboard unavailable" }},
 		{ID: commandReload, Category: "Runtime & recovery", Label: "Reload Caddy", Description: "Admin API", Keys: []string{"r"}, Enabled: func(m *Model) bool {
@@ -162,6 +202,12 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startEditor()
 	case commandFullEdit:
 		return m.startFullEdit()
+	case commandAdd:
+		return m.startStructuredAdd()
+	case commandNew:
+		return m.startNewNode()
+	case commandEditReverse:
+		return m.startReverseProxyEdit()
 	case commandDelete:
 		return m.startDelete()
 	case commandBackups:
@@ -172,6 +218,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startCopy()
 	case commandSearch:
 		return m.startSearch()
+	case commandHelp:
+		return m.startCaddyfileHelp()
 	case commandQuit:
 		return m.requestQuit()
 	case commandPalette:
@@ -280,11 +328,18 @@ func (m *Model) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) filteredCommands() []uiCommand {
 	query := strings.ToLower(strings.TrimSpace(string(m.commandQuery)))
-	if query == "" {
-		return commandDefinitions()
-	}
 	var matches []uiCommand
 	for _, command := range commandDefinitions() {
+		if command.ID == commandNew && !m.canNewNode() {
+			continue
+		}
+		if command.ID == commandHelp && m.browser == nil {
+			continue
+		}
+		if query == "" {
+			matches = append(matches, command)
+			continue
+		}
 		searchable := strings.ToLower(strings.Join([]string{command.Category, command.Label, command.Description, strings.Join(command.Keys, " ")}, " "))
 		if strings.Contains(searchable, query) {
 			matches = append(matches, command)

@@ -39,8 +39,23 @@ type Token struct {
 	// Start and End are the byte offsets of the token in the source,
 	// covering the full raw text, quotes and heredoc markers included.
 	Start, End int
-	// Line is the 1-based line where the token starts.
+	// Line is the 1-based logical line where the token starts. Escaped
+	// newlines do not advance the logical line: tokens chained by a
+	// trailing backslash keep the same Line so they group together.
 	Line int
+	// Column is the 1-based character column of the token's first byte on
+	// its physical line. A byte order mark, leading whitespace and the
+	// current horizontal scroll are not counted; tabs count as one
+	// character and multi-byte UTF-8 runes count as one character, so
+	// Column matches the character position a text editor reports rather
+	// than a terminal cell width.
+	Column int
+	// Doc is the identity of the source document the token was lexed from,
+	// or "" when no identity was provided. Lexing always covers exactly one
+	// document, so the identity is usually implied by context; callers that
+	// need it on the token (for example multi-document edit planning) set
+	// it through lexDoc.
+	Doc string
 }
 
 var heredocMarkerRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -50,21 +65,33 @@ var heredocMarkerRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // at the start of a line), hashes inside tokens stay in the token, quoted
 // strings and heredocs may span lines, and a trailing backslash escapes the
 // newline so the following token keeps the same logical line. The original
-// bytes are never modified; every token carries its exact offsets.
+// bytes are never modified; every token carries its exact offsets. Tokens
+// lexed through lex carry no document identity.
 func lex(src []byte) ([]Token, error) {
+	return lexDoc(src, "")
+}
+
+// lexDoc is lex with an explicit source document identity recorded on every
+// token. The identity is advisory: byte offsets, lines and columns are
+// always relative to the single document being lexed.
+func lexDoc(src []byte, docID string) ([]Token, error) {
 	var tokens []Token
 	i := 0
 	if len(src) >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF {
 		i = 3 // skip byte order mark without shifting offsets
 	}
-	line, skipped := 1, 0
+	// line is the logical line (escaped newlines do not advance it); col is
+	// the rune count since the last newline on the current physical line.
+	line, col, skipped := 1, 0, 0
 	for i < len(src) {
 		switch src[i] {
 		case ' ', '\t', '\r':
 			i++
+			col++
 		case '\n':
 			line += 1 + skipped
 			skipped = 0
+			col = 0
 			i++
 		case '#':
 			// A comment runs to the end of its line. It can only start here
@@ -73,7 +100,7 @@ func lex(src []byte) ([]Token, error) {
 				i++
 			}
 		default:
-			tok, err := lexToken(src, &i, &line, &skipped)
+			tok, err := lexToken(src, &i, &line, &skipped, &col, docID)
 			if err != nil {
 				return tokens, err
 			}
@@ -83,11 +110,21 @@ func lex(src []byte) ([]Token, error) {
 	return tokens, nil
 }
 
+// advanceCol consumes one byte at *i and advances the physical column by one
+// character when the byte starts a UTF-8 rune (continuation bytes of a
+// multi-byte rune count as part of the same character).
+func advanceCol(src []byte, i, col *int) {
+	if src[*i]&0xC0 != 0x80 {
+		*col++
+	}
+	*i++
+}
+
 // lexToken lexes one token starting at *i.
-func lexToken(src []byte, i *int, line, skipped *int) (Token, error) {
-	start, startLine := *i, *line
+func lexToken(src []byte, i *int, line, skipped, col *int, docID string) (Token, error) {
+	start, startLine, startCol := *i, *line, *col
 	if src[*i] == '"' || src[*i] == '`' {
-		return lexQuoted(src, i, line, skipped, src[*i], start, startLine)
+		return lexQuoted(src, i, line, skipped, col, src[*i], start, startLine, startCol, docID)
 	}
 
 	var val []byte
@@ -113,10 +150,11 @@ func lexToken(src []byte, i *int, line, skipped *int) (Token, error) {
 				}
 				*i++ // consume the newline
 				*skipped++
-				return lexHeredoc(src, i, line, skipped, marker, start, startLine)
+				*col = 0 // the heredoc body starts on a new physical line
+				return lexHeredoc(src, i, line, skipped, col, marker, start, startLine, startCol, docID)
 			}
 			val = append(val, ch)
-			*i++
+			advanceCol(src, i, col)
 		case ch == '\n' || ch == '\r' || ch == ' ' || ch == '\t':
 			goto done
 		case ch == '\\':
@@ -129,6 +167,7 @@ func lexToken(src []byte, i *int, line, skipped *int) (Token, error) {
 					*i += 3
 				}
 				*skipped++
+				*col = 0 // the continuation starts on a new physical line
 				if len(val) > 0 {
 					goto done
 				}
@@ -137,45 +176,51 @@ func lexToken(src []byte, i *int, line, skipped *int) (Token, error) {
 			if *i+1 < len(src) && src[*i+1] == '<' {
 				heredocEscaped = true // \<< prevents heredoc parsing
 				*i++
+				*col++
 				continue
 			}
 			val = append(val, ch)
 			*i++
+			*col++
 		default:
 			val = append(val, ch)
-			*i++
+			advanceCol(src, i, col)
 		}
 	}
 
 done:
 	switch string(val) {
 	case "{":
-		return Token{Kind: tokenOpenBrace, Text: "{", Start: start, End: *i, Line: startLine}, nil
+		return Token{Kind: tokenOpenBrace, Text: "{", Start: start, End: *i, Line: startLine, Column: startCol + 1, Doc: docID}, nil
 	case "}":
-		return Token{Kind: tokenCloseBrace, Text: "}", Start: start, End: *i, Line: startLine}, nil
+		return Token{Kind: tokenCloseBrace, Text: "}", Start: start, End: *i, Line: startLine, Column: startCol + 1, Doc: docID}, nil
 	}
-	return Token{Kind: tokenWord, Text: string(val), Start: start, End: *i, Line: startLine}, nil
+	return Token{Kind: tokenWord, Text: string(val), Start: start, End: *i, Line: startLine, Column: startCol + 1, Doc: docID}, nil
 }
 
 // lexQuoted lexes a double-quoted or backtick-quoted string, which may span
 // multiple lines. Inside double quotes, \" is an escaped quote and any other
 // backslash is kept literally; inside backticks nothing is escaped.
-func lexQuoted(src []byte, i *int, line, skipped *int, quote byte, start, startLine int) (Token, error) {
-	*i++ // opening quote
+func lexQuoted(src []byte, i *int, line, skipped, col *int, quote byte, start, startLine, startCol int, docID string) (Token, error) {
+	*i++   // opening quote
+	*col++ // the quote occupies one character column
 	var val []byte
 	escaped := false
 	for *i < len(src) {
 		ch := src[*i]
 		*i++
+		if ch == '\n' {
+			*line += 1 + *skipped
+			*skipped = 0
+			*col = 0
+		} else if ch&0xC0 != 0x80 {
+			*col++
+		}
 		if escaped {
 			if ch != quote {
 				val = append(val, '\\')
 			}
 			escaped = false
-			if ch == '\n' {
-				*line += 1 + *skipped
-				*skipped = 0
-			}
 			val = append(val, ch)
 			continue
 		}
@@ -184,11 +229,7 @@ func lexQuoted(src []byte, i *int, line, skipped *int, quote byte, start, startL
 			continue
 		}
 		if ch == quote {
-			return Token{Kind: tokenQuoted, Text: string(val), Quote: rune(quote), Start: start, End: *i, Line: startLine}, nil
-		}
-		if ch == '\n' {
-			*line += 1 + *skipped
-			*skipped = 0
+			return Token{Kind: tokenQuoted, Text: string(val), Quote: rune(quote), Start: start, End: *i, Line: startLine, Column: startCol + 1, Doc: docID}, nil
 		}
 		val = append(val, ch)
 	}
@@ -197,7 +238,7 @@ func lexQuoted(src []byte, i *int, line, skipped *int, quote byte, start, startL
 
 // lexHeredoc reads the body of a heredoc after its <<MARKER opener line has
 // been consumed. It ends at the closing marker, which may be indented.
-func lexHeredoc(src []byte, i *int, line, skipped *int, marker string, start, startLine int) (Token, error) {
+func lexHeredoc(src []byte, i *int, line, skipped, col *int, marker string, start, startLine, startCol int, docID string) (Token, error) {
 	var content []byte
 	for {
 		if *i >= len(src) {
@@ -205,10 +246,13 @@ func lexHeredoc(src []byte, i *int, line, skipped *int, marker string, start, st
 		}
 		ch := src[*i]
 		*i++
-		content = append(content, ch)
 		if ch == '\n' {
 			*skipped++
+			*col = 0
+		} else if ch&0xC0 != 0x80 {
+			*col++
 		}
+		content = append(content, ch)
 		if len(content) >= len(marker) && bytes.Equal(content[len(content)-len(marker):], []byte(marker)) {
 			content = content[:len(content)-len(marker)]
 			break
@@ -220,7 +264,7 @@ func lexHeredoc(src []byte, i *int, line, skipped *int, marker string, start, st
 	}
 	*line += *skipped
 	*skipped = 0
-	return Token{Kind: tokenHeredoc, Text: text, Quote: '<', Start: start, End: *i, Line: startLine}, nil
+	return Token{Kind: tokenHeredoc, Text: text, Quote: '<', Start: start, End: *i, Line: startLine, Column: startCol + 1, Doc: docID}, nil
 }
 
 // finalizeHeredoc strips the closing marker's indentation from every content

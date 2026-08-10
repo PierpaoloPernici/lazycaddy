@@ -133,8 +133,9 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pendingRollback = nil
 			m.backupComparing = false
 		} else if m.pendingEdit != nil {
+			action := pendingEditVerb(m.pendingEdit)
 			m.pendingEdit = nil
-			m.statusMessage = "edit discarded"
+			m.statusMessage = action + " discarded"
 		} else if m.pendingDelete != nil {
 			m.pendingDelete = nil
 			m.statusMessage = "delete cancelled"
@@ -363,7 +364,7 @@ func (m *Model) diffView(width, height int) string {
 	case m.pendingDelete != nil:
 		title += " · Enter delete · Esc cancel"
 	case m.pendingEdit != nil:
-		title += " · Enter save · Esc discard"
+		title += " · Enter " + pendingEditVerb(m.pendingEdit) + " · Esc discard"
 	default:
 		title += " · Esc close"
 	}

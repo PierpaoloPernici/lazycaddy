@@ -1,0 +1,5 @@
+upstream.example.test {
+	reverse_proxy 192.0.2.21:8080 {
+		header_up Host {host}
+	}
+}

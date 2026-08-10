@@ -669,6 +669,14 @@ source bytes without panel decorations.
 
 ### v0.3 — structured editing
 
+Current progress (2026-08-10): the v0.3 foundation is implemented on the
+`codex/v0.3-foundation` branch: token spans, compatibility fixtures, planner
+primitives, semantic roles and advisory catalog, structural navigation
+primitives, and the pane-aware selection model. The planner now also exposes
+`CreateNode` for source-preserving creation of top-level sites, snippets and
+named routes, plus nested handler blocks. The remaining product work is the
+UI integration and the end-to-end editing workflows described below.
+
 - [x] Generalize tree navigation to arbitrary parent/child rows. Document rows,
   including imported documents, remain separate top-level rows, while visible
   structural branches can contain recursively nested branches without relying
@@ -710,6 +718,13 @@ source bytes without panel decorations.
   values, insert supported directives, delete selected constructs and reorder
   compatible blocks. The `a` add action must be capability- and context-aware;
   unsupported or ambiguous insertions remain unavailable rather than guessing.
+  The `n` New node action now exposes the planner's structural-node creation
+  API for top-level sites, snippets, named routes and global options, plus
+  nested handler blocks; `a` remains the directive-insertion action. For v0.3,
+  directive forms remain explicit,
+  hand-authored implementations; build-time form-schema generation from Caddy
+  sources or documentation is deferred to v0.4 so it does not become a second
+  syntax authority.
 - Node deletion (`d`) is already covered by the exact-range patch plus the
   diff confirmation and post-save graph reload; the v0.3 work extends the
   same safety contract to insertion, reordering and structured directive

@@ -32,6 +32,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = fmt.Sprintf("✓ copied %d bytes", msg.size)
 		}
 		return m, nil
+	case browserResultMsg:
+		return m.handleBrowserResult(msg)
 	case externalChangeMsg:
 		return m.handleExternalChange(msg)
 	case editorReadyMsg:
@@ -44,6 +46,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleEditorError(msg)
 	case deleteValidatedMsg:
 		return m.handleDeleteValidated(msg)
+	case structuredAddValidatedMsg:
+		return m.handleStructuredAddValidated(msg)
 	case backupListMsg:
 		return m.handleBackupList(msg)
 	case backupCompareMsg:
@@ -146,6 +150,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.showRollbackConfirm {
 		return m.updateRollbackConfirmKey(msg)
 	}
+	// The structured-add modal owns its text input until the candidate has
+	// been planned and sent through the validation workflow.
+	if m.showStructuredAdd {
+		return m.updateStructuredAddKey(msg)
+	}
 	// The command palette takes over ordinary input while it is open. It is
 	// intentionally below safety confirmations, so a pending save, reload or
 	// quit decision can never be bypassed by a discoverability overlay.
@@ -220,6 +229,12 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandEdit)
 	case "E":
 		return m.runCommand(commandFullEdit)
+	case "a":
+		return m.runCommand(commandAdd)
+	case "n":
+		return m.runCommand(commandNew)
+	case "m":
+		return m.runCommand(commandEditReverse)
 	case "d":
 		return m.runCommand(commandDelete)
 	case "B":
@@ -230,6 +245,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandCopy)
 	case "/", "ctrl+f":
 		return m.runCommand(commandSearch)
+	case "ctrl+h":
+		return m.runCommand(commandHelp)
 	case "?":
 		return m.runCommand(commandPalette)
 	}

@@ -1,0 +1,4 @@
+# Malformed fixture: the site block is never closed. The tree must stay
+# available so the raw view and the failing range remain usable.
+example.test {
+	reverse_proxy localhost:8080

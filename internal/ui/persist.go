@@ -13,6 +13,30 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func pendingEditVerb(pe *pendingEdit) string {
+	if pe != nil {
+		switch pe.operation {
+		case "add":
+			return "add"
+		case "new":
+			return "create"
+		}
+	}
+	return "save"
+}
+
+func pendingEditName(pe *pendingEdit) string {
+	if pe != nil {
+		switch pe.operation {
+		case "add":
+			return "add"
+		case "new":
+			return "new node"
+		}
+	}
+	return "edit"
+}
+
 // startSave begins the save workflow. It is gated by the presence of
 // a loaded graph, a configured saver, an in-flight save guard, a
 // validated working copy and actual changes. When all guards pass it
@@ -404,7 +428,7 @@ func (m *Model) saveConfirmView(width, height int) string {
 	path := m.state.Settings.ConfigPath
 	hint := dimStyle.Render("review the diff with D before confirming")
 	if m.pendingEdit != nil {
-		title = "Save edit · Enter save · Esc cancel"
+		title = "Save " + pendingEditName(m.pendingEdit) + " · Enter save · Esc cancel"
 		path = m.pendingEdit.path
 		hint = dimStyle.Render("the edit applies only to the selected node range")
 	}

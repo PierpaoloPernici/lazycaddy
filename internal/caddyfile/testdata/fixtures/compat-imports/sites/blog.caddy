@@ -1,0 +1,5 @@
+blog.example.test {
+	import common-headers
+	encode gzip
+	reverse_proxy 192.0.2.22:8080
+}
