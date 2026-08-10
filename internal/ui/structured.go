@@ -336,9 +336,10 @@ func (m *Model) structuredAddView(width, height int) string {
 	if contentW < 1 {
 		contentW = 1
 	}
+	target := truncateToWidth("Target: "+m.structuredAddParent.Name, contentW)
 	if m.structuredAddMode == structuredAddArgs {
-		body := "Target: " + m.structuredAddParent.Name + "\n\n" +
-			"args> " + m.structuredAddInput.View() + "\n\n" +
+		body := target + "\n\n" +
+			truncateToWidth("args> "+m.structuredAddInput.View(), contentW) + "\n\n" +
 			dimStyle.Render("Enter arguments only · Esc returns to directive picker")
 		return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
 			activeTitleStyle.Render("Add "+m.structuredAddName+" · Esc cancel") + "\n" + body,
@@ -365,29 +366,40 @@ func (m *Model) structuredAddView(width, height int) string {
 		end = len(items)
 	}
 	var body strings.Builder
-	body.WriteString("Target: " + m.structuredAddParent.Name + "\n")
-	body.WriteString("filter> " + m.structuredAddInput.View() + "\n\n")
+	body.WriteString(target + "\n")
+	body.WriteString(truncateToWidth("filter> "+m.structuredAddInput.View(), contentW) + "\n\n")
 	if len(items) == 0 {
 		body.WriteString(dimStyle.Render("no supported directives match this filter"))
 	} else {
+		rowWidth := max(1, contentW-2)
 		for i := start; i < end; i++ {
 			meta := caddyfile.Catalog(items[i])
 			description := ""
 			if meta != nil {
-				description = truncateToWidth(meta.Description, max(1, contentW-18))
+				description = meta.Description
 			}
-			line := fmt.Sprintf("%-16s %s", items[i], description)
-			if i == m.structuredAddCursor {
-				body.WriteString(cursorStyle.Render("› ") + line)
-			} else {
-				body.WriteString("  " + line)
-			}
+			body.WriteString(structuredPickerRow(items[i], description, i == m.structuredAddCursor, rowWidth))
 			body.WriteByte('\n')
 		}
 	}
+	title := truncateToWidth("Add directive · ↑/↓ choose · Enter select · Esc cancel", contentW)
 	return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
-		activeTitleStyle.Render("Add directive · ↑/↓ choose · Enter select · Esc cancel") + "\n" + body.String(),
+		activeTitleStyle.Render(title) + "\n" + body.String(),
 	)
+}
+
+// structuredPickerRow returns one bounded terminal row. Keeping the cursor,
+// directive label and description within one explicit width prevents
+// Lipgloss from wrapping a long catalog description into a second row.
+func structuredPickerRow(name, description string, selected bool, width int) string {
+	prefix := "  "
+	if selected {
+		prefix = "› "
+	}
+	textWidth := max(1, width-len(prefix))
+	description = truncateToWidth(description, max(1, textWidth-17))
+	line := fmt.Sprintf("%-16s %s", name, description)
+	return prefix + truncateToWidth(line, textWidth)
 }
 
 func (m *Model) structuredAddOverlay(base string, width, height int) string {

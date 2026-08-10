@@ -6,6 +6,7 @@ import (
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestStructuredAdd_PlansValidatesAndOpensDiff(t *testing.T) {
@@ -97,6 +98,38 @@ func TestStructuredAddPickerSelectsDirectiveBeforeArguments(t *testing.T) {
 	}
 	if !strings.Contains(m.View(), "args>") {
 		t.Fatal("directive picker did not switch to argument prompt")
+	}
+}
+
+func TestStructuredAddPickerRowsDoNotWrap(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+
+	view := stripANSI(m.structuredAddView(100, 30))
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "log") && !strings.Contains(line, "Add directive") {
+			if lipgloss.Width(line) > 100 {
+				t.Fatalf("picker row wraps beyond terminal width: %d cells: %q", lipgloss.Width(line), line)
+			}
+		}
+	}
+	if strings.Contains(view, "logging for the site, or global logging as a\n") {
+		t.Fatalf("log description wrapped into a second line:\n%s", view)
+	}
+}
+
+func TestStructuredPickerRowIsBounded(t *testing.T) {
+	row := structuredPickerRow("log", "Configures access logging for the site, or global logging as a global option.", true, 40)
+	if strings.Contains(row, "\n") {
+		t.Fatalf("structured picker row contains a newline: %q", row)
+	}
+	if got := lipgloss.Width(row); got > 40 {
+		t.Fatalf("structured picker row width = %d, want <= 40: %q", got, row)
 	}
 }
 
