@@ -20,6 +20,15 @@ func TestHeaderBadgeStylesUseThemeForegrounds(t *testing.T) {
 	}
 }
 
+func TestPersistentChromeSharesPaletteSurface(t *testing.T) {
+	if chromeBackground != paletteBackground {
+		t.Fatalf("chrome background = %#v, want the command-palette surface %#v", chromeBackground, paletteBackground)
+	}
+	if statusBackground == paletteBackground {
+		t.Fatal("status background should remain a distinct transient surface")
+	}
+}
+
 // sgrOf returns the first SGR escape sequence that style emits for a probe
 // character, so tests can assert against the current theme instead of magic
 // ANSI codes. It forces the same ANSI-256 profile used by the other render

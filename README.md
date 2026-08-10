@@ -142,13 +142,18 @@ The inspector also provides:
   and retention failures, and recovery hints that point you at the
   recovery backup (`B`) or the editor's pre-edit snapshot.
 
-The v0.1 vertical slice and the v0.2 milestone are complete. The v0.2
-release landed journal-backed logs and sensible path defaults: lazycaddy now discovers
+The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
+also provides a searchable command palette (`?`) alongside the direct hotkeys,
+keeps the normal footer navigation-only, and uses compact `RW`/`RO` header
+badges with a prominent status strip. Terminal directives remain available in
+the source and search views without expanding the tree into one row per
+directive. The v0.2 release also landed journal-backed logs and sensible path
+defaults: lazycaddy now discovers
 `./Caddyfile` (falling back to `/etc/caddy/Caddyfile`) and the `caddy`
 binary through `PATH` when they are not given explicitly, and keeps format,
 validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
-pane layout, adaptive theme colors, a wrapped contextual footer and exact
+pane layout, adaptive theme colors, a compact navigation footer and exact
 source clipboard copying with OSC 52 and local fallbacks. The next roadmap
 phase is v0.3 structured editing.
 

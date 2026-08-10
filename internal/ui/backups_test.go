@@ -292,7 +292,7 @@ func TestBackups_NavigationRevealsCursor(t *testing.T) {
 	}
 }
 
-func TestBackups_FooterShowsKey(t *testing.T) {
+func TestBackups_FooterUsesCommandPalette(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n}\n",
 	}))
@@ -300,8 +300,11 @@ func TestBackups_FooterShowsKey(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, rb)
 	m = resize(m, 80, 24)
 	view := m.View()
-	if !strings.Contains(view, "B backups") {
-		t.Errorf("footer missing the B backups key:\n%s", view)
+	if !strings.Contains(view, "? commands") {
+		t.Errorf("footer missing the command-palette hint:\n%s", view)
+	}
+	if strings.Contains(view, "B backups") {
+		t.Errorf("footer should not list operational commands:\n%s", view)
 	}
 }
 

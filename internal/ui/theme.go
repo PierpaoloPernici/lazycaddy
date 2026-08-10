@@ -25,6 +25,15 @@ var (
 	infoColor  = lipgloss.AdaptiveColor{Light: "#57606a", Dark: "#8b949e"}
 	mutedColor = lipgloss.AdaptiveColor{Light: "#6e7781", Dark: "#7d8590"}
 
+	// Palette surfaces stay close to the application's dark navy canvas.
+	paletteBackground = lipgloss.AdaptiveColor{Light: "#ffffff", Dark: "#161b22"}
+
+	// Chrome and status surfaces separate the persistent navigation bands from
+	// the main panes. Header and footer intentionally share one deep surface,
+	// while the transient status strip uses a lighter neutral slate.
+	chromeBackground = paletteBackground
+	statusBackground = lipgloss.AdaptiveColor{Light: "#eaeef2", Dark: "#171b22"}
+
 	// Badge foregrounds adapt to the same light/dark terminal context as
 	// their semantic backgrounds. This avoids low-contrast light-grey text
 	// on green or amber badges in ANSI terminals.

@@ -7,7 +7,7 @@ package ui
 import "github.com/charmbracelet/lipgloss"
 
 // Theme-aware styles: important state is never conveyed by color alone,
-// so labels like "READ-ONLY" and error text are always printed explicitly.
+// so labels like "RO" and error text are always printed explicitly.
 // Colors come from theme.go and use lipgloss.AdaptiveColor so they degrade
 // gracefully to ANSI-256, ANSI-16 or Ascii/NoColor profiles.
 var (
@@ -95,6 +95,7 @@ var (
 				Foreground(badgeWarningForeground).
 				Background(warningColor)
 	errorStyle = lipgloss.NewStyle().
+			Bold(true).
 			Foreground(errorColor).
 			Padding(0, 1)
 	// paneStyle is the default unfocused pane border.
@@ -106,6 +107,27 @@ var (
 	// single accent color so the current input target is obvious.
 	focusedPaneStyle = paneStyle.Copy().
 				BorderForeground(accentColor)
+	// selectedTreeRowStyle uses the same blue accent as the command palette
+	// selector so the active structural row is visible without a full-width
+	// background block.
+	selectedTreeRowStyle = lipgloss.NewStyle().
+				Foreground(accentColor)
+	// commandPaletteStyle is an opaque, centered modal. The opaque background
+	// makes the palette readable over the still-visible application chrome.
+	commandPaletteStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(accentColor).
+				Background(paletteBackground).
+				Padding(0, 1)
+	commandPaletteSurfaceStyle = lipgloss.NewStyle().
+					Background(paletteBackground)
+	commandPaletteSelectedStyle = lipgloss.NewStyle().
+					Bold(true)
+	commandPaletteDisabledStyle = lipgloss.NewStyle().
+					Foreground(mutedColor)
+	commandPaletteGroupStyle = lipgloss.NewStyle().
+					Bold(true).
+					Foreground(mutedColor)
 	cursorStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(accentColor)
@@ -120,18 +142,19 @@ var (
 			Bold(true).
 			Foreground(accentColor)
 	// selectedGutterNumberStyle emphasizes the line numbers of the
-	// currently selected section. It stays quiet (grey, not the cursor
-	// accent) so it reads as a subtle guide rather than state.
+	// currently selected section. It uses the same accent as the tree
+	// selection while leaving source syntax colors untouched.
 	selectedGutterNumberStyle = lipgloss.NewStyle().
 					Bold(true).
-					Foreground(lipgloss.Color("250"))
+					Foreground(accentColor)
 	// selectedGutterBarStyle renders the thin vertical bar that marks
 	// the selected block's lines in the source gutter.
 	selectedGutterBarStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
-	// footerStyle renders the contextual key hint line at the bottom.
+				Foreground(accentColor)
+	// footerStyle renders the navigation key hint line at the bottom.
 	// It only provides padding; key names and descriptions carry their own
-	// colors so the accent is not lost.
+	// colors so the accent is not lost. Its surface is applied after nested
+	// key styles have rendered so the background cannot be interrupted.
 	footerStyle = lipgloss.NewStyle().
 			Padding(0, 1)
 	statusSuccessStyle = lipgloss.NewStyle().
@@ -146,8 +169,13 @@ var (
 				Padding(0, 1).
 				Foreground(warningColor)
 	statusInfoStyle = lipgloss.NewStyle().
+			Bold(true).
 			Padding(0, 1).
 			Foreground(infoColor)
+	statusErrorStyle = lipgloss.NewStyle().
+				Bold(true).
+				Padding(0, 1).
+				Foreground(errorColor)
 
 	// diffAddStyle highlights lines added by the working copy (lines
 	// that start with '+') in the conventional unified-diff green.

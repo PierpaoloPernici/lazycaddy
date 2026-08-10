@@ -792,7 +792,7 @@ func TestModelRendersDocumentTree(t *testing.T) {
 
 	view := m.View()
 	for _, want := range []string{
-		"READ-ONLY",
+		"RO",
 		"config/Caddyfile", // header path
 		"Caddyfile",        // root document row
 		"a.caddy",          // imported document row
@@ -2014,7 +2014,7 @@ func TestModelFooter_GlobalWhenModalClosed(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
 	view := stripANSI(m.View())
-	for _, want := range []string{"v format & validate", "toggle"} {
+	for _, want := range []string{"Enter toggle", "? commands"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("global footer should show %q, got:\n%s", want, view)
 		}
@@ -2040,8 +2040,8 @@ func TestModelFooter_ListContext(t *testing.T) {
 	if !strings.Contains(view, "Enter/+ detail") {
 		t.Errorf("list footer should show 'Enter/+ detail', got:\n%s", view)
 	}
-	if strings.Contains(view, "v format & validate") {
-		t.Errorf("list footer must not show the global 'v format & validate' key, got:\n%s", view)
+	if strings.Contains(view, "? commands") {
+		t.Errorf("modal footer should use only its contextual keys, got:\n%s", view)
 	}
 }
 
@@ -2065,8 +2065,8 @@ func TestModelFooter_DetailContext(t *testing.T) {
 	if !strings.Contains(view, "PgUp/PgDown") {
 		t.Errorf("detail footer should show PgUp/PgDown, got:\n%s", view)
 	}
-	if strings.Contains(view, "v format & validate") {
-		t.Errorf("detail footer must not show the global 'v format & validate' key, got:\n%s", view)
+	if strings.Contains(view, "? commands") {
+		t.Errorf("modal footer should use only its contextual keys, got:\n%s", view)
 	}
 	if strings.Contains(view, "toggle") {
 		t.Errorf("detail footer must not show the global toggle key, got:\n%s", view)
@@ -2617,7 +2617,7 @@ func TestModelFooter_SaveConfirmContext(t *testing.T) {
 }
 
 // TestModelHeader_WriteModeBadge verifies that a writable state shows
-// the WRITE badge instead of READ-ONLY. The default read-only state
+// the RW badge instead of RO. The default read-only state
 // is covered by TestModelRendersDocumentTree.
 func TestModelHeader_WriteModeBadge(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
@@ -2626,11 +2626,11 @@ func TestModelHeader_WriteModeBadge(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
 	view := m.View()
-	if strings.Contains(view, "READ-ONLY") {
-		t.Errorf("View should not show READ-ONLY in write mode:\n%s", view)
+	if strings.Contains(view, " RO ") {
+		t.Errorf("View should not show RO in write mode:\n%s", view)
 	}
-	if !strings.Contains(view, "WRITE") {
-		t.Errorf("View should show WRITE badge in write mode:\n%s", view)
+	if !strings.Contains(stripANSI(view), "RW") {
+		t.Errorf("View should show RW badge in write mode:\n%s", view)
 	}
 }
 
@@ -2806,11 +2806,17 @@ func TestModelReload_ConfirmNamesEndpoint(t *testing.T) {
 		t.Fatal("showReloadConfirm = false, want true")
 	}
 	view := m.View()
+	visible := stripANSI(view)
+	for _, want := range []string{"RELOAD CONFIG", "http://localhost:2019", "config/Caddyfile", "Enter reload", "Esc cancel"} {
+		if !strings.Contains(visible, want) {
+			t.Errorf("reload modal missing %q:\n%s", want, visible)
+		}
+	}
+	if strings.Contains(visible, "Reload config · Enter reload") {
+		t.Errorf("reload modal still uses the old inline title:\n%s", visible)
+	}
 	if !strings.Contains(view, "http://localhost:2019") {
 		t.Errorf("View missing Admin API endpoint:\n%s", view)
-	}
-	if !strings.Contains(view, "config/Caddyfile") {
-		t.Errorf("View missing config path:\n%s", view)
 	}
 }
 
@@ -3012,18 +3018,18 @@ func TestModelReload_FooterShowsKey(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": src,
 	}))
-	// With a reloader the key is listed.
+	// The footer stays navigation-only even when a reloader is configured.
 	reloader := &fakeReloader{}
 	m := newLoadedModel(t, fakeLoader{state: state}, reloader)
 	m = resize(m, 120, 30)
-	if !strings.Contains(stripANSI(m.View()), "r reload") {
-		t.Errorf("View missing 'r reload' with reloader configured:\n%s", m.View())
+	if !strings.Contains(stripANSI(m.View()), "? commands") {
+		t.Errorf("View missing command-palette hint with reloader configured:\n%s", m.View())
 	}
 	// Without a reloader the key must be absent.
 	m2 := newLoadedModel(t, fakeLoader{state: state})
 	m2 = resize(m2, 120, 30)
-	if strings.Contains(stripANSI(m2.View()), "r reload") {
-		t.Errorf("View should not contain 'r reload' without a reloader:\n%s", m2.View())
+	if !strings.Contains(stripANSI(m2.View()), "? commands") {
+		t.Errorf("View missing command-palette hint without a reloader:\n%s", m2.View())
 	}
 }
 
@@ -3287,7 +3293,7 @@ func TestModelHeader_ResponsiveNarrow(t *testing.T) {
 	if !strings.Contains(wide, longPath) {
 		t.Errorf("wide header missing full path:\n%s", wide)
 	}
-	for _, want := range []string{"lazycaddy", testVersion, "Config:", "READ-ONLY"} {
+	for _, want := range []string{"lazycaddy", testVersion, "Config:", "RO"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("wide header missing %q:\n%s", want, wide)
 		}
@@ -3300,7 +3306,7 @@ func TestModelHeader_ResponsiveNarrow(t *testing.T) {
 	if strings.Contains(narrow, longPath) {
 		t.Errorf("narrow header should not contain the raw long path:\n%s", narrow)
 	}
-	for _, want := range []string{"lazycaddy", testVersion, "Config:", "READ-ONLY"} {
+	for _, want := range []string{"lazycaddy", testVersion, "Config:", "RO"} {
 		if !strings.Contains(narrow, want) {
 			t.Errorf("narrow header missing %q:\n%s", want, narrow)
 		}
@@ -3330,7 +3336,7 @@ func TestModelStatusStrip_AboveFooter(t *testing.T) {
 	if !strings.Contains(view, "✓ saved") {
 		t.Errorf("status message missing from view:\n%s", view)
 	}
-	if !strings.Contains(view, "q quit") {
+	if !strings.Contains(view, "? commands") {
 		t.Errorf("footer missing from view:\n%s", view)
 	}
 
@@ -3344,7 +3350,7 @@ func TestModelStatusStrip_AboveFooter(t *testing.T) {
 		if strings.Contains(line, "✓ saved") {
 			statusIdx = i
 		}
-		if strings.Contains(line, "q quit") {
+		if strings.Contains(line, "? commands") {
 			footerIdx = i
 		}
 	}
@@ -3374,19 +3380,18 @@ func TestModelStatusStrip_WarningMessage(t *testing.T) {
 		t.Errorf("warning message missing from view:\n%s", view)
 	}
 
-	// The warning text must not be mixed into the contextual footer line.
+	// The warning text must not be mixed into the navigation footer line.
 	lines := strings.Split(view, "\n")
-	for i, line := range lines {
-		if strings.Contains(line, "q quit") && i > 0 && strings.Contains(lines[i-1], "warnings") {
+	for _, line := range lines {
+		if strings.Contains(line, "? commands") && strings.Contains(line, "warnings") {
 			t.Errorf("warning text rendered on the footer line")
 		}
 	}
 }
 
-// TestModelFooter_TruncatesOnNarrow verifies that the footer wraps onto
-// additional lines when the hints do not fit, instead of truncating away
-// critical keys like q quit.
-func TestModelFooter_TruncatesOnNarrow(t *testing.T) {
+// TestModelFooter_StaysCompact verifies that the navigation footer remains
+// on one line at a normal terminal width.
+func TestModelFooter_StaysCompact(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
 
@@ -3396,19 +3401,19 @@ func TestModelFooter_TruncatesOnNarrow(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
 
-	// The footer wraps onto additional lines; flatten the whitespace so a
-	// hint split across a line break is still found intact.
+	// Flatten whitespace so the assertions remain independent of surrounding
+	// layout lines.
 	view := strings.Join(strings.Fields(stripANSI(m.View())), " ")
-	for _, hint := range []string{"q quit", "v format & validate", "toggle"} {
+	for _, hint := range []string{"? commands", "Enter toggle"} {
 		if !strings.Contains(view, hint) {
-			t.Errorf("wrapped footer missing critical hint %q:\n%s", hint, view)
+			t.Errorf("footer missing critical hint %q:\n%s", hint, view)
 		}
 	}
 
 	footer := stripANSI(m.footer(80))
 	footerLines := lipgloss.Height(footer)
-	if footerLines < 2 {
-		t.Errorf("footer should wrap to multiple lines at 80 cols, got %d line(s):\n%s", footerLines, footer)
+	if footerLines != 1 {
+		t.Errorf("footer should stay on one line at 80 cols, got %d line(s):\n%s", footerLines, footer)
 	}
 	for i, line := range strings.Split(footer, "\n") {
 		if w := lipgloss.Width(line); w > 80 {
@@ -3434,8 +3439,9 @@ func assertFits(t *testing.T, m *Model, width, height int) {
 	if !strings.Contains(lines[0], "lazycaddy") {
 		t.Errorf("header is not the first line: %q", lines[0])
 	}
-	if !strings.Contains(lines[n-1], "quit") && !strings.Contains(lines[n-1], "Esc") {
-		t.Errorf("footer is not the last section: %q", lines[n-1])
+	tail := strings.Join(lines[max(0, n-2):n], "\n")
+	if !strings.Contains(tail, "quit") && !strings.Contains(tail, "Esc") && !strings.Contains(tail, "commands") && !strings.Contains(tail, "detail") && !strings.Contains(tail, "follow") {
+		t.Errorf("footer is not the last section: %q", tail)
 	}
 }
 
@@ -3468,8 +3474,7 @@ func TestModelViewFits_WrappedFooter(t *testing.T) {
 		"config/Caddyfile": "example.test {\n}\n",
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state})
-	// The default 80-column global footer wraps onto two lines; this must
-	// not push the header off the screen.
+	// The compact footer stays within the normal 80-column budget.
 	assertFits(t, m, 80, 24)
 }
 
@@ -3854,15 +3859,15 @@ func TestModelLogView_Footer(t *testing.T) {
 	if strings.Contains(stripANSI(m.View()), "l logs") {
 		t.Errorf("footer shows 'l logs' without a log source:\n%s", m.View())
 	}
-	// With a log source the l key appears.
+	// The main footer stays navigation-only even with a log source.
 	src := app.LogSourceFunc{
 		NextFn:    func(ctx context.Context) ([]logs.Entry, error) { return nil, nil },
 		HistoryFn: func() []logs.Entry { return nil },
 	}
 	m = newLoadedModel(t, fakeLoader{state: state}, src)
 	m = resize(m, 120, 30)
-	if !strings.Contains(stripANSI(m.View()), "l logs") {
-		t.Errorf("footer missing 'l logs' with a log source:\n%s", m.View())
+	if strings.Contains(stripANSI(m.View()), "l logs") {
+		t.Errorf("footer should not list operational commands:\n%s", m.View())
 	}
 	// While the log view is open the footer shows the log-view key hints.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
@@ -4045,6 +4050,42 @@ func TestModelLogDetail_ShowsFullJSON(t *testing.T) {
 	}
 	if !strings.Contains(visible, "Esc back") {
 		t.Errorf("footer missing the detail hint 'Esc back':\n%s", visible)
+	}
+}
+
+func TestModelLogViewsSeparateTitlesFromEntries(t *testing.T) {
+	state := logStateFor(t)
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.logLines = []logs.Entry{logEntry("handled request")}
+	m.logCursor = 0
+
+	view := stripANSI(m.logView(100, 24))
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "Logs · logs/access.log") {
+			if i+1 >= len(lines) || strings.Trim(lines[i+1], "│ ") != "" {
+				t.Fatalf("log title is not separated from entries:\n%s", view)
+			}
+			break
+		}
+		if i == len(lines)-1 {
+			t.Fatalf("log title missing:\n%s", view)
+		}
+	}
+
+	m.logDetailEntry = logEntry("handled request")
+	detail := stripANSI(m.logDetailView(100, 24))
+	detailLines := strings.Split(detail, "\n")
+	for i, line := range detailLines {
+		if strings.Contains(line, "Log detail") {
+			if i+1 >= len(detailLines) || strings.Trim(detailLines[i+1], "│ ") != "" {
+				t.Fatalf("log detail title is not separated from content:\n%s", detail)
+			}
+			return
+		}
+		if i == len(detailLines)-1 {
+			t.Fatalf("log detail title missing:\n%s", detail)
+		}
 	}
 }
 
@@ -4539,10 +4580,9 @@ func TestEditorFlow_CouldNotStart(t *testing.T) {
 	}
 }
 
-// TestEditorFlow_FooterShowsKey verifies that the footer lists the e edit
-// key only when an editor is wired, writable mode is active and a node row
-// is selected.
-func TestEditorFlow_FooterShowsKey(t *testing.T) {
+// TestEditorFlow_FooterUsesCommandPalette verifies that operational editor
+// actions no longer expand the normal navigation footer.
+func TestEditorFlow_FooterUsesCommandPalette(t *testing.T) {
 	state := editorStateFor(t)
 	editor := &fakeEditor{}
 	saver := &fakeSaver{}
@@ -4552,11 +4592,11 @@ func TestEditorFlow_FooterShowsKey(t *testing.T) {
 	if strings.Contains(stripANSI(m.View()), "e edit") {
 		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
 	}
-	// On a node row the key appears.
+	// On a node row the footer remains navigation-only.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.example.test node
-	if !strings.Contains(stripANSI(m.View()), "e edit") {
-		t.Errorf("footer missing 'e edit' on a node row:\n%s", m.View())
+	if strings.Contains(stripANSI(m.View()), "e edit") || !strings.Contains(stripANSI(m.View()), "? commands") {
+		t.Errorf("footer should expose navigation and the palette only:\n%s", m.View())
 	}
 	// In read-only mode the key is hidden even on a node row.
 	readOnly := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
@@ -5200,26 +5240,25 @@ func TestSearch_DoesNotInterfere(t *testing.T) {
 	}
 }
 
-// TestSearch_FooterShowsKey verifies that the main footer lists / search
-// only when a searcher is wired and that the search-active footer shows
-// the search keys.
-func TestSearch_FooterShowsKey(t *testing.T) {
+// TestSearch_FooterUsesCommandPalette verifies that search stays available
+// through its direct hotkey without expanding the normal footer.
+func TestSearch_FooterUsesCommandPalette(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n}\n",
 	}))
 
-	// With the default searcher the key is listed.
+	// With the default searcher the normal footer remains compact.
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
-	if !strings.Contains(stripANSI(m.View()), "/ search") {
-		t.Errorf("footer missing '/ search' with a searcher:\n%s", m.View())
+	if strings.Contains(stripANSI(m.View()), "/ search") || !strings.Contains(stripANSI(m.View()), "? commands") {
+		t.Errorf("footer should not list operational search:\n%s", m.View())
 	}
 
 	// Without a searcher the key is absent.
 	m2 := newLoadedModelWithoutSearcher(t, fakeLoader{state: state})
 	m2 = resize(m2, 120, 30)
-	if strings.Contains(stripANSI(m2.View()), "/ search") {
-		t.Errorf("footer shows '/ search' without a searcher:\n%s", m2.View())
+	if !strings.Contains(stripANSI(m2.View()), "? commands") {
+		t.Errorf("footer missing command-palette hint without a searcher:\n%s", m2.View())
 	}
 
 	// While the search modal is open the footer shows the search keys.
@@ -5228,6 +5267,24 @@ func TestSearch_FooterShowsKey(t *testing.T) {
 	for _, want := range []string{"type to search", "Enter open", "Esc close"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("search footer missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestSearch_ViewUsesPaletteInputTreatment(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range []rune("respond") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	view := stripANSI(m.View())
+	for _, want := range []string{"SEARCH > respond▌", "result(s)", "Enter open", "Esc close"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("search modal missing %q:\n%s", want, view)
 		}
 	}
 }
@@ -6246,17 +6303,14 @@ func TestEditorFull_FooterShowsKey(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, saver, editor)
 	m = resize(m, 120, 30)
-	// On the document row: E is shown, e is not.
-	if !strings.Contains(stripANSI(m.View()), "E full edit") {
-		t.Errorf("footer missing 'E full edit' on a document row:\n%s", m.View())
+	// The document row exposes only navigation and the palette.
+	if strings.Contains(stripANSI(m.View()), "full edit") || !strings.Contains(stripANSI(m.View()), "? commands") {
+		t.Errorf("footer should stay navigation-only:\n%s", m.View())
 	}
-	if strings.Contains(stripANSI(m.View()), "e edit") {
-		t.Errorf("footer shows 'e edit' on a document row:\n%s", m.View())
-	}
-	// On a node row: both are shown.
+	// The node row remains just as compact.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(stripANSI(m.View()), "E full edit") || !strings.Contains(stripANSI(m.View()), "e edit") {
-		t.Errorf("footer missing E/e edit on a node row:\n%s", m.View())
+	if strings.Contains(stripANSI(m.View()), "full edit") || strings.Contains(stripANSI(m.View()), "e edit") {
+		t.Errorf("footer should not list editor actions on a node row:\n%s", m.View())
 	}
 	// Read-only: neither.
 	readOnly := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
@@ -6279,14 +6333,14 @@ func TestDelete_FooterShowsKey(t *testing.T) {
 	saver := &fakeSaver{}
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
 	m = resize(m, 120, 30)
-	// On the document row the key is hidden.
-	if strings.Contains(stripANSI(m.View()), "d delete") {
-		t.Errorf("footer shows 'd delete' on a document row:\n%s", m.View())
+	// The document row exposes only navigation and the palette.
+	if strings.Contains(stripANSI(m.View()), "d delete") || !strings.Contains(stripANSI(m.View()), "? commands") {
+		t.Errorf("footer should stay navigation-only:\n%s", m.View())
 	}
-	// On a node row the key appears.
+	// On a node row it remains compact as well.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if !strings.Contains(stripANSI(m.View()), "d delete") {
-		t.Errorf("footer missing 'd delete' on a node row:\n%s", m.View())
+	if strings.Contains(stripANSI(m.View()), "d delete") {
+		t.Errorf("footer should not list delete on a node row:\n%s", m.View())
 	}
 	// Read-only: hidden even on a node row.
 	readOnly := stateFor(t, "config/Caddyfile", fsReader(map[string]string{

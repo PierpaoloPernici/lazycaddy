@@ -308,9 +308,9 @@ func TestErrorHistory_RecordedAndOpened(t *testing.T) {
 		t.Error("entry.Next empty, want a safe next action")
 	}
 
-	// The footer documents the H key once errors exist.
-	if !strings.Contains(stripANSI(m.View()), "H errors") {
-		t.Errorf("footer missing the H errors key:\n%s", m.View())
+	// The compact footer points to the palette instead of listing H.
+	if strings.Contains(stripANSI(m.View()), "H errors") || !strings.Contains(stripANSI(m.View()), "? commands") {
+		t.Errorf("footer should stay navigation-only:\n%s", m.View())
 	}
 
 	// H opens the history view.

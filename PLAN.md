@@ -293,7 +293,7 @@ t          TLS
 Ctrl-F     Search
 f          Toggle log follow mode
 p          Pause or resume logs
-?          Help
+?          Open the searchable command palette
 q          Quit; prompt if changes are unsaved
 Esc        Close modal / cancel operation
 ```
@@ -585,7 +585,7 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
 - [x] Improve the persistent application chrome and visual hierarchy. Keep the
   header visible independently from transient notifications, display the
   LazyCaddy version alongside the Caddy version and runtime/configuration
-  badges, and reserve a separate status strip above the contextual footer for
+  badges, and reserve a separate status strip above the navigation footer for
   validation, save and error messages. Add a coherent terminal theme with a
   focused-pane accent, colored section titles and key hints, and restrained
   semantic colors for success, warning and error states; labels must remain
@@ -595,20 +595,22 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   hints. Keep semantic status colors distinct from that accent and provide a
   terminal-safe fallback when true color is unavailable. Preserve responsive
   layout behavior by shortening low-priority path and metadata text on narrow
-  terminals. Implemented in `internal/ui` with a persistent header, semantic
-  status strip, responsive layout accounting, wrapped contextual footer and
-  adaptive theme colors with explicit labels.
+  terminals. Implemented in `internal/ui` with a persistent header, compact
+  `RW`/`RO` state badges, a prominent semantic status strip, responsive layout
+  accounting, a navigation-only footer and a searchable command palette. The
+  palette and direct hotkeys share one command catalog, while unavailable
+  capabilities remain visible with an explicit reason.
 
   Target layout preview:
 
   ```text
-   lazycaddy v0.2.0  /etc/caddy/Caddyfile  Caddy v2.11.4  RUNNING  LOADED  READ-ONLY
+   lazycaddy dev · Caddy v2.11.4 · Config: Caddyfile       UNKNOWN  RUNNING  RO
   +---------------------------+ +--------------------------------------------------+
   | Documents                 | | Source: /etc/caddy/Caddyfile                     |
   | ...                       | | ...                                              |
   +---------------------------+ +--------------------------------------------------+
-   [ok] validated · working copy updated, not saved
-   ↑/↓ move · Enter open · v validate · D diff · / search · ? help
+   ✓ validated (working copy updated, not saved)
+   ↑/↓ move · Enter toggle · PgUp/PgDown · +/- all · ? commands
   ```
 
 - [x] Add a simple keyboard-first clipboard action for source content. `y` should
@@ -670,19 +672,21 @@ source bytes without panel decorations.
 - [x] Generalize tree navigation to arbitrary parent/child rows. Document rows,
   including imported documents, remain separate top-level rows, while visible
   structural branches can contain recursively nested branches without relying
-  on `depth == 0`. Leaf directives such as `respond`, `header_up` and `import`
-  are not tree rows, but remain present in the parser, source view and search
-  scope. A row is expandable only when it has visible children, so an otherwise
-  empty block is rendered as a leaf row without an expansion marker.
+  on `depth == 0`. Leaf directives such as `respond`, `header_up` and
+  `import` are not tree rows, but remain present in the parser, source view
+  and search scope. A row is expandable only when it has visible children,
+  so an otherwise empty block is rendered as a leaf row without an expansion
+  marker.
 
   The tree uses separate columns for selection and expansion: `›` marks the
-  selected row, `-` an expanded branch, `+` a collapsed branch, and leaves have
-  no expansion marker. Document roots start expanded, branches below them start
+  selected row, `-` an expanded branch, `+` a collapsed branch, and `·` a
+  visible leaf row. Document roots start expanded, branches below them start
   collapsed, and the initial selection is deterministic; expansion state is
   session-local and is not persisted. `Enter`/`Space` toggle the selected
   branch, `Left`/`Right` collapse or expand it, `+` expands all branches, and
   `-` collapses all descendants while keeping document roots expanded. The
-  footer advertises these actions according to the selected row.
+  footer advertises only navigation actions; operational commands remain
+  available through direct hotkeys and the `?` command palette.
 
   Tree rows use stable document/node/source-range keys so selection survives
   rebuilds after saves, reloads, rollbacks and tree toggles. Search traverses
