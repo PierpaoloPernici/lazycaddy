@@ -89,7 +89,8 @@ type copyResultMsg struct {
 
 // browserResultMsg is delivered after the external help URL opener returns.
 type browserResultMsg struct {
-	err error
+	err   error
+	label string
 }
 
 // externalChangeMsg is delivered when the change monitor detects an

@@ -252,6 +252,17 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.structuredAddCursor++
 		}
 		return m, nil
+	case "h":
+		items := m.filteredStructuredItems()
+		if len(items) == 0 {
+			m.statusMessage = "✗ no supported directive is selected"
+			return m, nil
+		}
+		if m.structuredAddCursor >= len(items) {
+			m.structuredAddCursor = len(items) - 1
+		}
+		name := items[m.structuredAddCursor]
+		return m.startHelpURL(caddyfileDirectiveHelpURL(m.structuredAddParent, name), name+" help")
 	case "enter":
 		items := m.filteredStructuredItems()
 		if len(items) == 0 {
@@ -546,7 +557,7 @@ func (m *Model) structuredAddView(width, height int) string {
 			body.WriteByte('\n')
 		}
 	}
-	title := truncateToWidth("Add directive · ↑/↓ choose · Enter select · Esc cancel", contentW)
+	title := truncateToWidth("Add directive · ↑/↓ choose · h help · Enter select · Esc cancel", contentW)
 	return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
 		activeTitleStyle.Render(title) + "\n" + body.String(),
 	)
