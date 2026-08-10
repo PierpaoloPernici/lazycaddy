@@ -718,9 +718,10 @@ UI integration and the end-to-end editing workflows described below.
   values, insert supported directives, delete selected constructs and reorder
   compatible blocks. The `a` add action must be capability- and context-aware;
   unsupported or ambiguous insertions remain unavailable rather than guessing.
-  The separate `New node` action must expose the planner's structural-node
-  creation API; until that UI exists, `a` only adds directives inside an
-  existing structural parent. For v0.3, directive forms remain explicit,
+  The `n` New node action now exposes the planner's structural-node creation
+  API for top-level sites, snippets, named routes and global options, plus
+  nested handler blocks; `a` remains the directive-insertion action. For v0.3,
+  directive forms remain explicit,
   hand-authored implementations; build-time form-schema generation from Caddy
   sources or documentation is deferred to v0.4 so it does not become a second
   syntax authority.
