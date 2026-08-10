@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -551,5 +552,135 @@ func TestSearch_CollapsedDocumentStillSearched(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(m.viewport.View()), "target.example.test {") {
 		t.Errorf("source pane does not show the revealed node:\n%s", m.viewport.View())
+	}
+}
+
+func TestSearch_QuitKey(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("ctrl+c in search did not request quit")
+	}
+}
+
+func TestSearch_RecomputeWithoutSearcher(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModelWithoutSearcher(t, fakeLoader{state: state})
+	m.searchResults = []app.SearchResult{{Kind: app.SearchNode}}
+	m.recomputeSearch()
+	if m.searchResults != nil || m.searchCursor != 0 {
+		t.Errorf("recomputeSearch without a searcher left (%v, %d)", m.searchResults, m.searchCursor)
+	}
+}
+
+func TestSearch_NilDocumentSkipped(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.state.Graph.Documents = append(m.state.Graph.Documents, nil)
+	m.searchQuery = []rune("example")
+	m.recomputeSearch() // must not panic on the nil document
+	if len(m.searchResults) == 0 {
+		t.Error("recomputeSearch skipped the healthy documents")
+	}
+}
+
+func TestSearch_NodeHitWithoutDocument(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.activateSearchResult(app.SearchResult{Kind: app.SearchNode}) // Doc == nil
+	expandNodeAncestors(nil, caddyfile.Node{}, m.collapsed)        // direct: doc == nil no-op
+	// No panic; the tree stays untouched.
+}
+
+func TestSearch_DocumentHitOutsideRows(t *testing.T) {
+	fs := map[string]string{"config/Caddyfile": "example.test {\n\trespond ok\n}\n"}
+	state := stateFor(t, "config/Caddyfile", fsReader(fs))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	doc := m.state.Graph.Root
+	m.collapsed[itemKey(doc, nil)] = true
+	// A line inside the hidden top-level leaf is outside every tree row:
+	// the collapsed document entry is dropped instead of expanded.
+	m.activateSearchResult(app.SearchResult{Kind: app.SearchDocument, Doc: doc, Line: 2})
+	if m.collapsed[itemKey(doc, nil)] {
+		t.Error("document hit outside tree rows left the document collapsed")
+	}
+}
+
+func TestSearch_LogHitOutOfRange(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m.activateSearchResult(app.SearchResult{Kind: app.SearchLog, LogIndex: 42}) // no log lines loaded
+	if m.showLogs || m.logDetailOpen {
+		t.Error("out-of-range log hit opened the log view")
+	}
+}
+
+func TestSearch_NodeHitMissingFromTree(t *testing.T) {
+	fs := map[string]string{"config/Caddyfile": "example.test {\n\trespond ok\n}\n"}
+	state := stateFor(t, "config/Caddyfile", fsReader(fs))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	doc := m.state.Graph.Root
+	// A leaf directive that is not part of doc's tree: the ancestor walk
+	// finds nothing and the hit falls back to the document row.
+	m.activateSearchResult(app.SearchResult{Kind: app.SearchNode, Doc: doc, Node: caddyfile.Node{Kind: caddyfile.KindDirective, Name: "ghost"}})
+	if len(m.items) == 0 || m.items[m.cursor].hasNode {
+		t.Errorf("cursor %d should land on the document row for a missing node", m.cursor)
+	}
+}
+
+func TestSearch_ViewSizing(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+
+	for _, size := range []struct{ w, h int }{{0, 10}, {10, 0}, {2, 2}, {30, 8}, {120, 60}} {
+		if got := m.searchView(size.w, size.h); got == "" {
+			t.Errorf("searchView(%d, %d) rendered empty", size.w, size.h)
+		}
+	}
+	m.syncSearchViewport(0, 5)
+	m.syncSearchViewport(5, 0)
+
+	// A query with no hits renders the empty state; the reveal scrolls
+	// the selected row into view once the cursor leaves the window.
+	m.searchQuery = []rune("zzzz")
+	if view := stripANSI(m.searchView(100, 30)); !strings.Contains(view, "no matches") {
+		t.Errorf("no-hit search missing the empty state:\n%s", view)
+	}
+	m.searchResults = []app.SearchResult{{Label: "a"}, {Label: "b"}, {Label: "c"}, {Label: "d"}}
+	m.syncSearchViewport(60, 2)
+	m.searchCursor = 3
+	m.revealSearchCursor()
+	if m.searchViewport.YOffset == 0 {
+		t.Error("revealSearchCursor did not scroll a cursor past the viewport")
+	}
+	down := m.searchViewport.YOffset
+	m.searchCursor = 0
+	m.revealSearchCursor()
+	if m.searchViewport.YOffset >= down {
+		t.Errorf("revealSearchCursor did not scroll a cursor above the viewport (%d -> %d)", down, m.searchViewport.YOffset)
+	}
+
+	// A one-column viewport clamps the row text width.
+	m.syncSearchViewport(1, 5)
+	if m.searchViewport.Width != 1 {
+		t.Errorf("syncSearchViewport(1, 5) width = %d, want 1", m.searchViewport.Width)
 	}
 }

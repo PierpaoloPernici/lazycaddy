@@ -472,3 +472,113 @@ func TestDelete_SecondPressIgnoredWhileValidating(t *testing.T) {
 		t.Fatal("delete diff not open after the validated result")
 	}
 }
+
+func TestDelete_NoGraphIsNoOp(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, &fakeFormatter{})
+	m.state = nil
+	updated, cmd := m.startDelete()
+	if updated != m || cmd != nil {
+		t.Fatalf("startDelete without a graph returned (%v, %v), want no-op", updated != m, cmd != nil)
+	}
+}
+
+func TestDelete_ReadOnlyShowsHint(t *testing.T) {
+	state := stateFor(t, "Caddyfile", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // select the node row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !strings.Contains(m.statusMessage, "read-only mode — start with --write") {
+		t.Errorf("statusMessage = %q, want the read-only hint", m.statusMessage)
+	}
+}
+
+func TestDelete_NoFormatterShowsHint(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !strings.Contains(m.statusMessage, "validation unavailable") {
+		t.Errorf("statusMessage = %q, want the missing-binary hint", m.statusMessage)
+	}
+}
+
+func TestDelete_InvalidRangeSurfacesError(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, &fakeFormatter{})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	// Corrupt the selected node's range so caddyfile.Patch rejects it.
+	for i := range m.items {
+		if m.items[i].hasNode {
+			m.items[i].node.Range = caddyfile.SourceRange{Start: 5000, End: 6000}
+			break
+		}
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !strings.Contains(m.statusMessage, "✗ delete failed") {
+		t.Errorf("statusMessage = %q, want the patch failure", m.statusMessage)
+	}
+}
+
+func TestDelete_WarningsNotApplied(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	diags := []validator.Diagnostic{
+		{Severity: validator.SeverityWarning, Message: "deprecated directive", Path: "Caddyfile", Line: 1},
+	}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, &fakeFormatter{diagnostics: diags})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !m.deleting {
+		t.Fatal("deleting = false after starting the delete")
+	}
+	updated, _ := m.Update(deleteValidatedMsg{
+		Path:        "Caddyfile",
+		Original:    []byte("example.test {\n\trespond ok\n}\n"),
+		Content:     []byte("example.test {\n\trespond ok\n}\n"),
+		Diagnostics: diags,
+	})
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "✗ delete has warnings — not applied") {
+		t.Errorf("statusMessage = %q, want the warnings message", m.statusMessage)
+	}
+	if m.showDiff || m.pendingDelete != nil {
+		t.Error("warning-only delete was applied anyway")
+	}
+}
+
+func TestDelete_ValidationErrorIsInfrastructure(t *testing.T) {
+	state := writableStateFor(t, "Caddyfile", "backups", fsReader(map[string]string{
+		"Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, &fakeFormatter{err: errors.New("caddy missing")})
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !m.deleting {
+		t.Fatal("deleting = false after starting the delete")
+	}
+	updated, _ := m.Update(deleteValidatedMsg{
+		Path:     "Caddyfile",
+		Original: []byte("example.test {\n\trespond ok\n}\n"),
+		Content:  []byte("example.test {\n}\n"),
+		Err:      errors.New("caddy missing"),
+	})
+	m = updated.(*Model)
+	if !strings.Contains(m.statusMessage, "✗ delete validation failed: caddy missing") {
+		t.Errorf("statusMessage = %q, want the validation failure", m.statusMessage)
+	}
+}
