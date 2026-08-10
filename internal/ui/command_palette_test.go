@@ -99,7 +99,7 @@ func TestCommandPalette_KeyCatalogKeepsDirectHotkeys(t *testing.T) {
 		{key: "D", id: commandDiff},
 		{key: "s", id: commandSave},
 		{key: "m", id: commandEditReverse},
-		{key: "F1", id: commandHelp},
+		{key: "Ctrl-H", id: commandHelp},
 		{key: "?", id: commandPalette},
 		{key: "q", id: commandQuit},
 	} {

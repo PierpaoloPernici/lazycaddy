@@ -122,7 +122,7 @@ func TestStructuredAddPickerOpensDirectiveHelp(t *testing.T) {
 	for _, r := range []rune("reverse") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF1})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
 	m = updated.(*Model)
 	if cmd == nil {
 		t.Fatal("directive help did not return browser command")
