@@ -28,6 +28,7 @@ const (
 	commandEdit          commandID = "edit"
 	commandFullEdit      commandID = "full-edit"
 	commandAdd           commandID = "add-structured"
+	commandNew           commandID = "new-node"
 	commandEditReverse   commandID = "edit-reverse-proxy"
 	commandDelete        commandID = "delete"
 	commandBackups       commandID = "backups"
@@ -106,6 +107,17 @@ func commandDefinitions() []uiCommand {
 				return "Caddy binary unavailable"
 			}
 			return "select a supported block"
+		}},
+		{ID: commandNew, Category: "Source & validation", Label: "New structural node", Description: "site, snippet or handler", Keys: []string{"n"}, Enabled: func(m *Model) bool {
+			return m.canNewNode()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a document or structural block"
 		}},
 		{ID: commandEditReverse, Category: "Source & validation", Label: "Edit reverse_proxy fields", Description: "matcher and upstreams", Keys: []string{"m"}, Enabled: func(m *Model) bool {
 			return m.canEditReverseProxy()
@@ -192,6 +204,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startFullEdit()
 	case commandAdd:
 		return m.startStructuredAdd()
+	case commandNew:
+		return m.startNewNode()
 	case commandEditReverse:
 		return m.startReverseProxyEdit()
 	case commandDelete:
@@ -321,6 +335,9 @@ func (m *Model) filteredCommands() []uiCommand {
 		// the default palette avoids pushing the runtime actions below the
 		// initial viewport for every other selection.
 		if command.ID == commandEditReverse && !m.canEditReverseProxy() {
+			continue
+		}
+		if command.ID == commandNew && !m.canNewNode() {
 			continue
 		}
 		if command.ID == commandHelp && m.browser == nil {

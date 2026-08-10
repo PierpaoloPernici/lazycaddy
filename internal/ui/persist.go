@@ -14,15 +14,25 @@ import (
 )
 
 func pendingEditVerb(pe *pendingEdit) string {
-	if pe != nil && pe.operation == "add" {
-		return "add"
+	if pe != nil {
+		switch pe.operation {
+		case "add":
+			return "add"
+		case "new":
+			return "create"
+		}
 	}
 	return "save"
 }
 
 func pendingEditName(pe *pendingEdit) string {
-	if pe != nil && pe.operation == "add" {
-		return "add"
+	if pe != nil {
+		switch pe.operation {
+		case "add":
+			return "add"
+		case "new":
+			return "new node"
+		}
 	}
 	return "edit"
 }

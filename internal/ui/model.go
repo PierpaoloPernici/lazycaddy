@@ -427,6 +427,12 @@ type Model struct {
 	structuredAddUpstreams structuredInput
 	structuredAddRPField   int
 	structuredAddEditing   bool
+	structuredAddCreating  bool
+	structuredAddNewKind   caddyfile.Kind
+	structuredAddNewName   structuredInput
+	structuredAddNewArgs   structuredInput
+	structuredAddNewField  int
+	structuredAddNewTop    bool
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the

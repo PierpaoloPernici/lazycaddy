@@ -193,6 +193,72 @@ func TestStructuredReverseProxyFormOpensHelp(t *testing.T) {
 	}
 }
 
+func TestNewNodeCreatesTopLevelSite(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	formatter := &fakeFormatter{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, &fakeSaver{})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if !m.showStructuredAdd || !m.structuredAddCreating {
+		t.Fatalf("new node state = show:%v creating:%v, want open", m.showStructuredAdd, m.structuredAddCreating)
+	}
+	if !strings.Contains(m.View(), "site") || !strings.Contains(m.View(), "snippet") {
+		t.Fatal("new node picker does not show top-level node kinds")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	for _, r := range []rune("new.example") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("new site did not return validation command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if m.pendingEdit == nil || m.pendingEdit.operation != "new" {
+		t.Fatalf("pendingEdit = %+v, want new-node operation", m.pendingEdit)
+	}
+	if got := pendingEditVerb(m.pendingEdit); got != "create" {
+		t.Errorf("pending edit verb = %q, want create", got)
+	}
+	if !strings.Contains(string(m.pendingEdit.content), "new.example {\n}\n") {
+		t.Fatalf("new site missing from candidate: %q", m.pendingEdit.content)
+	}
+	if !m.showDiff || formatter.calls != 1 {
+		t.Fatalf("new site workflow = diff:%v formatter calls:%d, want diff and one validation", m.showDiff, formatter.calls)
+	}
+}
+
+func TestNewNodePickerIsContextAwareForNestedHandlers(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	formatter := &fakeFormatter{}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter, &fakeSaver{})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	view := m.View()
+	if !strings.Contains(view, "handle_path") || strings.Contains(view, "global options") {
+		t.Fatalf("nested new node picker is not context-aware:\n%s", view)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // choose route
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("nested route creation did not return validation command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if m.pendingEdit == nil || !strings.Contains(string(m.pendingEdit.content), "\troute {\n\t}\n") {
+		t.Fatalf("nested route missing from candidate: %+v", m.pendingEdit)
+	}
+	if formatter.calls != 1 {
+		t.Fatalf("nested route formatter calls = %d, want 1", formatter.calls)
+	}
+}
+
 func TestStructuredAddPickerRowsDoNotWrap(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",

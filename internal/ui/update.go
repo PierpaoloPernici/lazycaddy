@@ -231,6 +231,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandFullEdit)
 	case "a":
 		return m.runCommand(commandAdd)
+	case "n":
+		return m.runCommand(commandNew)
 	case "m":
 		return m.runCommand(commandEditReverse)
 	case "d":

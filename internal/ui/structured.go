@@ -28,6 +28,8 @@ const (
 	structuredAddPicker structuredAddMode = iota
 	structuredAddArgs
 	structuredAddReverseProxy
+	structuredAddNewPicker
+	structuredAddNewForm
 )
 
 const (
@@ -171,6 +173,9 @@ func (m *Model) startReverseProxyEdit() (tea.Model, tea.Cmd) {
 // updateStructuredAddKey handles the text prompt and starts validation when
 // the operator submits a directive line.
 func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.structuredAddCreating {
+		return m.updateNewNodeKey(msg)
+	}
 	if m.structuredAddMode == structuredAddPicker {
 		return m.updateStructuredPickerKey(msg)
 	}
@@ -223,6 +228,12 @@ func (m *Model) closeStructuredAdd() {
 	m.structuredAddUpstreams = structuredInput{}
 	m.structuredAddRPField = structuredReverseProxyUpstreams
 	m.structuredAddEditing = false
+	m.structuredAddCreating = false
+	m.structuredAddNewKind = caddyfile.Kind(0)
+	m.structuredAddNewName = structuredInput{}
+	m.structuredAddNewArgs = structuredInput{}
+	m.structuredAddNewField = newNodeNameField
+	m.structuredAddNewTop = false
 }
 
 func (m *Model) filteredStructuredItems() []string {
@@ -416,7 +427,7 @@ func (m *Model) queueStructuredAddValidation(name, operation string, edit *caddy
 	itemKey := m.structuredAddKey
 	m.closeStructuredAdd()
 	m.structuredAddBusy = true
-	m.statusMessage = "validating " + operation + "…"
+	m.statusMessage = "validating " + structuredOperationLabel(operation) + "…"
 	return m, m.structuredAddValidateCmd(docPath, original, candidate, name, operation, parent, itemKey)
 }
 
@@ -451,18 +462,18 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 		m.diagnostics = errorDiags
 		m.diagCursor = 0
 		m.showDiagnostics = true
-		m.statusMessage = "✗ structured " + msg.Operation + " did not validate — not applied"
-		m.recordError("structured "+msg.Operation, "candidate did not validate", "fix the directive and retry the edit")
+		m.statusMessage = "✗ structured " + structuredOperationLabel(msg.Operation) + " did not validate — not applied"
+		m.recordError("structured "+structuredOperationLabel(msg.Operation), "candidate did not validate", "fix the directive and retry the edit")
 		return m, nil
 	}
 	if msg.Err != nil {
-		m.statusMessage = "✗ structured " + msg.Operation + " validation failed: " + msg.Err.Error()
-		m.recordError("structured "+msg.Operation, msg.Err.Error(), "fix the directive and retry the edit")
+		m.statusMessage = "✗ structured " + structuredOperationLabel(msg.Operation) + " validation failed: " + msg.Err.Error()
+		m.recordError("structured "+structuredOperationLabel(msg.Operation), msg.Err.Error(), "fix the directive and retry the edit")
 		return m, nil
 	}
 	if len(msg.Diagnostics) > 0 {
-		m.statusMessage = "✗ structured " + msg.Operation + " has warnings — not applied"
-		m.recordError("structured "+msg.Operation, "candidate has warnings", "review the warnings and retry the edit")
+		m.statusMessage = "✗ structured " + structuredOperationLabel(msg.Operation) + " has warnings — not applied"
+		m.recordError("structured "+structuredOperationLabel(msg.Operation), "candidate has warnings", "review the warnings and retry the edit")
 		return m, nil
 	}
 	content := msg.Content
@@ -474,7 +485,7 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 		nodeName: msg.Parent.Name, startLine: msg.Parent.Range.StartLine,
 		itemKey: msg.ItemKey, operation: msg.Operation,
 	}
-	lines, err := diff.Unified(msg.Original, content, msg.Path, msg.Path+" (after "+msg.Operation+")")
+	lines, err := diff.Unified(msg.Original, content, msg.Path, msg.Path+" (after "+structuredOperationLabel(msg.Operation)+")")
 	if err != nil {
 		m.pendingEdit = nil
 		m.statusMessage = "✗ structured " + msg.Operation + " diff failed: " + err.Error()
@@ -484,12 +495,24 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 	title := "Add " + msg.Name
 	if msg.Operation == "edit" {
 		title = "Edit " + msg.Name
+	} else if msg.Operation == "new" {
+		title = "New " + msg.Name
 	}
 	m.showDiffModal(lines, title+" · "+msg.Path)
 	return m, nil
 }
 
+func structuredOperationLabel(operation string) string {
+	if operation == "new" {
+		return "new node"
+	}
+	return operation
+}
+
 func (m *Model) structuredAddView(width, height int) string {
+	if m.structuredAddCreating {
+		return m.newNodeView(width, height)
+	}
 	boxW := width - 8
 	if boxW < 44 {
 		boxW = width - 2
