@@ -43,12 +43,12 @@ The following behaviors are the compatibility boundaries for v0.3:
 
 - [x] Record the `v2.11.4` baseline and the official sources reviewed.
 - [x] Confirm the documented `fmt`, `validate`, reload and import boundaries.
-- [ ] Add focused fixtures for imports, globs, cycles, comments, quoted braces,
+- [x] Add focused fixtures for imports, globs, cycles, comments, quoted braces,
   brace-less sites, heredocs, placeholders, matchers, snippets, named routes
   and escaped input.
-- [ ] Add structured-edit fixtures for `reverse_proxy` and each common
+- [x] Add structured-edit fixtures for `reverse_proxy` and each common
   directive operation that v0.3 supports.
-- [ ] Verify that every structured edit preserves unrelated bytes, comments,
+- [x] Verify that every structured edit preserves unrelated bytes, comments,
   unknown directives and exact file boundaries.
 - [ ] Record any Caddy release-specific change as a fixture, code, UI,
   documentation or explicit no-change decision.

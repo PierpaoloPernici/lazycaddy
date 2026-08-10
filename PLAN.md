@@ -21,9 +21,10 @@ The UI must never reload Caddy implicitly after an edit.
 
 ## Current implementation status
 
-The repository has completed the configuration-engine spike and a
-read-only-by-default TUI vertical slice with opt-in editing, validation,
-save and reload workflows.
+The repository has completed the configuration-engine spike, the v0.1/v0.2
+read-only-by-default TUI milestones and the v0.3 structured-editing foundation.
+The v0.3 foundation and its first UI workflows are merged into `main`; the
+remaining v0.3 work is explicitly listed in the milestone section below.
 
 Completed:
 
@@ -45,9 +46,10 @@ Completed:
 - testable application state and a read-only Bubble Tea inspector with
   document/site navigation, raw source viewing and parse-error fallback;
 - lexical syntax highlighting in the raw source view, including comments,
-  strings, heredocs, braces and placeholders. This is intentionally an
-  early, conservative presentation layer: semantic site-address and
-  directive roles remain future work;
+  strings, heredocs, braces and placeholders. This remains an intentionally
+  early, conservative presentation layer; semantic roles are now available
+  to structured features, while richer inline validation and highlighting
+  remain future work;
 - CLI configuration loading with an explicit read-only mode and no file writes
   or Caddy daemon dependency.
 - `caddy fmt` and `caddy validate` engine (`internal/validator`):
@@ -283,7 +285,9 @@ v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
 D          Diff current changes (selected document; root uses the working copy, imports and the root fallback use on-disk bytes)
-n/N        Jump to the next/previous diff hunk (inside the diff modal)
+m          Edit reverse_proxy fields (when a reverse_proxy directive is selected)
+n          New structural node (normal view); next diff hunk (inside the diff modal)
+N          Previous diff hunk (inside the diff modal)
 h/l        Shift the diff horizontally for long lines (inside the diff modal)
 B          Open backup history for the selected document (compare, then rollback in writable mode)
 H          Open the error history (recorded failures with safe next actions)
@@ -296,6 +300,7 @@ p          Pause or resume logs
 ?          Open the searchable command palette
 q          Quit; prompt if changes are unsaved
 Esc        Close modal / cancel operation
+Ctrl-H     Open the official Caddyfile documentation
 ```
 
 Site state must distinguish at least `active`, `disabled`, `invalid`, `modified but not loaded` and `upstream unreachable`. Themes may choose glyphs and colors for these states, but the underlying state model and accessible text labels must remain explicit.
@@ -669,13 +674,15 @@ source bytes without panel decorations.
 
 ### v0.3 — structured editing
 
-Current progress (2026-08-10): the v0.3 foundation is implemented on the
-`codex/v0.3-foundation` branch: token spans, compatibility fixtures, planner
-primitives, semantic roles and advisory catalog, structural navigation
-primitives, and the pane-aware selection model. The planner now also exposes
-`CreateNode` for source-preserving creation of top-level sites, snippets and
-named routes, plus nested handler blocks. The remaining product work is the
-UI integration and the end-to-end editing workflows described below.
+Current progress (2026-08-10): the v0.3 foundation and initial editing
+workflows are merged into `main`. Implemented are token spans, compatibility
+fixtures, source-preserving planner primitives, semantic roles and advisory
+catalog, structural-navigation primitives, the pane-aware selection model,
+and the planner's `CreateNode` API. The UI now exposes `a` for directive
+insertion, `m` for `reverse_proxy` fields, `n` for structural-node creation,
+and `d` for deletion, all using validation, diff confirmation, save and
+post-save graph reload where applicable. Official Caddy help is available
+through `Ctrl-H`.
 
 - [x] Generalize tree navigation to arbitrary parent/child rows. Document rows,
   including imported documents, remain separate top-level rows, while visible
@@ -704,7 +711,7 @@ UI integration and the end-to-end editing workflows described below.
   ancestors before selecting the deepest containing branch. Keep the current
   one-file-per-edit safety boundary; this tree behavior is a navigation concern
   and must not imply multi-file editing.
-- Add pane-aware mouse selection and clipboard support for text-bearing views.
+- Add pane-aware mouse selection and full clipboard integration for text-bearing views.
   Mouse tracking should make the source pane the selectable region when it is
   active, keep tree/header/footer interactions navigational, and render the
   selected text range without selecting neighboring panes. Reuse the same
@@ -713,12 +720,15 @@ UI integration and the end-to-end editing workflows described below.
   and provide keyboard and non-mouse fallbacks when mouse tracking or
   clipboard integration is unavailable. `y` remains the precise keyboard copy
   action for the active view.
-- Add source-range-preserving structured editing for `reverse_proxy` and common
+- Continue source-range-preserving structured editing for `reverse_proxy` and common
   directives, covering the supported operations explicitly: edit existing
   values, insert supported directives, delete selected constructs and reorder
   compatible blocks. The `a` add action must be capability- and context-aware;
   unsupported or ambiguous insertions remain unavailable rather than guessing.
-  The `n` New node action now exposes the planner's structural-node creation
+  The current UI covers directive insertion, `reverse_proxy` field editing,
+  structural-node creation and deletion. Dedicated forms for more common
+  directives and a reorder command remain product work.
+  The `n` New node action exposes the planner's structural-node creation
   API for top-level sites, snippets, named routes and global options, plus
   nested handler blocks; `a` remains the directive-insertion action. For v0.3,
   directive forms remain explicit,
@@ -733,18 +743,19 @@ UI integration and the end-to-end editing workflows described below.
   can identify roles reliably: site addresses, domains, paths, ports, IP/CIDR
   values, matchers, placeholders, durations, status codes, strings and
   heredoc boundaries.
-- Preserve token spans with line/column information alongside byte offsets so
-  inline diagnostics, source selection and copy operations can identify the
-  exact visible text without weakening byte-preserving patches.
+- [x] Preserve token spans with line/column information alongside byte offsets
+  so source selection and copy operations can identify the exact visible text
+  without weakening byte-preserving patches. Inline diagnostics still need
+  richer semantic validation.
 - Add structural navigation features derived from the parsed source: folding
   for site blocks, snippets, named routes and nested handlers; navigation from
   named matcher definitions to references; and brace-aware indentation or
   movement where the source ranges make it safe.
-- Add an advisory metadata catalog for descriptions and suggestions for common
+- [x] Add an advisory metadata catalog for descriptions and suggestions for common
   directives and global options. The catalog must never define valid syntax or
   hide unknown/plugin directives, and its entries should be version- and
   module-aware when capability information is available.
-- Expand the compatibility and regression corpus with focused fixtures for
+- [x] Expand the compatibility and regression corpus with focused fixtures for
   imports, globs, cycles, comments, quoted braces, brace-less sites, heredocs,
   placeholders, matchers, snippets, named routes and escaped input. Keep the
   official Caddy parser/formatter behavior authoritative and do not introduce

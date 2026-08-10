@@ -84,9 +84,9 @@ The release process is documented in [docs/releasing.md](docs/releasing.md).
 
 ## Current status
 
-The lossless Caddyfile parser and patcher are complete. The current vertical
-slice is a read-only-by-default inspector with an opt-in format, validate,
-diff, edit, save and reload workflow:
+The lossless Caddyfile parser and patcher are complete. The current application
+is a read-only-by-default inspector with an opt-in format, validate, diff,
+edit, save and reload workflow, plus the first v0.3 structured-editing flows:
 
 - load a Caddyfile and resolve nested imports while keeping imported files as
   separate documents;
@@ -142,6 +142,23 @@ The inspector also provides:
   and retention failures, and recovery hints that point you at the
   recovery backup (`B`) or the editor's pre-edit snapshot.
 
+The merged v0.3 foundation also provides:
+
+- context-aware directive insertion with `a`;
+- structured `reverse_proxy` field editing with `m`;
+- structural-node creation with `n` for sites, snippets, named routes,
+  global options and nested handler blocks;
+- exact-range deletion with `d`, all using byte-preserving patches,
+  validation, diff confirmation and the existing save/reload safety pipeline;
+- line/column token spans, semantic roles, an advisory directive catalog,
+  compatibility fixtures and structural-navigation primitives;
+- official Caddyfile help from the command palette and structured forms with
+  `Ctrl-H`.
+
+The remaining v0.3 work includes dedicated forms for more common directives,
+reorder UI integration, mouse selection, richer inline validation and
+semantic highlighting, and full folding/matcher-reference navigation.
+
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,
 keeps the normal footer navigation-only, and uses compact `RW`/`RO` header
@@ -154,8 +171,9 @@ binary through `PATH` when they are not given explicitly, and keeps format,
 validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a compact navigation footer and exact
-source clipboard copying with OSC 52 and local fallbacks. The next roadmap
-phase is v0.3 structured editing.
+source clipboard copying with OSC 52 and local fallbacks. The current roadmap
+is to complete the remaining v0.3 structured-editing work without weakening
+the raw-source fallback or byte-preservation guarantees.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing
