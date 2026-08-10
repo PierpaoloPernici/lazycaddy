@@ -40,6 +40,7 @@ import (
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
+	webbrowser "github.com/PierpaoloPernici/lazycaddy/internal/browser"
 	"github.com/PierpaoloPernici/lazycaddy/internal/clipboard"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/discover"
@@ -185,6 +186,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 			// and the loaded log history with / or Ctrl-F.
 			searcher := app.NewSearcher()
 			clip := clipboard.New(clipboard.Options{Output: os.Stdout})
+			webHelp := webbrowser.New(webbrowser.Options{})
 			// The external-change monitor watches the parent directories of
 			// the resolved documents, coalesces event bursts and reports
 			// only byte differences against the in-memory sources, feeding
@@ -201,7 +203,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 				ReadFile: os.ReadFile,
 			})
 			monitor.Start()
-			model := ui.New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, os.ReadFile, clip)
+			model := ui.NewWithBrowser(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, os.ReadFile, webHelp, clip)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.

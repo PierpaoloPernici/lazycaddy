@@ -87,6 +87,11 @@ type copyResultMsg struct {
 	err  error
 }
 
+// browserResultMsg is delivered after the external help URL opener returns.
+type browserResultMsg struct {
+	err error
+}
+
 // externalChangeMsg is delivered when the change monitor detects an
 // external modification of a watched document. err is nil exactly when
 // change carries a meaningful detection; a non-nil err reports a monitor
@@ -446,6 +451,9 @@ type Model struct {
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard
+	// browser opens the official Caddyfile help page for the h keybinding.
+	// It is nil when no platform browser opener is available.
+	browser app.Browser
 
 	// monitor detects external changes to the resolved configuration
 	// documents (root and imports) and feeds the conflict modal; nil
@@ -583,6 +591,15 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		rollbacker:           rollbacker,
 		readFile:             readFile,
 	}
+}
+
+// NewWithBrowser is New with an injected external browser opener. Keeping the
+// original constructor preserves the small test and plugin surface for
+// callers that do not need browser help.
+func NewWithBrowser(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, rollbacker app.Rollbacker, readFile app.FileReader, browser app.Browser, clipboards ...app.Clipboard) *Model {
+	m := New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, readFile, clipboards...)
+	m.browser = browser
+	return m
 }
 
 // Load resolves the configuration through the injected loader and

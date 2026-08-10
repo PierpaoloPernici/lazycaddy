@@ -34,6 +34,7 @@ const (
 	commandErrors        commandID = "errors"
 	commandCopy          commandID = "copy"
 	commandSearch        commandID = "search"
+	commandHelp          commandID = "caddyfile-help"
 	commandQuit          commandID = "quit"
 	commandPalette       commandID = "command-palette"
 )
@@ -70,6 +71,9 @@ func commandDefinitions() []uiCommand {
 		{ID: commandSearch, Category: "Navigation", Label: "Search Caddyfile", Description: "read-only search", Keys: []string{"/", "Ctrl-F"}, Enabled: func(m *Model) bool {
 			return m.searcher != nil
 		}, Reason: func(*Model) string { return "search unavailable" }},
+		{ID: commandHelp, Category: "Navigation", Label: "Open Caddyfile help", Description: "official Caddy documentation", Keys: []string{"h"}, Enabled: func(m *Model) bool {
+			return m.browser != nil
+		}, Reason: func(*Model) string { return "browser help unavailable" }},
 		{ID: commandValidate, Category: "Source & validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {
 			return m.formatter != nil
 		}, Reason: func(*Model) string { return "Caddy binary unavailable" }},
@@ -200,6 +204,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startCopy()
 	case commandSearch:
 		return m.startSearch()
+	case commandHelp:
+		return m.startCaddyfileHelp()
 	case commandQuit:
 		return m.requestQuit()
 	case commandPalette:
@@ -315,6 +321,9 @@ func (m *Model) filteredCommands() []uiCommand {
 		// the default palette avoids pushing the runtime actions below the
 		// initial viewport for every other selection.
 		if command.ID == commandEditReverse && !m.canEditReverseProxy() {
+			continue
+		}
+		if command.ID == commandHelp && m.browser == nil {
 			continue
 		}
 		if query == "" {

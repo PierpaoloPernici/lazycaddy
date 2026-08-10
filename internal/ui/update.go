@@ -32,6 +32,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMessage = fmt.Sprintf("✓ copied %d bytes", msg.size)
 		}
 		return m, nil
+	case browserResultMsg:
+		return m.handleBrowserResult(msg)
 	case externalChangeMsg:
 		return m.handleExternalChange(msg)
 	case editorReadyMsg:
@@ -241,6 +243,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandCopy)
 	case "/", "ctrl+f":
 		return m.runCommand(commandSearch)
+	case "h":
+		return m.runCommand(commandHelp)
 	case "?":
 		return m.runCommand(commandPalette)
 	}
