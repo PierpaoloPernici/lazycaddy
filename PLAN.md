@@ -268,7 +268,12 @@ Primary navigation is `Sites`, `Snippets`, `Imports / Files`, `Runtime`, `Logs` 
 Keybindings:
 
 ```text
-Enter      Open selected item
+Enter      Toggle the selected branch
+Space      Toggle the selected branch
+Left       Collapse the selected branch
+Right      Expand the selected branch
++          Expand all branches
+-          Collapse all descendants
 e          Edit selected source range
 E          Edit entire document (root or imported)
 Ctrl-E     Toggle raw source view
@@ -662,15 +667,31 @@ source bytes without panel decorations.
 
 ### v0.3 — structured editing
 
-- Generalize tree navigation to arbitrary parent/child rows. Document rows,
-  including imported documents, can expand or collapse their children; future
-  nested sections can use the same behavior without relying on `depth == 0`.
-  `Enter` or `Space` should toggle only rows that have children, while leaf
-  rows should open or select their detail/source view. Make the footer
-  context-aware so it advertises `expand/collapse` only where applicable, and
-  consider `Left`/`Right` as explicit collapse/expand bindings. Keep the
-  current one-file-per-edit safety boundary; this tree behavior is a
-  navigation concern and must not imply multi-file editing.
+- [x] Generalize tree navigation to arbitrary parent/child rows. Document rows,
+  including imported documents, remain separate top-level rows, while visible
+  structural branches can contain recursively nested branches without relying
+  on `depth == 0`. Leaf directives such as `respond`, `header_up` and `import`
+  are not tree rows, but remain present in the parser, source view and search
+  scope. A row is expandable only when it has visible children, so an otherwise
+  empty block is rendered as a leaf row without an expansion marker.
+
+  The tree uses separate columns for selection and expansion: `›` marks the
+  selected row, `-` an expanded branch, `+` a collapsed branch, and leaves have
+  no expansion marker. Document roots start expanded, branches below them start
+  collapsed, and the initial selection is deterministic; expansion state is
+  session-local and is not persisted. `Enter`/`Space` toggle the selected
+  branch, `Left`/`Right` collapse or expand it, `+` expands all branches, and
+  `-` collapses all descendants while keeping document roots expanded. The
+  footer advertises these actions according to the selected row.
+
+  Tree rows use stable document/node/source-range keys so selection survives
+  rebuilds after saves, reloads, rollbacks and tree toggles. Search traverses
+  the complete parse tree independently of expansion state: a hidden leaf hit
+  selects its nearest visible structural ancestor and reveals the exact source
+  line, while a source-content hit expands the required document and structural
+  ancestors before selecting the deepest containing branch. Keep the current
+  one-file-per-edit safety boundary; this tree behavior is a navigation concern
+  and must not imply multi-file editing.
 - Add pane-aware mouse selection and clipboard support for text-bearing views.
   Mouse tracking should make the source pane the selectable region when it is
   active, keep tree/header/footer interactions navigational, and render the
