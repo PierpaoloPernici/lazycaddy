@@ -7,6 +7,18 @@ import (
 	"os"
 )
 
+// Injectable filesystem operations. Production code calls through these
+// vars; tests swap them (with t.Cleanup restore) to force each error
+// branch deterministically instead of relying on permission-dependent
+// failures.
+var (
+	openFile  = os.Open
+	statPath  = os.Stat
+	statFile  = (*os.File).Stat
+	readAt    = (*os.File).ReadAt
+	closeFile = (*os.File).Close
+)
+
 // readChunkSize is the buffer used for each ReadAt on the followed file.
 const readChunkSize = 32 * 1024
 
@@ -72,7 +84,7 @@ func (t *Tailer) Next(ctx context.Context) ([]Entry, error) {
 		}
 	}
 
-	pathInfo, err := os.Stat(t.path)
+	pathInfo, err := statPath(t.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// The file is temporarily gone; keep the current handle and
@@ -89,7 +101,7 @@ func (t *Tailer) Next(ctx context.Context) ([]Entry, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := t.file.Close(); err != nil {
+		if err := closeFile(t.file); err != nil {
 			return nil, err
 		}
 		t.file = nil
@@ -129,7 +141,7 @@ func (t *Tailer) Close() error {
 	if t.file == nil {
 		return nil
 	}
-	err := t.file.Close()
+	err := closeFile(t.file)
 	t.file = nil
 	t.fileInfo = nil
 	return err
@@ -137,13 +149,13 @@ func (t *Tailer) Close() error {
 
 // open opens opts.Path, resets the read offset and drops any partial carry.
 func (t *Tailer) open() error {
-	f, err := os.Open(t.path)
+	f, err := openFile(t.path)
 	if err != nil {
 		return err
 	}
-	fi, err := f.Stat()
+	fi, err := statFile(f)
 	if err != nil {
-		f.Close()
+		closeFile(f)
 		return err
 	}
 	t.file = f
@@ -163,7 +175,7 @@ func (t *Tailer) readAll(ctx context.Context) ([]Entry, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		n, err := t.file.ReadAt(buf, t.offset)
+		n, err := readAt(t.file, buf, t.offset)
 		if n > 0 {
 			t.offset += int64(n)
 			out = append(out, t.processChunk(buf[:n])...)

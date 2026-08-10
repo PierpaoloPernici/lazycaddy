@@ -191,3 +191,74 @@ func TestAdminErrorBody_FallsBackToStatusText(t *testing.T) {
 		t.Errorf("adminErrorBody(404, nil) = %q, want the status text", got)
 	}
 }
+
+// errRoundTripper fails every request at the transport layer.
+type errRoundTripper struct{}
+
+func (errRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("transport boom")
+}
+
+func TestLoadJSON_InvalidURL(t *testing.T) {
+	// A base URL that cannot be parsed makes request construction fail,
+	// which maps to the unreachable sentinel.
+	c := NewAdminClient("://bad", time.Second)
+	err := c.LoadJSON(context.Background(), []byte("{}"))
+	if !errors.Is(err, ErrAdminUnreachable) {
+		t.Fatalf("err = %v, want ErrAdminUnreachable", err)
+	}
+}
+
+func TestConfig_TransportError(t *testing.T) {
+	c := NewAdminClient("http://localhost:2019", time.Second)
+	c.hc = &http.Client{Transport: errRoundTripper{}}
+	if _, err := c.Config(context.Background()); !errors.Is(err, ErrAdminUnreachable) {
+		t.Fatalf("err = %v, want ErrAdminUnreachable", err)
+	}
+}
+
+func TestLoadJSON_RawBodyFallback(t *testing.T) {
+	// A non-2xx response with a non-JSON body surfaces the raw body text.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "boom")
+	}))
+	defer srv.Close()
+	c := NewAdminClient(srv.URL, time.Second)
+	err := c.LoadJSON(context.Background(), []byte("{}"))
+	if !errors.Is(err, ErrAdminRejected) {
+		t.Fatalf("err = %v, want ErrAdminRejected", err)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("err = %v, want the raw body in the message", err)
+	}
+}
+
+// errReadCloser is a response body whose Read always fails.
+type errReadCloser struct{}
+
+func (errReadCloser) Read([]byte) (int, error) { return 0, errors.New("body boom") }
+func (errReadCloser) Close() error             { return nil }
+
+// bodyErrorRoundTripper returns a 200 response whose body cannot be read.
+type bodyErrorRoundTripper struct{}
+
+func (bodyErrorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: errReadCloser{}}, nil
+}
+
+func TestLoadJSON_BodyReadError(t *testing.T) {
+	c := NewAdminClient("http://localhost:2019", time.Second)
+	c.hc = &http.Client{Transport: bodyErrorRoundTripper{}}
+	if err := c.LoadJSON(context.Background(), []byte("{}")); !errors.Is(err, ErrAdminUnreachable) {
+		t.Fatalf("err = %v, want ErrAdminUnreachable", err)
+	}
+}
+
+func TestConfig_BodyReadError(t *testing.T) {
+	c := NewAdminClient("http://localhost:2019", time.Second)
+	c.hc = &http.Client{Transport: bodyErrorRoundTripper{}}
+	if _, err := c.Config(context.Background()); !errors.Is(err, ErrAdminUnreachable) {
+		t.Fatalf("err = %v, want ErrAdminUnreachable", err)
+	}
+}
