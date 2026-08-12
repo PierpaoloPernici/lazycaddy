@@ -176,6 +176,12 @@ var (
 				Bold(true).
 				Padding(0, 1).
 				Foreground(errorColor)
+	// selectionBackgroundStyle is the subtle highlight behind an active
+	// text selection. It deliberately differs from the accent foreground
+	// so the selected text keeps its syntax/log/diff colors and stays
+	// readable on both light and dark terminals.
+	selectionBackgroundStyle = lipgloss.NewStyle().
+					Background(lipgloss.AdaptiveColor{Light: "#d5ddf3", Dark: "#1f3b5c"})
 
 	// diffAddStyle highlights lines added by the working copy (lines
 	// that start with '+') in the conventional unified-diff green.

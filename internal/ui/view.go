@@ -320,7 +320,11 @@ func renderTreeRow(it item, selected bool) string {
 // overflowing the terminal.
 func (m *Model) sourcePane(srcW, paneH int) string {
 	m.syncSource(srcW, paneH)
-	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(m.sourceTitle) + "\n" + m.viewport.View())
+	content := m.viewport.View()
+	if spans, ok := m.selectionSpans(textPaneSource); ok {
+		content = renderSelectionOverlay(content, m.viewport.Width, m.viewport.Height, spans)
+	}
+	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(m.sourceTitle) + "\n" + content)
 }
 
 // syncSource keeps the source viewport sized to the pane and refreshes
@@ -367,6 +371,11 @@ func (m *Model) syncSource(srcW, paneH int) {
 	prevSel := m.lastSel
 	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel
 	if needsContent {
+		// The source pane is about to render different content: any text
+		// selection anchored in the previous document or node is stale.
+		if m.textSel.pane == textPaneSource {
+			m.clearTextSelection()
+		}
 		m.sourceDoc = doc
 		m.lastSel = key
 		m.sourceTitle = title

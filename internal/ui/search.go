@@ -30,6 +30,9 @@ func (m *Model) startSearch() (tea.Model, tea.Cmd) {
 	m.searchActive = true
 	m.statusMessage = ""
 	m.searchViewport.SetContent("")
+	// The search modal is an unrelated workflow that replaces the source
+	// pane: any active text selection is dropped.
+	m.clearTextSelection()
 	return m, nil
 }
 

@@ -66,6 +66,9 @@ func (m *Model) handleBackupList(msg backupListMsg) (tea.Model, tea.Cmd) {
 	m.showBackups = true
 	m.backupViewport.GotoTop()
 	m.statusMessage = ""
+	// The backup-history modal is an unrelated workflow that replaces the
+	// source pane: any active text selection is dropped.
+	m.clearTextSelection()
 	return m, nil
 }
 

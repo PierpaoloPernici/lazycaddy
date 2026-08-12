@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,6 +12,19 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 )
+
+// sourceGutterWidth returns the cell width of the source line-number
+// gutter: at least 6 cells ("NNNN│ ") and grows with the number of digits
+// so line numbers beyond 9999 never misalign the source text. The
+// selection Pane uses the same width so coordinate mapping matches the
+// rendered gutter.
+func sourceGutterWidth(lineCount int) int {
+	w := len(strconv.Itoa(lineCount)) + 2 // digits + "│ "
+	if w < 6 {
+		return 6
+	}
+	return w
+}
 
 // highlightSource renders src with line numbers and syntax highlighting.
 // The 1-based inclusive range [selStartLine, selEndLine] marks the selected
@@ -24,16 +38,17 @@ func highlightSource(src []byte, selStartLine, selEndLine int) string {
 	}
 	lineSpans := caddyfile.Highlight(src)
 	lines := strings.Split(string(src), "\n")
+	gutterW := sourceGutterWidth(len(lines))
 	var b strings.Builder
 	base := 0
 	for i, ln := range lines {
 		lineNo := i + 1
 		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
-			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%4d", lineNo)))
+			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-2, lineNo)))
 			b.WriteString(selectedGutterBarStyle.Render("▎"))
 			b.WriteByte(' ')
 		} else {
-			fmt.Fprintf(&b, "%4d│ ", lineNo)
+			fmt.Fprintf(&b, "%*d│ ", gutterW-2, lineNo)
 		}
 		if i < len(lineSpans) {
 			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i]))

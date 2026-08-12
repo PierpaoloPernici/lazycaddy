@@ -96,6 +96,9 @@ func (m *Model) handleExternalChange(msg externalChangeMsg) (tea.Model, tea.Cmd)
 	m.changeCompare = false
 	m.showChangeConflict = true
 	m.statusMessage = ""
+	// The conflict modal is an unrelated workflow that replaces the main
+	// panes: any active text selection is dropped.
+	m.clearTextSelection()
 	return m, nil
 }
 

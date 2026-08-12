@@ -38,10 +38,30 @@ func renderCompactLogLine(entry logs.Entry, maxW int) string {
 	if !entry.Parsed {
 		return truncateToWidth(string(entry.Raw), maxW)
 	}
+	return joinStyledLogSegments(reducedLogSegments(entry, maxW))
+}
+
+// compactLogPlainLine renders the same compact line renderCompactLogLine
+// shows, but as plain unstyled text. The log selection Pane uses it as
+// its backing lines so a copied log selection is exactly the visible log
+// text without ANSI sequences or the cursor gutter.
+func compactLogPlainLine(entry logs.Entry, maxW int) string {
+	if !entry.Parsed {
+		return truncateToWidth(string(entry.Raw), maxW)
+	}
+	return joinPlainLogSegments(reducedLogSegments(entry, maxW))
+}
+
+// reducedLogSegments applies the width reduction algorithm to the entry's
+// compact segments: when the plain line exceeds maxW cells, the flexible
+// segments are reduced from the end (msg, then uri, then logger), each
+// truncation appending its own ellipsis. The returned segments are the
+// exact text the compact renderers display.
+func reducedLogSegments(entry logs.Entry, maxW int) []logSegment {
 	segs := compactLogSegments(entry)
 	plain := joinPlainLogSegments(segs)
 	if lipgloss.Width(plain) <= maxW {
-		return joinStyledLogSegments(segs)
+		return segs
 	}
 	// Over budget: reduce the flexible segments from the end (msg, then
 	// uri, then logger). Each truncateToWidth appends its own ellipsis and
@@ -57,9 +77,9 @@ func renderCompactLogLine(entry logs.Entry, maxW int) string {
 		}
 		if idx < 0 {
 			// All flexible segments are exhausted: degenerate
-			// very-narrow-terminal case. Return the whole plain line
-			// truncated, unstyled (still ANSI-safe).
-			return truncateToWidth(joinPlainLogSegments(segs), maxW)
+			// very-narrow-terminal case. Truncate the whole plain line.
+			segs = []logSegment{{text: truncateToWidth(joinPlainLogSegments(segs), maxW)}}
+			return segs
 		}
 		budget := lipgloss.Width(segs[idx].text) - over
 		if budget < 1 {
@@ -73,7 +93,7 @@ func renderCompactLogLine(entry logs.Entry, maxW int) string {
 		}
 		over = lipgloss.Width(joinPlainLogSegments(segs)) - maxW
 	}
-	return joinStyledLogSegments(segs)
+	return segs
 }
 
 // compactLogSegments assembles the plain, per-segment content of a parsed

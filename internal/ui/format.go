@@ -120,6 +120,9 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 			m.diagCursor = 0
 			m.showDiagnostics = true
 			m.statusMessage = "✗ validation failed (working copy not saved)"
+			// The diagnostics modal is an unrelated workflow: any active
+			// text selection is dropped.
+			m.clearTextSelection()
 			if msg.Formatted != nil {
 				m.statusMessage = "✗ validation failed (working copy retained, not saved)"
 			}

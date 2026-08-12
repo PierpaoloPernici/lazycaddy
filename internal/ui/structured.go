@@ -137,6 +137,9 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	m.structuredAddEditing = false
 	m.showStructuredAdd = true
 	m.statusMessage = ""
+	// The structured-add modal is an unrelated workflow: any active text
+	// selection is dropped.
+	m.clearTextSelection()
 	return m, nil
 }
 
@@ -167,6 +170,9 @@ func (m *Model) startReverseProxyEdit() (tea.Model, tea.Cmd) {
 	m.structuredAddEditing = true
 	m.showStructuredAdd = true
 	m.statusMessage = ""
+	// The reverse_proxy form is an unrelated workflow: any active text
+	// selection is dropped.
+	m.clearTextSelection()
 	return m, nil
 }
 
@@ -462,6 +468,7 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 		m.diagnostics = errorDiags
 		m.diagCursor = 0
 		m.showDiagnostics = true
+		m.clearTextSelection()
 		m.statusMessage = "✗ structured " + structuredOperationLabel(msg.Operation) + " did not validate — not applied"
 		m.recordError("structured "+structuredOperationLabel(msg.Operation), "candidate did not validate", "fix the directive and retry the edit")
 		return m, nil

@@ -28,6 +28,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copyResultMsg:
 		if msg.err != nil {
 			m.statusMessage = "✗ copy failed: " + msg.err.Error()
+			m.recordError("copy", msg.err.Error(), "retry the copy or use another clipboard backend")
 		} else {
 			m.statusMessage = fmt.Sprintf("✓ copied %d bytes", msg.size)
 		}
@@ -56,6 +57,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleRollbackResult(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
 	}
 	return m, nil
 }
@@ -88,6 +91,9 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if len(msg.Entries) > 0 {
+		// New entries shift the scrollback: a selection anchored in the
+		// previous log lines would map to different content.
+		m.clearTextSelection()
 		m.logLines = append(m.logLines, msg.Entries...)
 		dropped := 0
 		if len(m.logLines) > logMaxLines {
@@ -191,6 +197,14 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateErrorHistoryKey(msg)
 	}
 	switch msg.String() {
+	case "shift+up":
+		m.shiftTextCursor(0, -1)
+	case "shift+down":
+		m.shiftTextCursor(0, 1)
+	case "shift+left":
+		m.shiftTextCursor(-1, 0)
+	case "shift+right":
+		m.shiftTextCursor(1, 0)
 	case "q", "ctrl+c":
 		return m.runCommand(commandQuit)
 	case "up", "k":
@@ -265,9 +279,11 @@ func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
 	if m.showLogs {
 		m.showLogs = false
 		m.statusMessage = ""
+		m.clearTextSelection()
 		return m, nil // stops the poll: no reschedule
 	}
 	// Open: seed from the bounded history, reset follow state.
+	m.clearTextSelection()
 	m.logLines = append([]logs.Entry(nil), m.logSource.History()...)
 	m.logFollow = true
 	m.logPaused = false
@@ -278,28 +294,39 @@ func (m *Model) toggleLogView() (tea.Model, tea.Cmd) {
 	return m, m.logPollCmd()
 }
 
-// startCopy captures the selected source bytes before scheduling the adapter.
-// A document row copies the complete document; a node row copies only its
-// exact source range, including the bytes that belong to that range and
+// startCopy captures the selected bytes before scheduling the adapter. An
+// active text selection (mouse or keyboard) in the source, log or diff
+// pane wins: it copies the exact unstyled visible content of that
+// selection. Without one, the pre-existing behavior applies: a document
+// row copies the complete document; a node row copies only its exact
+// source range, including the bytes that belong to that range and
 // excluding every tree, pane and footer decoration.
 func (m *Model) startCopy() (tea.Model, tea.Cmd) {
 	if m.clipboard == nil {
 		m.statusMessage = "✗ copy unavailable: no clipboard backend"
 		return m, nil
 	}
-	selected := m.selectedItem()
-	if selected == nil || selected.doc == nil {
-		m.statusMessage = "✗ copy unavailable: no source selected"
-		return m, nil
-	}
-
-	content := selected.doc.Source
-	if selected.hasNode {
-		if !selected.node.Range.Valid(len(selected.doc.Source)) {
-			m.statusMessage = "✗ copy failed: selected source range is invalid"
+	var content []byte
+	if r, ok := m.activeTextSelection(); ok {
+		content = m.textSelectionBytes(m.textSel.pane, r)
+		if content == nil {
+			m.statusMessage = "✗ copy failed: selected range is invalid"
+			m.recordError("copy", "selected range is invalid", "reselect the text and retry")
 			return m, nil
 		}
-		content = selected.doc.Source[selected.node.Range.Start:selected.node.Range.End]
+	} else if selected := m.selectedItem(); selected != nil && selected.doc != nil {
+		content = selected.doc.Source
+		if selected.hasNode {
+			if !selected.node.Range.Valid(len(selected.doc.Source)) {
+				m.statusMessage = "✗ copy failed: selected source range is invalid"
+				m.recordError("copy", "selected source range is invalid", "reselect the block and retry")
+				return m, nil
+			}
+			content = selected.doc.Source[selected.node.Range.Start:selected.node.Range.End]
+		}
+	} else {
+		m.statusMessage = "✗ copy unavailable: no source selected"
+		return m, nil
 	}
 	content = append([]byte(nil), content...)
 	clip := m.clipboard

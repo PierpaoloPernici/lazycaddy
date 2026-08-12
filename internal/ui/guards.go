@@ -16,6 +16,7 @@ import (
 // document switching.
 func (m *Model) requestQuit() (tea.Model, tea.Cmd) {
 	if m.hasUnsavedEdits() {
+		m.clearTextSelection()
 		m.showUnsavedConfirm = true
 		m.statusMessage = ""
 		return m, nil
@@ -106,6 +107,7 @@ func (m *Model) recordError(op, message, next string) {
 // bounded list of the recorded failures; the keybinding is documented in
 // the footer.
 func (m *Model) startErrorHistory() (tea.Model, tea.Cmd) {
+	m.clearTextSelection()
 	m.showErrorHistory = true
 	m.errorHistoryViewport.GotoTop()
 	return m, nil

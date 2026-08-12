@@ -53,6 +53,11 @@ type Pane struct {
 	// Height is the number of visible rows (the content area; the gutter
 	// is horizontal, not vertical).
 	Height int
+	// ContentWidth is the number of visible cells after the gutter. It is
+	// used for rendering selections on empty logical lines, which have no
+	// source rune from which to derive a span. A zero value preserves the
+	// historical behavior for callers that do not provide viewport width.
+	ContentWidth int
 	// CellWidth measures a rune in terminal cells. nil means one cell per
 	// rune, which is the conservative default (tabs count as one
 	// character); views with wide-character knowledge can inject a width
@@ -246,6 +251,135 @@ func (p *Pane) Cell(pos Position) (row, col int, ok bool) {
 // RangeBytes: Start precedes End.
 type Range struct {
 	Start, End Position
+}
+
+// CellSpan is a contiguous run of cells on one viewport row covered by a
+// selection range. Row is a content row (0-based, the same row numbering
+// Position uses); ColStart and ColEnd are content columns counting gutter
+// cells, so a span maps directly onto the viewport line it was derived
+// from. Gutter cells never appear in a span: ColStart is always at least
+// GutterWidth.
+type CellSpan struct {
+	Row      int
+	ColStart int
+	ColEnd   int
+}
+
+// CellsInRange returns the viewport cells covered by r, normalized and
+// clamped to the pane's lines, as one span per covered row. Rows above
+// the scroll line and below the viewport height are skipped, so the
+// result is ready to be painted over the rendered viewport without any
+// further viewport math. With wrapping disabled each logical line yields
+// at most one span; with wrapping a covered line yields one span per
+// wrapped segment.
+func (p *Pane) CellsInRange(r Range) []CellSpan {
+	start, end := r.Start, r.End
+	if end.Line < start.Line || (end.Line == start.Line && end.Offset < start.Offset) {
+		start, end = end, start
+	}
+	if start.Line < 0 {
+		start = Position{}
+	}
+	if start.Offset < 0 {
+		start.Offset = 0
+	}
+	if end.Line >= len(p.Lines) {
+		if len(p.Lines) == 0 {
+			return nil
+		}
+		end.Line = len(p.Lines) - 1
+		end.Offset = len(p.Lines[end.Line])
+	}
+	if end.Line < 0 {
+		return nil
+	}
+	if end.Offset > len(p.Lines[end.Line]) {
+		end.Offset = len(p.Lines[end.Line])
+	}
+	if start == end {
+		return nil
+	}
+	if start.Line > end.Line {
+		return nil
+	}
+	var spans []CellSpan
+	for line := start.Line; line <= end.Line; line++ {
+		if line < p.Scroll {
+			continue
+		}
+		rowStart := p.rowsBefore(line)
+		if rowStart >= p.Height {
+			break // every following line is below the viewport too
+		}
+		var bStart, bEnd int
+		switch {
+		case line == start.Line && line == end.Line:
+			bStart, bEnd = start.Offset, end.Offset
+		case line == start.Line:
+			bStart, bEnd = start.Offset, len(p.Lines[line])
+		case line == end.Line:
+			bStart, bEnd = 0, end.Offset
+		default:
+			bStart, bEnd = 0, len(p.Lines[line])
+		}
+		cellStart := p.offsetToCell(line, bStart)
+		cellEnd := p.offsetToCell(line, bEnd)
+		// A multi-line selection is also a visible text selection, not
+		// merely a set of source runes. Every row crossed before the end
+		// row continues to the right edge of the viewport content. This
+		// keeps non-empty and empty intermediate rows visually consistent
+		// while leaving the exact source range unchanged for copying.
+		if p.WrapWidth <= 0 && p.ContentWidth > 0 && line < end.Line {
+			if line != start.Line {
+				cellStart = 0
+			}
+			cellEnd = p.ContentWidth
+		}
+		spans = append(spans, p.cellsForLine(line, rowStart, cellStart, cellEnd)...)
+	}
+	return spans
+}
+
+// cellsForLine returns the spans of one logical line covered by the cell
+// range [cellStart, cellEnd), one per wrapped segment. Rows at or beyond
+// the viewport height are dropped.
+func (p *Pane) cellsForLine(line, rowStart, cellStart, cellEnd int) []CellSpan {
+	if cellStart >= cellEnd {
+		return nil
+	}
+	if p.WrapWidth <= 0 {
+		return []CellSpan{{Row: rowStart, ColStart: p.GutterWidth + cellStart, ColEnd: p.GutterWidth + cellEnd}}
+	}
+	lineW := p.lineWidth(line)
+	var spans []CellSpan
+	for seg := 0; ; seg++ {
+		segStart := seg * p.WrapWidth
+		segEnd := segStart + p.WrapWidth
+		if segEnd > lineW {
+			segEnd = lineW
+		}
+		if segStart >= lineW {
+			break
+		}
+		lo := cellStart
+		if lo < segStart {
+			lo = segStart
+		}
+		hi := cellEnd
+		if hi > segEnd {
+			hi = segEnd
+		}
+		if lo < hi {
+			row := rowStart + seg
+			if row < p.Height {
+				spans = append(spans, CellSpan{Row: row, ColStart: p.GutterWidth + lo, ColEnd: p.GutterWidth + hi})
+			}
+		}
+		if segEnd >= lineW {
+			break
+		}
+	}
+	return spans
 }
 
 // contentEnd returns the byte offset one past the content of line i,

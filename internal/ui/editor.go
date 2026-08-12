@@ -177,6 +177,7 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.diagCursor = 0
 		m.showDiagnostics = true
 		m.statusMessage = "✗ edited document did not validate — not saved"
+		m.clearTextSelection()
 		return m, nil
 	case !result.Changed:
 		m.statusMessage = "no changes"
