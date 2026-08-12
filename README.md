@@ -123,9 +123,14 @@ The inspector also provides:
   and atomic-save pipeline;
 - read-only global search across nodes, files, source lines and loaded logs
   (`/` or `Ctrl-F`);
-- exact source copying with `y`, using OSC 52 in the terminal and falling back
-  to an available local clipboard command (`pbcopy`, `wl-copy`, `xclip`,
-  `xsel` or `clip`);
+- exact source copying with `y`: with mouse tracking enabled, drag to
+  select text in the source, log or diff panes (or use `Shift`+arrows as a
+  keyboard fallback); right-clicking inside a pane with an active selection
+  also copies it. `y` copies exactly the selected visible text —
+  source bytes, plain log text or the diff body without decorations; without
+  a text selection `y` copies the selected document or node range as before.
+  Copying uses OSC 52 in the terminal and falls back to an available local
+  clipboard command (`pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip`);
 - exact-range node deletion (`d`) with diff confirmation and post-save tree
   rebuilding;
 - per-document diff review (`D`): the root diffs the validated working

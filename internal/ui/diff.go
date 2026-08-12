@@ -14,8 +14,10 @@ import (
 // title, resetting the horizontal scroll offset and the hunk cursor. It
 // is the single entry point for every diff the model opens (D, editor,
 // delete, backup compare, conflict compare), so a new diff always starts
-// at the top-left and on the first hunk.
+// at the top-left and on the first hunk. Opening a new diff is an
+// unrelated workflow: any active text selection is dropped.
 func (m *Model) showDiffModal(lines []diff.Line, title string) {
+	m.clearTextSelection()
 	m.diffLines = lines
 	m.diffTitle = title
 	m.diffHOffset = 0
@@ -110,14 +112,22 @@ func hasDiffHunks(lines []diff.Line) bool {
 // updateDiffKey handles keys when the diff modal is open. Esc and q
 // close the modal; the arrow keys and PgUp/PgDown scroll the viewport;
 // n/N jump to the next/previous hunk header; h/l shift the horizontal
-// scroll offset for long lines. When the diff shows a pending editor
-// edit or delete, the diff is the single confirmation: Enter saves
-// directly and Esc additionally discards the pending change. When the
-// diff shows a backup comparison, Enter opens the rollback confirmation
-// (which requires writable mode) and Esc returns to the backup list. The
-// read-only D flow keeps its current behavior.
+// scroll offset for long lines; y copies the active text selection; and
+// shift+arrows extend the keyboard selection in the diff body. When the
+// diff shows a pending editor edit or delete, the diff is the single
+// confirmation: Enter saves directly and Esc additionally discards the
+// pending change. When the diff shows a backup comparison, Enter opens
+// the rollback confirmation (which requires writable mode) and Esc
+// returns to the backup list. The read-only D flow keeps its current
+// behavior.
 func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if dx, dy, ok := shiftSelectionDelta(msg); ok {
+		m.shiftTextCursor(dx, dy)
+		return m, nil
+	}
 	switch msg.String() {
+	case "y":
+		return m.startCopy()
 	case "esc", "q":
 		if m.showChangeConflict && m.changeCompare {
 			// Esc from the conflict compare returns to the conflict
@@ -147,6 +157,7 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeDiff()
 			m.backupComparing = false
 			m.showRollbackConfirm = true
+			m.clearTextSelection()
 			return m, nil
 		}
 		if m.pendingEdit != nil || m.pendingDelete != nil {
@@ -171,9 +182,13 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "N":
 		m.jumpHunk(-1)
 	case "l":
+		// Horizontal scroll rebuilds the diff body text: a selection made
+		// against the previous window would map to different bytes.
+		m.clearTextSelection()
 		m.diffHOffset += 4
 		m.syncDiffContent()
 	case "h":
+		m.clearTextSelection()
 		m.diffHOffset -= 4
 		if m.diffHOffset < 0 {
 			m.diffHOffset = 0
@@ -242,8 +257,10 @@ func (m *Model) diffSummary() string {
 }
 
 // closeDiff dismisses the diff modal and clears its state. Called by
-// Esc and q from inside the modal.
+// Esc and q from inside the modal. Closing the modal drops any active
+// text selection in the diff body.
 func (m *Model) closeDiff() {
+	m.clearTextSelection()
 	m.showDiff = false
 	m.diffLines = nil
 	m.diffTitle = ""
@@ -274,18 +291,23 @@ func (m *Model) syncDiffContent() {
 	m.diffViewport.SetContent(m.diffBody(bodyW))
 }
 
+// diffHasChanges reports whether the current diff contains any addition,
+// removal or hunk header (i.e. whether the two sources actually differ).
+func (m *Model) diffHasChanges() bool {
+	for _, line := range m.diffLines {
+		switch line.Kind {
+		case diff.KindAdd, diff.KindRemove, diff.KindHunkHeader:
+			return true
+		}
+	}
+	return false
+}
+
 // diffBody returns the colored, width-truncated content for the diff
 // viewport. When the diff contains no additions, removals or hunk
 // headers, it returns a dim "no changes" message instead.
 func (m *Model) diffBody(bodyW int) string {
-	hasChanges := false
-	for _, line := range m.diffLines {
-		switch line.Kind {
-		case diff.KindAdd, diff.KindRemove, diff.KindHunkHeader:
-			hasChanges = true
-		}
-	}
-	if !hasChanges {
+	if !m.diffHasChanges() {
 		return dimStyle.Render("no changes — the working copy matches the source")
 	}
 	// The current hunk (the one at diffHunkCursor) is marked with a "> "
@@ -386,5 +408,9 @@ func (m *Model) diffView(width, height int) string {
 	// The title (path + summary + action hints) is truncated so a long
 	// path or summary can never overflow the modal border.
 	title = truncateToWidth(title, paneContentW-2)
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.diffViewport.View())
+	content := m.diffViewport.View()
+	if spans, ok := m.selectionSpans(textPaneDiff); ok {
+		content = renderSelectionOverlay(content, m.diffViewport.Width, m.diffViewport.Height, spans)
+	}
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + content)
 }

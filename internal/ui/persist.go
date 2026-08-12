@@ -61,6 +61,7 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 	}
 	if m.pendingEdit != nil || m.pendingDelete != nil {
 		m.showSaveConfirm = true
+		m.clearTextSelection()
 		return m, nil
 	}
 	if m.workingBytes == nil {
@@ -76,6 +77,7 @@ func (m *Model) startSave() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showSaveConfirm = true
+	m.clearTextSelection()
 	return m, nil
 }
 
@@ -342,6 +344,7 @@ func (m *Model) startReload() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.showReloadConfirm = true
+	m.clearTextSelection()
 	return m, nil
 }
 

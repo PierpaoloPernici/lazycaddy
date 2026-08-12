@@ -245,9 +245,10 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 // package-level variable so tests can run the full command wiring
 // headlessly (no terminal) by replacing it with a program whose input and
 // output are in-memory; the production value uses the alt screen on the
-// real terminal.
+// real terminal and enables cell-motion mouse tracking so the source, log
+// and diff panes can create text selections.
 var teaProgram = func(model tea.Model) *tea.Program {
-	return tea.NewProgram(model, tea.WithAltScreen())
+	return tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 }
 
 // flagSet is the subset of *pflag.FlagSet used by resolvePaths, exposed as

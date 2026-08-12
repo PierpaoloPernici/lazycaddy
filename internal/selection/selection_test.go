@@ -494,3 +494,150 @@ func TestRangeBytesClampsOffsets(t *testing.T) {
 		t.Errorf("start past end = %q, want %q", got, "\nsec")
 	}
 }
+
+func TestCellsInRangeSingleLine(t *testing.T) {
+	p := testPane(t, "hello world\n", 2, 3)
+	spans := p.CellsInRange(Range{Position{0, 0}, Position{0, 5}})
+	want := []CellSpan{{Row: 0, ColStart: 3, ColEnd: 8}}
+	if len(spans) != 1 || spans[0] != want[0] {
+		t.Errorf("CellsInRange = %+v, want %+v", spans, want)
+	}
+}
+
+func TestCellsInRangeMultiLine(t *testing.T) {
+	p := testPane(t, "one\ntwo three\nfour\n", 3, 0)
+	spans := p.CellsInRange(Range{Position{0, 1}, Position{2, 2}})
+	want := []CellSpan{
+		{Row: 0, ColStart: 1, ColEnd: 3},
+		{Row: 1, ColStart: 0, ColEnd: 9},
+		{Row: 2, ColStart: 0, ColEnd: 2},
+	}
+	if len(spans) != len(want) {
+		t.Fatalf("CellsInRange = %+v, want %+v", spans, want)
+	}
+	for i := range want {
+		if spans[i] != want[i] {
+			t.Errorf("span %d = %+v, want %+v", i, spans[i], want[i])
+		}
+	}
+}
+
+func TestCellsInRangeReversedAndZero(t *testing.T) {
+	p := testPane(t, "abcdef\n", 1, 0)
+	// Reversed ranges are normalized.
+	spans := p.CellsInRange(Range{Position{0, 4}, Position{0, 1}})
+	want := []CellSpan{{Row: 0, ColStart: 1, ColEnd: 4}}
+	if len(spans) != 1 || spans[0] != want[0] {
+		t.Errorf("reversed CellsInRange = %+v, want %+v", spans, want)
+	}
+	// A zero-length range covers nothing.
+	if spans := p.CellsInRange(Range{Position{0, 2}, Position{0, 2}}); len(spans) != 0 {
+		t.Errorf("zero-length CellsInRange = %+v, want none", spans)
+	}
+}
+
+func TestCellsInRangeGutterExcluded(t *testing.T) {
+	p := testPane(t, "ab\ncd\n", 2, 6)
+	// A full-line selection must still start after the gutter.
+	spans := p.CellsInRange(Range{Position{0, 0}, Position{1, 2}})
+	for _, sp := range spans {
+		if sp.ColStart < 6 {
+			t.Errorf("span %+v starts inside the gutter", sp)
+		}
+	}
+	if len(spans) != 2 || spans[0] != (CellSpan{Row: 0, ColStart: 6, ColEnd: 8}) {
+		t.Errorf("CellsInRange = %+v, want gutter-offset spans", spans)
+	}
+}
+
+func TestCellsInRangeWrap(t *testing.T) {
+	p := testPane(t, "abcdefghijklmno\nx\n", 4, 0)
+	p.WrapWidth = 6
+	// Selecting bytes 3..12 of line 0 covers cells 3..6 of segment 0 and
+	// cells 6..12 of segment 1 (segment 0 occupies line cells 0..5).
+	spans := p.CellsInRange(Range{Position{0, 3}, Position{0, 12}})
+	want := []CellSpan{
+		{Row: 0, ColStart: 3, ColEnd: 6},
+		{Row: 1, ColStart: 6, ColEnd: 12},
+	}
+	if len(spans) != len(want) {
+		t.Fatalf("CellsInRange = %+v, want %+v", spans, want)
+	}
+	for i := range want {
+		if spans[i] != want[i] {
+			t.Errorf("span %d = %+v, want %+v", i, spans[i], want[i])
+		}
+	}
+}
+
+func TestCellsInRangeScrollAndHeight(t *testing.T) {
+	p := testPane(t, "a\nb\nc\nd\ne\n", 2, 0)
+	p.Scroll = 2
+	// Lines 0-1 are scrolled out; line 4 is below the 2-row viewport.
+	spans := p.CellsInRange(Range{Position{0, 0}, Position{4, 1}})
+	want := []CellSpan{
+		{Row: 0, ColStart: 0, ColEnd: 1},
+		{Row: 1, ColStart: 0, ColEnd: 1},
+	}
+	if len(spans) != len(want) {
+		t.Fatalf("CellsInRange = %+v, want %+v", spans, want)
+	}
+	for i := range want {
+		if spans[i] != want[i] {
+			t.Errorf("span %d = %+v, want %+v", i, spans[i], want[i])
+		}
+	}
+}
+
+func TestCellsInRangeEmptyLines(t *testing.T) {
+	p := testPane(t, "\nabcd\n\n", 3, 0)
+	spans := p.CellsInRange(Range{Position{0, 0}, Position{2, 0}})
+	// The middle line is fully selected; empty lines contribute nothing.
+	want := []CellSpan{{Row: 1, ColStart: 0, ColEnd: 4}}
+	if len(spans) != len(want) {
+		t.Fatalf("CellsInRange = %+v, want %+v", spans, want)
+	}
+	for i := range want {
+		if spans[i] != want[i] {
+			t.Errorf("span %d = %+v, want %+v", i, spans[i], want[i])
+		}
+	}
+}
+
+func TestCellsInRangeSelectedEmptyLineUsesContentWidth(t *testing.T) {
+	p := testPane(t, "first\n\nlast\n", 3, 2)
+	p.ContentWidth = 8
+
+	spans := p.CellsInRange(Range{Position{0, 0}, Position{2, 0}})
+	want := []CellSpan{
+		{Row: 0, ColStart: 2, ColEnd: 10},
+		{Row: 1, ColStart: 2, ColEnd: 10},
+	}
+	if len(spans) != len(want) {
+		t.Fatalf("CellsInRange = %+v, want %+v", spans, want)
+	}
+	for i := range want {
+		if spans[i] != want[i] {
+			t.Errorf("span %d = %+v, want %+v", i, spans[i], want[i])
+		}
+	}
+
+	if spans := p.CellsInRange(Range{Position{1, 0}, Position{1, 0}}); len(spans) != 0 {
+		t.Errorf("zero-length empty-line selection = %+v, want none", spans)
+	}
+}
+
+func TestCellsInRangeOutOfBounds(t *testing.T) {
+	p := testPane(t, "ab\n", 1, 0)
+	// End beyond the last line clamps to the line end.
+	spans := p.CellsInRange(Range{Position{0, 1}, Position{9, 0}})
+	want := []CellSpan{{Row: 0, ColStart: 1, ColEnd: 2}}
+	if len(spans) != 1 || spans[0] != want[0] {
+		t.Errorf("CellsInRange = %+v, want %+v", spans, want)
+	}
+	// A start beyond the content is clamped too.
+	spans = p.CellsInRange(Range{Position{0, 99}, Position{0, 99}})
+	if len(spans) != 0 {
+		t.Errorf("overlong zero-range CellsInRange = %+v, want none", spans)
+	}
+}

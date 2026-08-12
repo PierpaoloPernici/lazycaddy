@@ -11,12 +11,22 @@ import (
 // move the row cursor (up/pgup also turn follow off — the operator takes
 // control); Enter opens the detail modal for the selected entry; f toggles
 // follow, p pauses/resumes polling, Esc closes the view and q/ctrl+c quits
-// the program.
+// the program. y copies the active text selection; shift+arrows extend
+// the keyboard selection in the log body.
 func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if dx, dy, ok := shiftSelectionDelta(msg); ok {
+		m.shiftTextCursor(dx, dy)
+		return m, nil
+	}
 	switch msg.String() {
+	case "y":
+		return m.startCopy()
 	case "esc":
 		m.showLogs = false
 		m.statusMessage = ""
+		// Closing the log view drops any active text selection in the
+		// log pane.
+		m.clearTextSelection()
 		return m, nil // stops the poll: no reschedule
 	case "q", "ctrl+c":
 		return m.requestQuit()
@@ -56,6 +66,9 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.logCursor >= 0 && m.logCursor < len(m.logLines) {
 			m.logDetailEntry = m.logLines[m.logCursor] // copy
 			m.logDetailOpen = true
+			// The detail modal overlays the log pane: the pane's text
+			// selection no longer applies.
+			m.clearTextSelection()
 			m.syncLogDetailContent(m.width, m.paneHeight())
 			m.logDetailViewport.GotoTop()
 			return m, nil
@@ -146,7 +159,11 @@ func (m *Model) logView(width, height int) string {
 		paneContentW = 1
 	}
 	m.syncLogViewport(paneContentW, height)
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + m.logViewport.View())
+	content := m.logViewport.View()
+	if spans, ok := m.selectionSpans(textPaneLogs); ok {
+		content = renderSelectionOverlay(content, m.logViewport.Width, m.logViewport.Height, spans)
+	}
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + content)
 }
 
 // syncLogViewport sizes the log viewport to the pane and refreshes its

@@ -73,6 +73,9 @@ func (m *Model) startNewNode() (tea.Model, tea.Cmd) {
 	m.structuredAddMode = structuredAddNewPicker
 	m.showStructuredAdd = true
 	m.statusMessage = ""
+	// The structured-add modal is an unrelated workflow: any active text
+	// selection is dropped.
+	m.clearTextSelection()
 	return m, nil
 }
 

@@ -134,6 +134,9 @@ func TestCommandPalette_CategoriesAndCompactKeys(t *testing.T) {
 	if !ok || copyCommand.Label != "Copy selected block" {
 		t.Fatalf("copy command = %+v, want label %q", copyCommand, "Copy selected block")
 	}
+	if len(copyCommand.Keys) != 1 || copyCommand.Keys[0] != "y" {
+		t.Fatalf("copy command keys = %#v, want y", copyCommand.Keys)
+	}
 	if command, ok := commandDefinition(commandEditReverse); !ok || command.Category != "Source" {
 		t.Fatalf("reverse_proxy command = %+v, want Source category", command)
 	}

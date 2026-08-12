@@ -73,6 +73,7 @@ func (m *Model) handleDeleteValidated(msg deleteValidatedMsg) (tea.Model, tea.Cm
 		m.showDiagnostics = true
 		m.statusMessage = "✗ delete did not validate — not applied"
 		m.recordError("delete", "delete did not validate", "fix the reported errors and retry the delete")
+		m.clearTextSelection()
 		return m, nil
 	}
 	if msg.Err != nil {

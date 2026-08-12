@@ -458,6 +458,10 @@ type Model struct {
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard
+	// textSel is the active pane-aware text selection (mouse or keyboard)
+	// in the source, log or diff panes. pane identifies the owning pane;
+	// state holds the UI-independent anchor/cursor.
+	textSel textSelect
 	// browser opens the official Caddyfile help page for the Ctrl-H keybinding.
 	// It is nil when no platform browser opener is available.
 	browser app.Browser

@@ -34,6 +34,7 @@ const (
 	commandBackups       commandID = "backups"
 	commandErrors        commandID = "errors"
 	commandCopy          commandID = "copy"
+	commandSelectText    commandID = "select-text"
 	commandSearch        commandID = "search"
 	commandHelp          commandID = "caddyfile-help"
 	commandQuit          commandID = "quit"
@@ -144,9 +145,12 @@ func commandDefinitions() []uiCommand {
 			}
 			return "select a deletable node"
 		}},
-		{ID: commandCopy, Category: "Source", Label: "Copy selected block", Description: "exact source bytes", Keys: []string{"y"}, Enabled: func(m *Model) bool {
+		{ID: commandCopy, Category: "Source", Label: "Copy selected block", Description: "exact bytes (or active text selection)", Keys: []string{"y"}, Enabled: func(m *Model) bool {
 			return m.clipboard != nil
 		}, Reason: func(*Model) string { return "clipboard unavailable" }},
+		{ID: commandSelectText, Category: "Selection", Label: "Select text", Description: "mouse drag or Shift+arrows", Keys: []string{"Shift+↑↓←→"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
 		{ID: commandReload, Category: "Runtime & recovery", Label: "Reload Caddy", Description: "Admin API", Keys: []string{"r"}, Enabled: func(m *Model) bool {
 			return m.reloader != nil
 		}, Reason: func(*Model) string { return "Caddy reload unavailable" }},
@@ -255,6 +259,7 @@ func (m *Model) canDeleteSelected() bool {
 }
 
 func (m *Model) startCommandPalette() (tea.Model, tea.Cmd) {
+	m.clearTextSelection()
 	m.commandQuery = nil
 	m.commandCursor = 0
 	m.showCommandPalette = true
