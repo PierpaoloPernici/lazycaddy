@@ -131,6 +131,12 @@ Completed:
   re-parse the graph after a successful save so the tree, the selection,
   the line ranges and the search scope reflect the new structure, and
   the runtime stays "saved but not reloaded" until an explicit `r`.
+- pane-aware mouse selection and clipboard integration: left-click/drag
+  selects text in the source pane, the log pane and the diff modal body
+  (right-click copies, Shift+arrows select from the keyboard), reusing one
+  selection model across text-bearing views while tree, header, footer and
+  modals stay navigational; copied bytes are the exact unstyled visible
+  content of the range and `y` remains the precise keyboard copy action.
 
 The resolver intentionally records snippet arguments and `{block}` data without
 substituting them yet. That expansion belongs to a later milestone and must not
@@ -674,15 +680,16 @@ source bytes without panel decorations.
 
 ### v0.3 — structured editing
 
-Current progress (2026-08-10): the v0.3 foundation and initial editing
+Current progress (2026-08-12): the v0.3 foundation and the initial editing
 workflows are merged into `main`. Implemented are token spans, compatibility
 fixtures, source-preserving planner primitives, semantic roles and advisory
 catalog, structural-navigation primitives, the pane-aware selection model,
 and the planner's `CreateNode` API. The UI now exposes `a` for directive
 insertion, `m` for `reverse_proxy` fields, `n` for structural-node creation,
-and `d` for deletion, all using validation, diff confirmation, save and
-post-save graph reload where applicable. Official Caddy help is available
-through `Ctrl-H`.
+`d` for deletion, and pane-aware mouse selection with full clipboard
+integration, all using validation, diff confirmation, save and post-save
+graph reload where applicable. Official Caddy help is available through
+`Ctrl-H`.
 
 - [x] Generalize tree navigation to arbitrary parent/child rows. Document rows,
   including imported documents, remain separate top-level rows, while visible
@@ -711,7 +718,7 @@ through `Ctrl-H`.
   ancestors before selecting the deepest containing branch. Keep the current
   one-file-per-edit safety boundary; this tree behavior is a navigation concern
   and must not imply multi-file editing.
-- Add pane-aware mouse selection and full clipboard integration for text-bearing views.
+- [x] Add pane-aware mouse selection and full clipboard integration for text-bearing views.
   Mouse tracking should make the source pane the selectable region when it is
   active, keep tree/header/footer interactions navigational, and render the
   selected text range without selecting neighboring panes. Reuse the same
@@ -720,6 +727,19 @@ through `Ctrl-H`.
   and provide keyboard and non-mouse fallbacks when mouse tracking or
   clipboard integration is unavailable. `y` remains the precise keyboard copy
   action for the active view.
+
+  Implemented: left-click and drag create or extend a selection inside the
+  source pane, the main log pane and the diff modal body; right-click copies
+  an active selection of the owning pane; and Shift+arrows extend the
+  selection from the keyboard (each pane seeds its keyboard cursor at the
+  visible top-left cell). The selection renders as an overlay that preserves
+  the existing syntax, log and diff colors, and copied bytes are the exact
+  unstyled visible content of the range (a copied diff excludes the hunk
+  cursor marker). Tree, header, footer and every modal remain navigational;
+  wheel events and non-text regions are inert, and a selection whose pane is
+  hidden is dropped so it can never be copied against the wrong content. `y`
+  keeps its keyboard-copy role, preferring an active text selection over the
+  node/document range.
 - Continue source-range-preserving structured editing for `reverse_proxy` and common
   directives, covering the supported operations explicitly: edit existing
   values, insert supported directives, delete selected constructs and reorder
