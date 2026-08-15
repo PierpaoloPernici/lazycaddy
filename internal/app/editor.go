@@ -106,6 +106,13 @@ type Editor interface {
 	// the exact bytes of doc.Source (root or imported) instead of a node
 	// range. Preflight, snapshot, temp file and argv behave identically.
 	PrepareFull(ctx context.Context, doc *caddyfile.Document) (*EditSession, error)
+	// PrepareInsert prepares a $EDITOR round-trip that inserts new bytes
+	// at a single offset: the temp file is seeded with template instead of
+	// the (zero-length) range bytes, and the session replaces the empty
+	// range at pos. Preflight, snapshot and argv behave like Prepare;
+	// Complete recomposes the document and validates it like any other
+	// edit, and an empty edited result cancels.
+	PrepareInsert(ctx context.Context, doc *caddyfile.Document, pos int, template string) (*EditSession, error)
 	// Complete reads the edited temp file, recomposes the document with
 	// caddyfile.Patch and validates it. A non-zero exitCode or an external
 	// change on disk always cancels the edit; an empty result cancels only
@@ -174,7 +181,7 @@ type editor struct {
 
 // Prepare implements Editor for a node-range edit.
 func (e *editor) Prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange) (*EditSession, error) {
-	return e.prepare(ctx, doc, r, EditNode)
+	return e.prepareSeeded(ctx, doc, r, EditNode, nil)
 }
 
 // PrepareFull implements Editor for a whole-document edit.
@@ -183,15 +190,35 @@ func (e *editor) PrepareFull(ctx context.Context, doc *caddyfile.Document) (*Edi
 		return nil, errors.New("editor: nil document")
 	}
 	full := caddyfile.SourceRange{Start: 0, End: len(doc.Source)}
-	return e.prepare(ctx, doc, full, EditFull)
+	return e.prepareSeeded(ctx, doc, full, EditFull, nil)
 }
 
-// prepare is the shared implementation behind Prepare and PrepareFull: it
-// resolves the editor command, preflights against external changes,
-// snapshots the full document plus a plain-text range sidecar, extracts the
-// exact range bytes into a temp file and assembles the argv ready for
-// exec.Command.
-func (e *editor) prepare(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange, mode EditMode) (*EditSession, error) {
+// PrepareInsert implements Editor for an insertion at a single byte
+// offset: the temp file is seeded with the template bytes, so the editor
+// opens with the comment template instead of an empty buffer, and the
+// session replaces the zero-length range at pos.
+func (e *editor) PrepareInsert(ctx context.Context, doc *caddyfile.Document, pos int, template string) (*EditSession, error) {
+	if doc == nil {
+		return nil, errors.New("editor: nil document")
+	}
+	if pos < 0 || pos > len(doc.Source) {
+		return nil, fmt.Errorf("editor: invalid insertion offset %d for %d-byte document %s", pos, len(doc.Source), doc.Path)
+	}
+	r := caddyfile.SourceRange{
+		Start:     pos,
+		End:       pos,
+		StartLine: bytes.Count(doc.Source[:pos], []byte{'\n'}) + 1,
+		EndLine:   bytes.Count(doc.Source[:pos], []byte{'\n'}) + 1,
+	}
+	return e.prepareSeeded(ctx, doc, r, EditNode, []byte(template))
+}
+
+// prepareSeeded is the shared implementation behind Prepare, PrepareFull
+// and PrepareInsert: it resolves the editor command, preflights against
+// external changes, snapshots the full document plus a plain-text range
+// sidecar, extracts the exact range bytes (or the seed, for insertions)
+// into a temp file and assembles the argv ready for exec.Command.
+func (e *editor) prepareSeeded(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange, mode EditMode, seed []byte) (*EditSession, error) {
 	if doc == nil {
 		return nil, errors.New("editor: nil document")
 	}
@@ -226,6 +253,9 @@ func (e *editor) prepare(ctx context.Context, doc *caddyfile.Document, r caddyfi
 		return nil, fmt.Errorf("editor: snapshot: %w", err)
 	}
 	rangeBytes := doc.Source[r.Start:r.End]
+	if seed != nil {
+		rangeBytes = append([]byte(nil), seed...)
+	}
 	tempFile, err := createTemp(e.tempDir, "lazycaddy-editor-*")
 	if err != nil {
 		return nil, fmt.Errorf("editor: create temp file: %w", err)

@@ -30,10 +30,10 @@ import (
 // indent; expansion logic uses hasChildren and the stable key.
 type item struct {
 	// key is the stable identity of the row: the document path for a
-	// document row, or document path + kind + name + exact source range
-	// for a node row. The cursor and the collapsed map anchor on it, so
-	// a rebuild after a save, a search jump or a reload re-selects the
-	// same row.
+	// document row, the document path plus kind + name + exact source
+	// range for a node row, or a comment-row key for a comment group.
+	// The cursor and the collapsed map anchor on it, so a rebuild after
+	// a save, a search jump or a reload re-selects the same row.
 	key string
 	// label is the concise row text shown in the tree pane.
 	label string
@@ -41,11 +41,18 @@ type item struct {
 	depth int
 	doc   *caddyfile.Document
 	node  caddyfile.Node
-	// hasNode is true for every node row (document rows carry no node).
+	// hasNode is true for every node row (document and comment rows
+	// carry no node).
 	hasNode bool
+	// comment is non-nil for a comment-group leaf row. Comment groups
+	// are source annotations with exact ranges, not parser nodes, so
+	// they never become node rows and never affect structural
+	// navigation.
+	comment *caddyfile.CommentGroup
 	// hasChildren is true when the row can expand: a document with
-	// parsed nodes, or a block node with children. Leaf rows have no
-	// expansion marker and cannot be toggled.
+	// parsed nodes or comment groups, a block node with children, or
+	// the virtual comments branch. Leaf rows have no expansion marker
+	// and cannot be toggled.
 	hasChildren bool
 	// collapsed is the current expand/collapse state of the row, kept in
 	// sync with the model's collapsed map.
@@ -117,8 +124,9 @@ func (m *Model) rebuildTree(anchorKey string) {
 }
 
 // expandAllBranches expands every visible branch recursively, document
-// roots included. It is a no-op when no branch is collapsed, and the
-// selection is preserved: an expansion never hides a row.
+// roots and the virtual comments branches included. It is a no-op when no
+// branch is collapsed, and the selection is preserved: an expansion never
+// hides a row.
 func (m *Model) expandAllBranches() {
 	if m.state == nil || m.state.Graph == nil {
 		return
@@ -131,6 +139,12 @@ func (m *Model) expandAllBranches() {
 		if key := itemKey(doc, nil); m.collapsed[key] {
 			delete(m.collapsed, key)
 			changed = true
+		}
+		if len(caddyfile.CommentGroups(doc)) > 0 {
+			if key := commentsKey(doc); m.collapsed[key] {
+				delete(m.collapsed, key)
+				changed = true
+			}
 		}
 		var walk func(nodes []caddyfile.Node)
 		walk = func(nodes []caddyfile.Node) {
@@ -158,10 +172,11 @@ func (m *Model) expandAllBranches() {
 }
 
 // collapseDescendants collapses every visible branch below the document
-// roots recursively, keeping the document roots expanded. It is a no-op
-// when no branch exists below the roots or everything is already
-// collapsed. The selection is preserved when its row survives; a hidden
-// selection moves to the nearest visible ancestor.
+// roots recursively, the virtual comments branches included, keeping the
+// document roots expanded. It is a no-op when no branch exists below the
+// roots or everything is already collapsed. The selection is preserved
+// when its row survives; a hidden selection moves to the nearest visible
+// ancestor.
 func (m *Model) collapseDescendants() {
 	if m.state == nil || m.state.Graph == nil {
 		return
@@ -170,6 +185,9 @@ func (m *Model) collapseDescendants() {
 	for _, doc := range m.state.Graph.Documents {
 		if doc == nil {
 			continue
+		}
+		if len(caddyfile.CommentGroups(doc)) > 0 {
+			branchKeys = append(branchKeys, commentsKey(doc))
 		}
 		var walk func(nodes []caddyfile.Node)
 		walk = func(nodes []caddyfile.Node) {
@@ -266,13 +284,14 @@ func (m *Model) nearestVisibleAncestorKey(doc *caddyfile.Document, target caddyf
 // document (root first, then imported files in resolution order), with
 // every branch of every document nested recursively underneath it (site
 // blocks, global options, snippets, named routes and nodes with
-// children). Leaves are never rows: they stay in the parse tree, the
-// source view and the search scope. Document rows and branches can
-// expand and collapse; rows without children cannot. The cursor and the
-// collapsed state anchor on each row's stable key, so a rebuild never
-// loses the selection or the expand/collapse state. Imported files stay
-// separate top-level rows: the import graph is never duplicated into a
-// synthetic syntax tree.
+// children), followed by the virtual collapsed `comments (N)` branch of
+// each document when top-level comments exist. Leaves are never rows:
+// they stay in the parse tree, the source view and the search scope.
+// Document rows and branches can expand and collapse; rows without
+// children cannot. The cursor and the collapsed state anchor on each
+// row's stable key, so a rebuild never loses the selection or the
+// expand/collapse state. Imported files stay separate top-level rows:
+// the import graph is never duplicated into a synthetic syntax tree.
 func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 	var items []item
 	for _, doc := range g.Documents {
@@ -281,17 +300,19 @@ func buildItems(g *caddyfile.ImportGraph, collapsed map[string]bool) []item {
 		}
 		docKey := itemKey(doc, nil)
 		docCollapsed := collapsed[docKey]
+		groups := caddyfile.CommentGroups(doc)
 		items = append(items, item{
 			key:         docKey,
 			label:       filepath.Base(doc.Path),
 			doc:         doc,
-			hasChildren: len(visibleTreeChildren(doc.Nodes)) > 0,
+			hasChildren: len(visibleTreeChildren(doc.Nodes)) > 0 || len(groups) > 0,
 			collapsed:   docCollapsed,
 		})
 		if docCollapsed {
 			continue
 		}
 		appendNodeItems(&items, doc, doc.Nodes, 1, collapsed)
+		appendCommentItems(&items, doc, groups, 1, collapsed)
 	}
 	return items
 }
@@ -311,14 +332,18 @@ func visibleTreeChildren(nodes []caddyfile.Node) []caddyfile.Node {
 }
 
 // seedCollapsedState initializes the startup expand/collapse layout for
-// a fresh session: every document root is expanded and every visible
-// branch below the document roots starts collapsed. Visible leaf rows carry
-// no expansion state and a · marker. The layout is derived from the graph and never
+// a fresh session: every document root is expanded, every visible branch
+// below the document roots starts collapsed and every virtual comments
+// branch starts collapsed. Visible leaf rows carry no expansion state
+// and a · marker. The layout is derived from the graph and never
 // persisted across sessions unless explicitly configured.
 func seedCollapsedState(g *caddyfile.ImportGraph, collapsed map[string]bool) {
 	for _, doc := range g.Documents {
 		if doc == nil {
 			continue
+		}
+		if len(caddyfile.CommentGroups(doc)) > 0 {
+			collapsed[commentsKey(doc)] = true
 		}
 		var walk func(nodes []caddyfile.Node)
 		walk = func(nodes []caddyfile.Node) {
@@ -333,6 +358,80 @@ func seedCollapsedState(g *caddyfile.ImportGraph, collapsed map[string]bool) {
 		walk(doc.Nodes)
 	}
 }
+
+// appendCommentItems appends the virtual `comments (N)` branch of a
+// document and one leaf row per top-level comment group. The branch
+// holds no parser node: comment groups are source annotations with exact
+// ranges and never affect structural navigation. Its label carries the
+// group count; each leaf identifies its line span, a preview and, when
+// available, the structural block that follows it.
+func appendCommentItems(items *[]item, doc *caddyfile.Document, groups []caddyfile.CommentGroup, depth int, collapsed map[string]bool) {
+	if len(groups) == 0 {
+		return
+	}
+	branchKey := commentsKey(doc)
+	*items = append(*items, item{
+		key:         branchKey,
+		label:       fmt.Sprintf("comments (%d)", len(groups)),
+		depth:       depth,
+		doc:         doc,
+		hasChildren: true,
+		collapsed:   collapsed[branchKey],
+	})
+	if collapsed[branchKey] {
+		return
+	}
+	for i := range groups {
+		g := &groups[i]
+		*items = append(*items, item{
+			key:     commentKey(doc, g),
+			label:   commentLabel(*g),
+			depth:   depth + 1,
+			doc:     doc,
+			comment: g,
+		})
+	}
+}
+
+// commentsKey is the stable identity of the virtual comments branch row
+// of a document.
+func commentsKey(doc *caddyfile.Document) string {
+	path := ""
+	if doc != nil {
+		path = doc.Path
+	}
+	return "comments:" + path
+}
+
+// commentKey is the stable identity of one comment-group leaf row, based
+// on its exact byte range.
+func commentKey(doc *caddyfile.Document, g *caddyfile.CommentGroup) string {
+	path := ""
+	if doc != nil {
+		path = doc.Path
+	}
+	return fmt.Sprintf("comment:%s:%d:%d", path, g.Range.Start, g.Range.End)
+}
+
+// commentLabel renders the tree label for a comment group: its line
+// span, a preview of the first comment and, when available, the
+// structural block that follows it.
+func commentLabel(g caddyfile.CommentGroup) string {
+	label := fmt.Sprintf("lines %d-%d", g.StartLine, g.EndLine)
+	if g.Preview != "" {
+		label += " · " + g.Preview
+	} else {
+		label += " · #"
+	}
+	if g.After != nil {
+		label += " → " + g.After.Name
+	}
+	return truncateToWidth(label, maxCommentLabel)
+}
+
+// maxCommentLabel bounds the tree label of a comment row so a long
+// preview never overflows the tree pane.
+const maxCommentLabel = 60
 
 // appendNodeItems appends one visible tree row per branch in nodes,
 // recursing into the visible children. A ParsedNode is a TreeRow when it

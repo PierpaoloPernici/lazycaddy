@@ -349,6 +349,8 @@ func (m *Model) syncSource(srcW, paneH int) {
 		title = "Source · " + selected.doc.Path
 		if selected.hasNode {
 			title += fmt.Sprintf(" · %s (lines %d-%d)", selected.node.Name, selected.node.Range.StartLine, selected.node.Range.EndLine)
+		} else if selected.comment != nil {
+			title += fmt.Sprintf(" · comment (lines %d-%d)", selected.comment.StartLine, selected.comment.EndLine)
 		}
 	}
 
@@ -360,6 +362,11 @@ func (m *Model) syncSource(srcW, paneH int) {
 		key.node = selected.node.Name
 		key.start = selected.node.Range.StartLine
 		key.end = selected.node.Range.EndLine
+	} else if selected != nil && selected.comment != nil {
+		key.hasNode = true
+		key.node = "comment"
+		key.start = selected.comment.StartLine
+		key.end = selected.comment.EndLine
 	}
 
 	// A refresh (set by a save) forces the content reload and the reveal
@@ -503,6 +510,8 @@ func (m *Model) footer(width int) string {
 	case m.showStructuredAdd:
 		if m.structuredAddMode == structuredAddReorder {
 			keys = "↑/↓ choose sibling · Enter move after & validate · Esc cancel"
+		} else if m.structuredAddMode == structuredAddCommentPlacement {
+			keys = "↑/↓ choose placement · Enter open editor · Esc cancel"
 		} else {
 			keys = "type directive · Enter plan & validate · Esc cancel"
 		}

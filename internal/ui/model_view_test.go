@@ -329,9 +329,10 @@ func TestModelSelectionJumpsToNodeStartLine(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 12)
 
-	// Items: root doc, example.test (line 1), pbs.example.test (line 74).
-	if len(m.items) != 3 {
-		t.Fatalf("items = %d, want 3", len(m.items))
+	// Items: root doc, example.test (line 1), pbs.example.test (line 74)
+	// and the collapsed comments branch for the 70 padding lines.
+	if len(m.items) != 4 {
+		t.Fatalf("items = %d, want 4", len(m.items))
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // pbs.example.test

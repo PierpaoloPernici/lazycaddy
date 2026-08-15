@@ -92,7 +92,7 @@ func commandDefinitions() []uiCommand {
 			if m.editor == nil {
 				return "editor unavailable"
 			}
-			return "requires writable mode and a node selection"
+			return "requires writable mode and a block or comment selection"
 		}},
 		{ID: commandFullEdit, Category: "Source", Label: "Edit selected document", Description: "$EDITOR", Keys: []string{"E"}, Enabled: func(m *Model) bool {
 			return m.canEditDocument()
@@ -103,7 +103,7 @@ func commandDefinitions() []uiCommand {
 			return "requires writable mode and a document selection"
 		}},
 		{ID: commandAdd, Category: "Source", Label: "Add directive", Description: "context-aware", Keys: []string{"a"}, Enabled: func(m *Model) bool {
-			return m.canAddStructured()
+			return m.canAddStructured() || m.canAddComment()
 		}, Reason: func(m *Model) string {
 			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
 				return "read-only mode"
@@ -111,7 +111,7 @@ func commandDefinitions() []uiCommand {
 			if m.formatter == nil {
 				return "Caddy binary unavailable"
 			}
-			return "select a supported block"
+			return "select a supported block, document or comment"
 		}},
 		{ID: commandNew, Category: "Source", Label: "New structural node", Description: "site, snippet or handler", Keys: []string{"n"}, Enabled: func(m *Model) bool {
 			return m.canNewNode()
@@ -259,7 +259,7 @@ func (m *Model) commandForKey(key string) (commandID, bool) {
 
 func (m *Model) canEditSelection() bool {
 	sel := m.selectedItem()
-	return m.editor != nil && m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && sel.hasNode
+	return m.editor != nil && m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && (sel.hasNode || sel.comment != nil)
 }
 
 func (m *Model) canEditDocument() bool {

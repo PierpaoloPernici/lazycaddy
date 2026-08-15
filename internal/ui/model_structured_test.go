@@ -92,8 +92,11 @@ func TestStructuredAddPickerSelectsDirectiveBeforeArguments(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	if !strings.Contains(m.View(), "reverse_proxy") {
-		t.Fatal("directive picker does not show reverse_proxy")
+	// The picker lists directives first (the comment entry is sorted
+	// alphabetically at the front); the 8-row window shows the head of
+	// the list, so a directive near the top is a stable sanity check.
+	if !strings.Contains(m.View(), "encode") {
+		t.Fatal("directive picker does not show directives")
 	}
 	for _, r := range []rune("reverse") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
