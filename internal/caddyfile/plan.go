@@ -1,6 +1,7 @@
 package caddyfile
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sort"
@@ -40,7 +41,7 @@ const (
 	EditInsert
 	// EditDelete removes a construct's exact source range.
 	EditDelete
-	// EditReorder swaps two sibling constructs.
+	// EditReorder moves one sibling construct after another.
 	EditReorder
 )
 
@@ -687,39 +688,122 @@ func (p *Planner) isTopLevel(n Node) bool {
 	return false
 }
 
-// Reorder plans swapping two sibling constructs. Both nodes must be direct
-// children of the same block (or both top-level nodes); the swap replaces
-// the combined span, so comments and unknown directives between the two
-// keep their bytes.
-func (p *Planner) Reorder(a, b Node) (*PlannedEdit, error) {
-	la, err := p.locate(a)
+// SiblingNodes returns the direct siblings of n in source order. The result
+// includes n itself so callers can preserve the document's ordering when
+// presenting reorder targets. Nodes are resolved by identity first, so a
+// stale or foreign selection is rejected before any UI makes a choice.
+func (p *Planner) SiblingNodes(n Node) ([]Node, error) {
+	located, err := p.locate(n)
 	if err != nil {
 		return nil, err
 	}
-	lb, err := p.locate(b)
+	if p.isTopLevel(*located) {
+		return append([]Node(nil), p.doc.Nodes...), nil
+	}
+	var siblings []Node
+	var walk func([]Node) bool
+	walk = func(nodes []Node) bool {
+		for _, parent := range nodes {
+			if indexOfChild(parent, *located) >= 0 {
+				siblings = append([]Node(nil), parent.Children...)
+				return true
+			}
+			if walk(parent.Children) {
+				return true
+			}
+		}
+		return false
+	}
+	if !walk(p.doc.Nodes) {
+		return nil, fmt.Errorf("%w: no sibling context for %q", ErrNodeNotFound, located.Name)
+	}
+	return siblings, nil
+}
+
+// MoveAfter plans moving source immediately after target. Both nodes must be
+// direct children of the same block (or both top-level nodes). The combined
+// span is replaced once, so every byte outside the moved range is preserved.
+// Moving a node backwards across comments or leaf directives is rejected
+// until the UI can represent those source annotations explicitly.
+func (p *Planner) MoveAfter(source, target Node) (*PlannedEdit, error) {
+	ls, err := p.locate(source)
 	if err != nil {
 		return nil, err
 	}
-	if nodeIdent(*la) == nodeIdent(*lb) {
+	lt, err := p.locate(target)
+	if err != nil {
+		return nil, err
+	}
+	if nodeIdent(*ls) == nodeIdent(*lt) {
 		return nil, fmt.Errorf("%w: cannot reorder a node with itself", ErrInvalidContext)
 	}
-	parent := p.findCommonParent(*la, *lb)
-	if parent == nil && (!p.isTopLevel(*la) || !p.isTopLevel(*lb)) {
-		return nil, fmt.Errorf("%w: %q and %q are not siblings", ErrInvalidContext, la.Name, lb.Name)
+	if ls.Kind == KindGlobalOptions {
+		return nil, fmt.Errorf("%w: global options must remain first", ErrInvalidContext)
 	}
-	earlier, later := *la, *lb
-	if later.Range.Start < earlier.Range.Start {
-		earlier, later = later, earlier
+	siblings, err := p.SiblingNodes(*ls)
+	if err != nil {
+		return nil, err
 	}
-	if later.Range.End < earlier.Range.End {
+	sourceIndex, targetIndex := -1, -1
+	for i, sibling := range siblings {
+		switch nodeIdent(sibling) {
+		case nodeIdent(*ls):
+			sourceIndex = i
+		case nodeIdent(*lt):
+			targetIndex = i
+		}
+	}
+	if sourceIndex < 0 || targetIndex < 0 {
+		return nil, fmt.Errorf("%w: %q and %q are not siblings", ErrInvalidContext, ls.Name, lt.Name)
+	}
+	if targetIndex+1 == sourceIndex {
+		return nil, fmt.Errorf("%w: %q is already after %q", ErrInvalidContext, ls.Name, lt.Name)
+	}
+	if ls.Range.Start < lt.Range.Start && lt.Range.End < ls.Range.End {
 		return nil, fmt.Errorf("%w: node ranges overlap; cannot reorder safely", ErrInvalidContext)
 	}
-	span := SourceRange{Start: earlier.Range.Start, End: later.Range.End}
-	// Keep the original bytes between the two nodes in place relative to
-	// the reordered constructs. This preserves comments, blank lines and
-	// unknown directives instead of silently dropping the gap.
-	text := later.Range.Text(p.doc.Source) +
-		string(p.doc.Source[earlier.Range.End:later.Range.Start]) +
-		earlier.Range.Text(p.doc.Source)
+	if ls.Range.Start > lt.Range.Start && ls.Range.End < lt.Range.End {
+		return nil, fmt.Errorf("%w: node ranges overlap; cannot reorder safely", ErrInvalidContext)
+	}
+
+	var span SourceRange
+	var text string
+	if sourceIndex < targetIndex {
+		span = SourceRange{Start: ls.Range.Start, End: lt.Range.End}
+		gap := string(p.doc.Source[ls.Range.End:lt.Range.Start])
+		text = gap + lt.Range.Text(p.doc.Source) + ls.Range.Text(p.doc.Source)
+	} else {
+		span = SourceRange{Start: lt.Range.Start, End: ls.Range.End}
+		if !p.safeBackwardMove(lt.Range.End, ls.Range.Start, siblings, targetIndex, sourceIndex) {
+			return nil, fmt.Errorf("%w: cannot move backwards across comments or leaf directives", ErrInvalidContext)
+		}
+		gap := string(p.doc.Source[lt.Range.End:ls.Range.Start])
+		text = lt.Range.Text(p.doc.Source) + ls.Range.Text(p.doc.Source) + gap
+	}
 	return &PlannedEdit{DocID: p.doc.Path, Range: span, NewText: text, Op: EditReorder}, nil
+}
+
+// safeBackwardMove reports whether moving a later sibling immediately after
+// an earlier one leaves only structural blocks and whitespace in the gap.
+// Comments and leaf directives are intentionally rejected because their
+// attachment cannot be inferred until comment groups are first-class nodes.
+func (p *Planner) safeBackwardMove(start, end int, siblings []Node, targetIndex, sourceIndex int) bool {
+	cursor := start
+	for i := targetIndex + 1; i < sourceIndex; i++ {
+		n := siblings[i]
+		if n.Kind == KindDirective || n.Range.Start < cursor || n.Range.End > end {
+			return false
+		}
+		if len(bytes.TrimSpace(p.doc.Source[cursor:n.Range.Start])) > 0 {
+			return false
+		}
+		cursor = n.Range.End
+	}
+	return len(bytes.TrimSpace(p.doc.Source[cursor:end])) == 0
+}
+
+// Reorder is kept as a compatibility alias for callers of the initial
+// planner API. New callers should use MoveAfter to make the direction clear.
+func (p *Planner) Reorder(source, target Node) (*PlannedEdit, error) {
+	return p.MoveAfter(source, target)
 }

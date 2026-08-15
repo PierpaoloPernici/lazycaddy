@@ -20,6 +20,8 @@ func pendingEditVerb(pe *pendingEdit) string {
 			return "add"
 		case "new":
 			return "create"
+		case "reorder":
+			return "move after"
 		}
 	}
 	return "save"
@@ -32,6 +34,8 @@ func pendingEditName(pe *pendingEdit) string {
 			return "add"
 		case "new":
 			return "new node"
+		case "reorder":
+			return "move after"
 		}
 	}
 	return "edit"
@@ -254,12 +258,25 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 	}
 	if idx < 0 && pe != nil && pe.nodeName != "" {
 		// The edit moved or resized the node: fall back to the same name
-		// in the saved document.
+		// in the saved document. Moving a block can have repeated directive names
+		// among siblings (for example multiple handle blocks), so choose
+		// the candidate nearest the destination line recorded by the plan.
+		bestDistance := int(^uint(0) >> 1)
 		for i := range m.items {
 			it := &m.items[i]
 			if it.doc != nil && filepath.Clean(it.doc.Path) == cleanPath && it.hasNode && it.node.Name == pe.nodeName {
-				idx = i
-				break
+				if pe.operation != "reorder" || pe.startLine <= 0 {
+					idx = i
+					break
+				}
+				distance := it.node.Range.StartLine - pe.startLine
+				if distance < 0 {
+					distance = -distance
+				}
+				if distance < bestDistance {
+					bestDistance = distance
+					idx = i
+				}
 			}
 		}
 	}

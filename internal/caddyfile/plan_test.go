@@ -543,7 +543,7 @@ func TestPlanReorderPreservesIntermediateBytes(t *testing.T) {
 		t.Fatalf("Reorder: %v", err)
 	}
 	out := applyPlanned(t, doc, e)
-	want := "example.test {\n\trespond ok\n\t# keep between\n\tcustom_plugin thing\n\tfile_server\n}\n"
+	want := "example.test {\n\t# keep between\n\tcustom_plugin thing\n\trespond ok\n\tfile_server\n}\n"
 	if string(out) != want {
 		t.Errorf("result = %q, want %q", out, want)
 	}
@@ -553,7 +553,7 @@ func TestPlanReorderSiblingBlocks(t *testing.T) {
 	doc, p := planDoc(t, "a.test {\n\trespond a\n}\nb.test {\n\trespond b\n}\n")
 	siteA := findNode(t, doc, "a.test")
 	siteB := findNode(t, doc, "b.test")
-	e, err := p.Reorder(siteA, siteB)
+	e, err := p.MoveAfter(siteA, siteB)
 	if err != nil {
 		t.Fatalf("Reorder: %v", err)
 	}
@@ -578,6 +578,48 @@ func TestPlanReorderItself(t *testing.T) {
 	respond := findNode(t, doc, "respond")
 	if _, err := p.Reorder(respond, respond); !errors.Is(err, ErrInvalidContext) {
 		t.Fatalf("Reorder itself err = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanSiblingNodesReturnsDirectSourceOrder(t *testing.T) {
+	doc, p := planDoc(t, "a.test {\n\thandle /x {\n\t\trespond x\n\t}\n\trespond a\n}\nb.test {\n\trespond b\n}\n")
+	siteA := findNode(t, doc, "a.test")
+	siblings, err := p.SiblingNodes(siteA)
+	if err != nil {
+		t.Fatalf("SiblingNodes: %v", err)
+	}
+	if len(siblings) != 2 || siblings[0].Name != "a.test" || siblings[1].Name != "b.test" {
+		t.Fatalf("top-level siblings = %#v, want a.test then b.test", siblings)
+	}
+	handle := findNode(t, doc, "handle")
+	siblings, err = p.SiblingNodes(handle)
+	if err != nil {
+		t.Fatalf("nested SiblingNodes: %v", err)
+	}
+	if len(siblings) != 2 || siblings[0].Name != "handle" || siblings[1].Name != "respond" {
+		t.Fatalf("nested siblings = %#v, want handle then respond", siblings)
+	}
+}
+
+func TestPlanReorderKeepsGlobalOptionsFirst(t *testing.T) {
+	doc, p := planDoc(t, "{\n\tdebug\n}\nexample.test {\n\trespond ok\n}\n")
+	globals := findNode(t, doc, "")
+	site := findNode(t, doc, "example.test")
+	if _, err := p.Reorder(globals, site); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("Reorder global options err = %v, want ErrInvalidContext", err)
+	}
+
+	doc, p = planDoc(t, "{\n\tdebug\n}\na.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n")
+	globals = findNode(t, doc, "")
+	site = findNode(t, doc, "b.example.test")
+	e, err := p.MoveAfter(site, globals)
+	if err != nil {
+		t.Fatalf("MoveAfter site after global options: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "{\n\tdebug\n}\nb.example.test {\n\trespond b\n}\na.example.test {\n\trespond a\n}\n"
+	if string(out) != want {
+		t.Errorf("global-options move result = %q, want %q", out, want)
 	}
 }
 
@@ -977,7 +1019,7 @@ func TestPlanReorderNestedSiblings(t *testing.T) {
 	doc, p := planDoc(t, "a.test {\n\thandle /x {\n\t\trespond a\n\t\tfile_server\n\t}\n\tencode gzip\n}\nb.test {\n\trespond b\n}\n")
 	respond := findNode(t, doc, "respond")
 	fs := findNode(t, doc, "file_server")
-	e, err := p.Reorder(respond, fs)
+	e, err := p.MoveAfter(respond, fs)
 	if err != nil {
 		t.Fatalf("Reorder: %v", err)
 	}
@@ -998,23 +1040,26 @@ func TestPlanReorderForeignNode(t *testing.T) {
 }
 
 func TestPlanReorderReversedArguments(t *testing.T) {
-	// Passing the later node first still swaps the two constructs.
+	// A node that is already immediately after the target is a no-op.
 	doc, p := planDoc(t, "example.test {\n\tfile_server\n\trespond ok\n}\n")
 	fs := findNode(t, doc, "file_server")
 	respond := findNode(t, doc, "respond")
-	e, err := p.Reorder(respond, fs)
-	if err != nil {
-		t.Fatalf("Reorder: %v", err)
+	if _, err := p.MoveAfter(respond, fs); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("MoveAfter already-after err = %v, want ErrInvalidContext", err)
 	}
-	out := applyPlanned(t, doc, e)
-	want := "example.test {\n\trespond ok\n\tfile_server\n}\n"
-	if string(out) != want {
-		t.Errorf("result = %q, want %q", out, want)
+}
+
+func TestPlanMoveAfterRejectsBackwardCommentCrossing(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\ta\n\t# keep with b\n\tb\n\tc\n}\n")
+	a := findNode(t, doc, "a")
+	c := findNode(t, doc, "c")
+	if _, err := p.MoveAfter(c, a); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("MoveAfter across comment err = %v, want ErrInvalidContext", err)
 	}
 }
 
 func TestPlanReorderOverlappingRanges(t *testing.T) {
-	// Overlapping top-level ranges can never be swapped safely.
+	// Overlapping top-level ranges can never be moved safely.
 	a := Node{Kind: KindSite, Name: "a.test", Range: SourceRange{Start: 0, End: 10}}
 	b := Node{Kind: KindSite, Name: "b.test", Range: SourceRange{Start: 5, End: 7}}
 	p := NewPlanner(craftedDoc("a.test {\n}\nb.test {\n}\n", a, b))

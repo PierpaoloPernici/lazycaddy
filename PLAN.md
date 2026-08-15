@@ -287,6 +287,7 @@ E          Edit entire document (root or imported)
 Ctrl-E     Toggle raw source view
 a          Add (only when supported by the current release)
 d          Delete selected node (confirmation via diff; never on document rows or import directives)
+o          Reorder selected structural block with a same-document sibling (diff confirmation)
 v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
@@ -686,8 +687,9 @@ fixtures, source-preserving planner primitives, semantic roles and advisory
 catalog, structural-navigation primitives, the pane-aware selection model,
 and the planner's `CreateNode` API. The UI now exposes `a` for directive
 insertion, `m` for `reverse_proxy` fields, `n` for structural-node creation,
-`d` for deletion, and pane-aware mouse selection with full clipboard
-integration, all using validation, diff confirmation, save and post-save
+`d` for deletion, `o` for same-document structural reordering, and pane-aware
+mouse selection with full clipboard integration, all using validation, diff
+confirmation, save and post-save
 graph reload where applicable. Official Caddy help is available through
 `Ctrl-H`.
 
@@ -752,8 +754,8 @@ escape hatch for arbitrary comment and source changes.
   compatible blocks. The `a` add action must be capability- and context-aware;
   unsupported or ambiguous insertions remain unavailable rather than guessing.
   The current UI covers directive insertion, `reverse_proxy` field editing,
-  structural-node creation and deletion. Dedicated forms for more common
-  directives and a reorder command remain product work.
+  structural-node creation, deletion and same-document sibling reordering.
+  Dedicated forms for more common directives remain product work.
   The `n` New node action exposes the planner's structural-node creation
   API for top-level sites, snippets, named routes and global options, plus
   nested handler blocks; `a` remains the directive-insertion action. For v0.3,
@@ -781,6 +783,13 @@ escape hatch for arbitrary comment and source changes.
   diff confirmation and post-save graph reload; the v0.3 work extends the
   same safety contract to insertion, reordering and structured directive
   editing.
+- [x] Add a conservative reorder workflow (`o`) for visible structural rows.
+  The picker moves the selected block after a same-document structural
+  sibling, keeps global options fixed at the top, preserves the exact bytes
+  between the two ranges,
+  and routes the candidate through validation, diff confirmation, backup,
+  conflict detection, atomic save and post-save tree re-anchoring. Hidden leaf
+  directives remain planner-supported but are not exposed as tree targets.
 - [x] Preserve token spans with line/column information alongside byte offsets
   so source selection and copy operations can identify the exact visible text
   without weakening byte-preserving patches. Inline diagnostics still need

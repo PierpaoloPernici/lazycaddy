@@ -30,6 +30,7 @@ const (
 	structuredAddReverseProxy
 	structuredAddNewPicker
 	structuredAddNewForm
+	structuredAddReorder
 )
 
 const (
@@ -182,6 +183,9 @@ func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.structuredAddCreating {
 		return m.updateNewNodeKey(msg)
 	}
+	if m.structuredAddMode == structuredAddReorder {
+		return m.updateReorderKey(msg)
+	}
 	if m.structuredAddMode == structuredAddPicker {
 		return m.updateStructuredPickerKey(msg)
 	}
@@ -240,6 +244,7 @@ func (m *Model) closeStructuredAdd() {
 	m.structuredAddNewArgs = structuredInput{}
 	m.structuredAddNewField = newNodeNameField
 	m.structuredAddNewTop = false
+	m.structuredAddReorderTargets = nil
 }
 
 func (m *Model) filteredStructuredItems() []string {
@@ -431,13 +436,21 @@ func (m *Model) queueStructuredAddValidation(name, operation string, edit *caddy
 	docPath := m.structuredAddDoc.Path
 	parent := m.structuredAddParent
 	itemKey := m.structuredAddKey
+	anchorStartLine := parent.Range.StartLine
+	if operation == "reorder" && m.structuredAddCursor >= 0 && m.structuredAddCursor < len(m.structuredAddReorderTargets) {
+		anchorStartLine = m.structuredAddReorderTargets[m.structuredAddCursor].Range.StartLine
+	}
 	m.closeStructuredAdd()
 	m.structuredAddBusy = true
 	m.statusMessage = "validating " + structuredOperationLabel(operation) + "…"
-	return m, m.structuredAddValidateCmd(docPath, original, candidate, name, operation, parent, itemKey)
+	return m, m.structuredAddValidateCmd(docPath, original, candidate, name, operation, parent, itemKey, anchorStartLine)
 }
 
-func (m *Model) structuredAddValidateCmd(path string, original, candidate []byte, name, operation string, parent caddyfile.Node, itemKey string) tea.Cmd {
+func (m *Model) structuredAddValidateCmd(path string, original, candidate []byte, name, operation string, parent caddyfile.Node, itemKey string, anchorStartLines ...int) tea.Cmd {
+	anchorStartLine := parent.Range.StartLine
+	if len(anchorStartLines) > 0 {
+		anchorStartLine = anchorStartLines[0]
+	}
 	timeout := m.validatorTimeout
 	formatter := m.formatter
 	return func() tea.Msg {
@@ -451,7 +464,7 @@ func (m *Model) structuredAddValidateCmd(path string, original, candidate []byte
 		return structuredAddValidatedMsg{
 			Path: path, Original: original, Content: candidate, Formatted: formatted,
 			Diagnostics: diagnostics, Name: name, Operation: operation, Parent: parent,
-			ItemKey: itemKey, Err: err,
+			ItemKey: itemKey, AnchorStartLine: anchorStartLine, Err: err,
 		}
 	}
 }
@@ -489,7 +502,7 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 	}
 	m.pendingEdit = &pendingEdit{
 		path: msg.Path, original: msg.Original, content: content,
-		nodeName: msg.Parent.Name, startLine: msg.Parent.Range.StartLine,
+		nodeName: msg.Parent.Name, startLine: msg.AnchorStartLine,
 		itemKey: msg.ItemKey, operation: msg.Operation,
 	}
 	lines, err := diff.Unified(msg.Original, content, msg.Path, msg.Path+" (after "+structuredOperationLabel(msg.Operation)+")")
@@ -504,6 +517,8 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 		title = "Edit " + msg.Name
 	} else if msg.Operation == "new" {
 		title = "New " + msg.Name
+	} else if msg.Operation == "reorder" {
+		title = "Move " + msg.Name
 	}
 	m.showDiffModal(lines, title+" · "+msg.Path)
 	return m, nil
@@ -512,6 +527,9 @@ func (m *Model) handleStructuredAddValidated(msg structuredAddValidatedMsg) (tea
 func structuredOperationLabel(operation string) string {
 	if operation == "new" {
 		return "new node"
+	}
+	if operation == "reorder" {
+		return "move after"
 	}
 	return operation
 }
@@ -539,6 +557,40 @@ func (m *Model) structuredAddView(width, height int) string {
 		contentW = 1
 	}
 	target := truncateToWidth("Target: "+m.structuredAddParent.Name, contentW)
+	if m.structuredAddMode == structuredAddReorder {
+		rows := boxH - 7
+		if rows < 1 {
+			rows = 1
+		}
+		start := m.structuredAddCursor - rows/2
+		if start < 0 {
+			start = 0
+		}
+		if start+rows > len(m.structuredAddReorderTargets) {
+			start = len(m.structuredAddReorderTargets) - rows
+		}
+		if start < 0 {
+			start = 0
+		}
+		end := start + rows
+		if end > len(m.structuredAddReorderTargets) {
+			end = len(m.structuredAddReorderTargets)
+		}
+		var body strings.Builder
+		body.WriteString(truncateToWidth("Selected: "+nodeLabel(m.structuredAddParent), contentW) + "\n\n")
+		body.WriteString(dimStyle.Render("Move after sibling:") + "\n")
+		for i := start; i < end; i++ {
+			prefix := "  "
+			if i == m.structuredAddCursor {
+				prefix = "› "
+			}
+			body.WriteString(truncateToWidth(prefix+nodeLabel(m.structuredAddReorderTargets[i]), contentW) + "\n")
+		}
+		body.WriteString("\n" + dimStyle.Render("↑/↓ choose · Enter move after · Esc cancel"))
+		return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
+			activeTitleStyle.Render("Move block after") + "\n" + body.String(),
+		)
+	}
 	if m.structuredAddMode == structuredAddReverseProxy {
 		body := target + "\n\n" +
 			structuredAddFieldLine("matcher> ", m.structuredAddMatcher, m.structuredAddRPField == structuredReverseProxyMatcher, contentW) + "\n" +

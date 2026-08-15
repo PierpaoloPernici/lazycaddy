@@ -170,16 +170,17 @@ type deleteValidatedMsg struct {
 // structuredAddValidatedMsg is delivered after a planned structured add or
 // edit has passed the same format+validate boundary as other edits.
 type structuredAddValidatedMsg struct {
-	Path        string
-	Original    []byte
-	Content     []byte
-	Formatted   []byte
-	Diagnostics []validator.Diagnostic
-	Name        string
-	Operation   string
-	Parent      caddyfile.Node
-	ItemKey     string
-	Err         error
+	Path            string
+	Original        []byte
+	Content         []byte
+	Formatted       []byte
+	Diagnostics     []validator.Diagnostic
+	Name            string
+	Operation       string
+	Parent          caddyfile.Node
+	ItemKey         string
+	AnchorStartLine int
+	Err             error
 }
 
 // pendingEdit holds a validated, recomposed document that came out of an
@@ -413,26 +414,27 @@ type Model struct {
 	// Structured add modal state. The modal first selects a context-aware
 	// directive from the advisory catalog, then collects its raw arguments.
 	// The caddyfile planner remains authoritative before validation or save.
-	showStructuredAdd      bool
-	structuredAddInput     structuredInput
-	structuredAddDoc       *caddyfile.Document
-	structuredAddParent    caddyfile.Node
-	structuredAddKey       string
-	structuredAddBusy      bool
-	structuredAddMode      structuredAddMode
-	structuredAddName      string
-	structuredAddItems     []string
-	structuredAddCursor    int
-	structuredAddMatcher   structuredInput
-	structuredAddUpstreams structuredInput
-	structuredAddRPField   int
-	structuredAddEditing   bool
-	structuredAddCreating  bool
-	structuredAddNewKind   caddyfile.Kind
-	structuredAddNewName   structuredInput
-	structuredAddNewArgs   structuredInput
-	structuredAddNewField  int
-	structuredAddNewTop    bool
+	showStructuredAdd           bool
+	structuredAddInput          structuredInput
+	structuredAddDoc            *caddyfile.Document
+	structuredAddParent         caddyfile.Node
+	structuredAddKey            string
+	structuredAddBusy           bool
+	structuredAddMode           structuredAddMode
+	structuredAddName           string
+	structuredAddItems          []string
+	structuredAddCursor         int
+	structuredAddMatcher        structuredInput
+	structuredAddUpstreams      structuredInput
+	structuredAddRPField        int
+	structuredAddEditing        bool
+	structuredAddCreating       bool
+	structuredAddNewKind        caddyfile.Kind
+	structuredAddNewName        structuredInput
+	structuredAddNewArgs        structuredInput
+	structuredAddNewField       int
+	structuredAddNewTop         bool
+	structuredAddReorderTargets []caddyfile.Node
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the
