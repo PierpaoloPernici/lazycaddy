@@ -213,13 +213,10 @@ func TestReverseProxyEditUnavailableOnSite(t *testing.T) {
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	if m.showStructuredAdd {
-		t.Fatal("reverse_proxy edit opened on a site")
-	}
-	if !strings.Contains(m.statusMessage, "reverse_proxy edit unavailable") {
-		t.Fatalf("statusMessage = %q, want reverse_proxy-unavailable error", m.statusMessage)
+	updated, _ := m.startDirectiveForm()
+	m = updated.(*Model)
+	if m.showStructuredAdd || !strings.Contains(m.statusMessage, "directive form unavailable") {
+		t.Fatalf("directive form opened on a site (show=%v, %q)", m.showStructuredAdd, m.statusMessage)
 	}
 }
 
@@ -233,14 +230,19 @@ func TestReverseProxyEditRejectsStaleNode(t *testing.T) {
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})  // site
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRight}) // expand
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})  // reverse_proxy
-	if !m.canEditReverseProxy() {
-		t.Fatal("canEditReverseProxy = false on the reverse_proxy node")
+	if !m.canEditDirectiveForm() {
+		t.Fatal("canEditDirectiveForm = false on the reverse_proxy node")
 	}
 	m.selectedItem().node.Range.Start = 99999
-	updated, _ := m.startReverseProxyEdit()
+	// A stale node identity is rejected by the planner-driven gate, so the
+	// form never opens and no edit can target the wrong bytes.
+	if m.canEditDirectiveForm() {
+		t.Fatal("canEditDirectiveForm = true on a stale node")
+	}
+	updated, _ := m.startDirectiveForm()
 	m = updated.(*Model)
-	if !strings.Contains(m.statusMessage, "reverse_proxy edit unavailable") {
-		t.Fatalf("statusMessage = %q, want planner rejection", m.statusMessage)
+	if m.showStructuredAdd {
+		t.Fatal("form opened on a stale node")
 	}
 }
 
@@ -319,14 +321,14 @@ func TestStructuredAddPickerClampsCursorAfterFilter(t *testing.T) {
 		t.Errorf("filtered cursor = %d, want clamped to 0", m.structuredAddCursor)
 	}
 	// Enter with the clamped cursor picks the single match and opens the
-	// args form (encode is not reverse_proxy).
+	// encode form.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
-	if m.structuredAddMode != structuredAddArgs || m.structuredAddName != "encode" {
-		t.Fatalf("enter state = mode:%v name:%q, want the encode args form", m.structuredAddMode, m.structuredAddName)
+	if m.structuredAddMode != structuredAddForm || m.structuredAddName != "encode" {
+		t.Fatalf("enter state = mode:%v name:%q, want the encode form", m.structuredAddMode, m.structuredAddName)
 	}
-	if !strings.Contains(stripANSI(m.structuredAddView(80, 20)), "args>") {
-		t.Fatal("args form does not render the args prompt")
+	if !strings.Contains(stripANSI(m.structuredAddView(80, 20)), "formats>") {
+		t.Fatal("encode form does not render the formats field")
 	}
 }
 
@@ -368,17 +370,17 @@ func TestStructuredAddPickerEnterClampsCursor(t *testing.T) {
 	// A cursor beyond the filtered list is clamped to the last item. With
 	// the comment entry sorted alphabetically, the last item on a
 	// top-level block is a real directive: Enter selects tls and opens
-	// the args form.
+	// the tls form.
 	m.structuredAddCursor = 99
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddArgs || m.structuredAddName != "tls" {
-		t.Fatalf("enter clamped to mode %v name %q, want the args form for tls", m.structuredAddMode, m.structuredAddName)
+	if m.structuredAddMode != structuredAddForm || m.structuredAddName != "tls" {
+		t.Fatalf("enter clamped to mode %v name %q, want the tls form", m.structuredAddMode, m.structuredAddName)
 	}
 }
 
 // --- structured add: args flow and reverse_proxy form -----------------------
 
-func TestStructuredAddArgsFlow(t *testing.T) {
+func TestStructuredAddEncodeFormFlow(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
 	}))
@@ -389,20 +391,25 @@ func TestStructuredAddArgsFlow(t *testing.T) {
 	for _, r := range []rune("encode") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // select encode → args form
-	if m.structuredAddMode != structuredAddArgs {
-		t.Fatalf("mode = %v, want args", m.structuredAddMode)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // select encode → form
+	if m.structuredAddMode != structuredAddForm || m.structuredAddName != "encode" {
+		t.Fatalf("mode = %v name = %q, want the encode form", m.structuredAddMode, m.structuredAddName)
+	}
+	// The matcher field is first: move to formats and type gzip.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.structuredAddFieldCursor != 1 {
+		t.Fatalf("field cursor = %v, want formats", m.structuredAddFieldCursor)
 	}
 	for _, r := range []rune("gzip") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	if got := m.structuredAddInput.String(); got != "gzip" {
-		t.Fatalf("args input = %q, want gzip", got)
+	if got := m.structuredAddFields[1].String(); got != "gzip" {
+		t.Fatalf("formats input = %q, want gzip", got)
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
 	if cmd == nil {
-		t.Fatal("args submit did not return a validation command")
+		t.Fatal("form submit did not return a validation command")
 	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
@@ -463,28 +470,28 @@ func TestStructuredReverseProxyFormNavigation(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddReverseProxy {
+	if m.structuredAddMode != structuredAddForm {
 		t.Fatalf("mode = %v, want reverse_proxy form", m.structuredAddMode)
 	}
 	// Enter on the matcher field moves to upstreams.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
-	if m.structuredAddRPField != structuredReverseProxyMatcher {
-		t.Fatalf("shift+tab field = %v, want matcher", m.structuredAddRPField)
+	if m.structuredAddFieldCursor != 0 {
+		t.Fatalf("shift+tab field = %v, want matcher", m.structuredAddFieldCursor)
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
-	if cmd != nil || m.structuredAddRPField != structuredReverseProxyUpstreams {
-		t.Fatalf("enter on matcher = cmd:%v field:%v, want move to upstreams", cmd != nil, m.structuredAddRPField)
+	if cmd != nil || m.structuredAddFieldCursor != 1 {
+		t.Fatalf("enter on matcher = cmd:%v field:%v, want move to upstreams", cmd != nil, m.structuredAddFieldCursor)
 	}
 	// Typing goes to the active field.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@api")})
-	if got := m.structuredAddMatcher.String(); got != "@api" {
+	if got := m.structuredAddFields[0].String(); got != "@api" {
 		t.Fatalf("matcher input = %q, want @api", got)
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("localhost:8080")})
-	if got := m.structuredAddUpstreams.String(); got != "localhost:8080" {
+	if got := m.structuredAddFields[1].String(); got != "localhost:8080" {
 		t.Fatalf("upstreams input = %q, want localhost:8080", got)
 	}
 	// Esc returns to the picker; ctrl+c cancels.
@@ -504,7 +511,7 @@ func TestStructuredReverseProxyFormNavigation(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddReverseProxy {
+	if m.structuredAddMode != structuredAddForm {
 		t.Fatalf("mode = %v, want reverse_proxy form", m.structuredAddMode)
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -524,6 +531,9 @@ func TestStructuredReverseProxyRequiresUpstream(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	// The form starts on the matcher field: move to upstreams, then
+	// submit with an empty value.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
 	if cmd != nil {
@@ -593,12 +603,17 @@ func TestStructuredReverseProxySubmitGuards(t *testing.T) {
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
 
+	reverseProxyFields := func() {
+		m.structuredAddMode = structuredAddForm
+		m.structuredAddName = "reverse_proxy"
+		m.structuredAddFields = []structuredInput{{}, {value: []rune("localhost:8080")}}
+	}
+
 	t.Run("missing document", func(t *testing.T) {
-		m.structuredAddMode = structuredAddReverseProxy
-		m.structuredAddUpstreams = structuredInput{value: []rune("localhost:8080")}
+		reverseProxyFields()
 		m.structuredAddDoc = nil
 		m.showStructuredAdd = true
-		if _, cmd := m.submitStructuredReverseProxy(); cmd != nil {
+		if _, cmd := m.submitStructuredForm(); cmd != nil {
 			t.Fatal("missing-doc submit returned a command")
 		}
 		if m.showStructuredAdd || !strings.Contains(m.statusMessage, "source document is unavailable") {
@@ -608,15 +623,14 @@ func TestStructuredReverseProxySubmitGuards(t *testing.T) {
 	t.Run("planner rejection", func(t *testing.T) {
 		doc := caddyfile.Parse([]byte("example.test {\n\trespond ok\n}\n"))
 		foreign := caddyfile.Node{Kind: caddyfile.KindDirective, Name: "reverse_proxy", Range: caddyfile.SourceRange{Start: 999, End: 1000}}
+		reverseProxyFields()
 		m.structuredAddDoc = doc
 		m.structuredAddParent = foreign
-		m.structuredAddMode = structuredAddReverseProxy
-		m.structuredAddUpstreams = structuredInput{value: []rune("localhost:8080")}
 		m.structuredAddEditing = false
-		if _, cmd := m.submitStructuredReverseProxy(); cmd != nil {
+		if _, cmd := m.submitStructuredForm(); cmd != nil {
 			t.Fatal("planner-rejected submit returned a command")
 		}
-		if !strings.Contains(m.statusMessage, "reverse_proxy unavailable") {
+		if !strings.Contains(m.statusMessage, "reverse_proxy form rejected") {
 			t.Fatalf("statusMessage = %q, want planner rejection", m.statusMessage)
 		}
 	})
@@ -639,8 +653,14 @@ func TestStructuredAddValidationRejectedByErrorDiagnostics(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	// The encode form starts on the matcher field: move to formats and
+	// submit, which runs validation on the candidate.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("form submit did not return a validation command")
+	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
 	if m.pendingEdit != nil || m.showDiff {
@@ -668,6 +688,8 @@ func TestStructuredAddValidationFailureAndWarnings(t *testing.T) {
 			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		}
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		// The form starts on the first field: move to the last field to submit.
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		updated, _ = updated.(*Model).Update(cmd())
 		m = updated.(*Model)
@@ -688,6 +710,8 @@ func TestStructuredAddValidationFailureAndWarnings(t *testing.T) {
 			m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		}
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		// The form starts on the first field: move to the last field to submit.
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		updated, _ = updated.(*Model).Update(cmd())
 		m = updated.(*Model)
@@ -709,6 +733,8 @@ func TestStructuredAddUsesFormattedOutput(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	// The form starts on the first field: move to the last field to submit.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	updated, _ = updated.(*Model).Update(cmd())
 	m = updated.(*Model)

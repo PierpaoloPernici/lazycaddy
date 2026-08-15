@@ -10,10 +10,18 @@ import (
 
 func TestCommandPalette_OpensAndFilters(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
-		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+		"config/Caddyfile": "example.test {\n\tlog {\n\t\toutput file /tmp/lazycaddy-test.log\n\t}\n}\n",
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 100, 30)
+
+	// Select the log directive so the directive form command is visible.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if sel := m.selectedItem(); !sel.hasNode || sel.node.Name != "log" {
+		t.Fatalf("expected the log directive, got %q", sel.label)
+	}
 
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	if !m.showCommandPalette {
@@ -27,7 +35,7 @@ func TestCommandPalette_OpensAndFilters(t *testing.T) {
 		"VALIDATION",
 		"Move selection",
 		"Format & validate",
-		"Edit reverse_proxy fields",
+		"Edit directive form",
 		"Save validated changes",
 		"Esc close",
 		"Documents",
@@ -99,7 +107,7 @@ func TestCommandPalette_KeyCatalogKeepsDirectHotkeys(t *testing.T) {
 		{key: "v", id: commandValidate},
 		{key: "D", id: commandDiff},
 		{key: "s", id: commandSave},
-		{key: "m", id: commandEditReverse},
+		{key: "m", id: commandEditForm},
 		{key: "n", id: commandNew},
 		{key: "o", id: commandReorder},
 		{key: "Ctrl-H", id: commandHelp},
@@ -138,8 +146,8 @@ func TestCommandPalette_CategoriesAndCompactKeys(t *testing.T) {
 	if len(copyCommand.Keys) != 1 || copyCommand.Keys[0] != "y" {
 		t.Fatalf("copy command keys = %#v, want y", copyCommand.Keys)
 	}
-	if command, ok := commandDefinition(commandEditReverse); !ok || command.Category != "Source" {
-		t.Fatalf("reverse_proxy command = %+v, want Source category", command)
+	if command, ok := commandDefinition(commandEditForm); !ok || command.Category != "Source" {
+		t.Fatalf("directive form command = %+v, want Source category", command)
 	}
 	if command, ok := commandDefinition(commandValidate); !ok || command.Category != "Validation" {
 		t.Fatalf("validate command = %+v, want Validation category", command)
@@ -173,31 +181,50 @@ func TestCommandPalette_CategoriesAndCompactKeys(t *testing.T) {
 	}
 }
 
-func TestCommandPalette_ShowsReverseProxyCommandWhenUnavailable(t *testing.T) {
+// TestCommandPalette_FormCommandHiddenWithoutSupportedDirective verifies the
+// directive form command is absent from the palette when the selection is
+// not a directive with a dedicated form, and visible but disabled in
+// read-only mode when it is one.
+func TestCommandPalette_FormCommandHiddenWithoutSupportedDirective(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
-		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+		"config/Caddyfile": "example.test {\n\tlog {\n\t\toutput file /tmp/lazycaddy-test.log\n\t}\n}\n",
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state})
 
-	command, ok := commandDefinition(commandEditReverse)
+	command, ok := commandDefinition(commandEditForm)
 	if !ok {
-		t.Fatal("reverse_proxy command missing from catalog")
+		t.Fatal("directive form command missing from catalog")
+	}
+	// The initial selection is the document row: the form command is hidden.
+	for _, visible := range m.filteredCommands() {
+		if visible.ID == commandEditForm {
+			t.Fatal("directive form command visible without a supported directive selection")
+		}
 	}
 	if command.Enabled(m) {
-		t.Fatal("reverse_proxy command unexpectedly enabled without a reverse_proxy selection")
+		t.Fatal("directive form command unexpectedly enabled without a directive selection")
+	}
+
+	// Select the log directive: the command appears, disabled with the
+	// read-only reason (the state is read-only).
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if sel := m.selectedItem(); !sel.hasNode || sel.node.Name != "log" {
+		t.Fatalf("expected the log directive, got %q", sel.label)
 	}
 	if got := command.Reason(m); got != "read-only mode" {
-		t.Errorf("reverse_proxy command reason = %q, want read-only mode", got)
+		t.Errorf("directive form command reason = %q, want read-only mode", got)
 	}
 	found := false
 	for _, visible := range m.filteredCommands() {
-		if visible.ID == commandEditReverse {
+		if visible.ID == commandEditForm {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("reverse_proxy command was filtered out when unavailable")
+		t.Fatal("directive form command was filtered out on a supported directive")
 	}
 }
 

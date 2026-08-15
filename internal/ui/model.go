@@ -429,9 +429,9 @@ type Model struct {
 	structuredAddName           string
 	structuredAddItems          []string
 	structuredAddCursor         int
-	structuredAddMatcher        structuredInput
-	structuredAddUpstreams      structuredInput
-	structuredAddRPField        int
+	structuredAddFields         []structuredInput
+	structuredAddFieldLabels    []string
+	structuredAddFieldCursor    int
 	structuredAddEditing        bool
 	structuredAddCreating       bool
 	structuredAddNewKind        caddyfile.Kind

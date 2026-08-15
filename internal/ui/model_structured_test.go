@@ -102,7 +102,7 @@ func TestStructuredAddPickerSelectsDirectiveBeforeArguments(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddReverseProxy || m.structuredAddName != "reverse_proxy" {
+	if m.structuredAddMode != structuredAddForm || m.structuredAddName != "reverse_proxy" {
 		t.Fatalf("picker state = mode:%v name:%q, want reverse_proxy form", m.structuredAddMode, m.structuredAddName)
 	}
 	if !strings.Contains(m.View(), "upstreams>") || !strings.Contains(m.View(), "matcher>") {
@@ -178,7 +178,7 @@ func TestStructuredReverseProxyFormOpensHelp(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddReverseProxy {
+	if m.structuredAddMode != structuredAddForm {
 		t.Fatalf("structured add mode = %v, want reverse_proxy form", m.structuredAddMode)
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
@@ -307,11 +307,17 @@ func TestStructuredAddDiffEnterSaves(t *testing.T) {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	// The reverse_proxy form starts on the matcher field: move to
+	// upstreams before typing.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	for _, r := range []rune("localhost:8080") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("form submit did not return a validation command")
+	}
 	updated, _ = m.Update(cmd())
 	m = updated.(*Model)
 	if !m.showDiff {
@@ -345,13 +351,18 @@ func TestStructuredReverseProxyEditPlansAndOpensDiff(t *testing.T) {
 	if !m.showStructuredAdd || !m.structuredAddEditing {
 		t.Fatalf("reverse_proxy edit state = show:%v editing:%v, want open edit form", m.showStructuredAdd, m.structuredAddEditing)
 	}
-	if got := m.structuredAddMatcher.String(); got != "@api" {
+	if got := m.structuredAddFields[0].String(); got != "@api" {
 		t.Fatalf("prefilled matcher = %q, want @api", got)
 	}
-	if got := m.structuredAddUpstreams.String(); got != "localhost:8080 app-02:8080" {
+	if got := m.structuredAddFields[1].String(); got != "localhost:8080 app-02:8080" {
 		t.Fatalf("prefilled upstreams = %q, want both upstreams", got)
 	}
-	for len(m.structuredAddUpstreams.value) > 0 {
+	// Move to the upstreams field before editing it.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.structuredAddFieldCursor != 1 {
+		t.Fatalf("field cursor = %v, want upstreams", m.structuredAddFieldCursor)
+	}
+	for len(m.structuredAddFields[1].value) > 0 {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyHome})
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDelete})
 	}
