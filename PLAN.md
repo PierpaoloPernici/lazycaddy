@@ -768,14 +768,14 @@ escape hatch for arbitrary comment and source changes.
   hand-authored implementations; build-time form-schema generation from Caddy
   sources or documentation is deferred to v0.4 so it does not become a second
   syntax authority.
-- Add editable top-level comment groups as source annotations (PR #43). Detect
+- [x] Add editable top-level comment groups as source annotations (PR #43). Detect
   contiguous full-line comments outside structural blocks, preserve their
   exact byte ranges and keep them separate from `caddyfile.Node` values. Show
   a virtual, collapsed `comments (N)` branch under each document; each leaf
   identifies its line range, a short preview and, when available, the nearby
   block it documents. Selecting a comment group reveals its exact range in the
   source pane and enables `e` for editing only that range.
-- Make `a` context-aware for comment insertion: on a document, offer file
+- [x] Make `a` context-aware for comment insertion: on a document, offer file
   header/footer placement; on a top-level block, offer insertion before or
   after the block; on a comment group, append a new group after it. Open the
   new comment in the configured editor with a comment template, accept one or
