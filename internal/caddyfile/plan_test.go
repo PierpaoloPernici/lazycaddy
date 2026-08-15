@@ -438,14 +438,14 @@ func TestInsertableDirectiveNamesAreContextAware(t *testing.T) {
 	globals := findNode(t, doc, "")
 	site := findNode(t, doc, "example.test")
 	route := findNode(t, doc, "route")
-	if got := InsertableDirectiveNames(globals); !reflect.DeepEqual(got, []string{"log"}) {
-		t.Fatalf("global insertable directives = %v, want [log]", got)
+	if got := InsertableDirectiveNames(globals); !reflect.DeepEqual(got, []string{"import", "log"}) {
+		t.Fatalf("global insertable directives = %v, want [import log]", got)
 	}
-	if got := InsertableDirectiveNames(site); len(got) != 9 || got[0] != "encode" || got[len(got)-1] != "tls" {
+	if got := InsertableDirectiveNames(site); len(got) != 10 || got[0] != "encode" || got[len(got)-1] != "tls" {
 		t.Fatalf("site insertable directives = %v, want sorted common directives", got)
 	}
-	if got := InsertableDirectiveNames(route); len(got) != 7 {
-		t.Fatalf("route insertable directives = %v, want 7 handler directives", got)
+	if got := InsertableDirectiveNames(route); len(got) != 8 {
+		t.Fatalf("route insertable directives = %v, want 8 handler directives", got)
 	}
 }
 
