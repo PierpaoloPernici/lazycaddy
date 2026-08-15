@@ -283,6 +283,80 @@ func TestEditorError_ClearsCommentState(t *testing.T) {
 	}
 }
 
+// TestCommentInsert_GuardBranches verifies startCommentInsert refuses a
+// missing document, a missing editor, read-only mode and a busy model.
+func TestCommentInsert_GuardBranches(t *testing.T) {
+	writable := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	ro := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	withEditor := newLoadedModel(t, fakeLoader{state: writable}, &fakeFormatter{}, &fakeSaver{}, &fakeEditor{})
+	withEditor = resize(withEditor, 120, 30)
+
+	// No document.
+	model, cmd := withEditor.startCommentInsert(nil, 0, commentTemplate)
+	m := model.(*Model)
+	if cmd != nil || !strings.Contains(m.statusMessage, "source document is unavailable") {
+		t.Errorf("nil doc: cmd=%v status=%q", cmd != nil, m.statusMessage)
+	}
+	// No editor configured.
+	noEditor := newLoadedModel(t, fakeLoader{state: writable}, &fakeFormatter{}, &fakeSaver{})
+	model, cmd = noEditor.startCommentInsert(noEditor.state.Graph.Root, 0, commentTemplate)
+	m = model.(*Model)
+	if cmd != nil || !strings.Contains(m.statusMessage, "no editor configured") {
+		t.Errorf("no editor: cmd=%v status=%q", cmd != nil, m.statusMessage)
+	}
+	// Read-only mode.
+	roModel := newLoadedModel(t, fakeLoader{state: ro}, &fakeFormatter{}, &fakeSaver{}, &fakeEditor{})
+	model, cmd = roModel.startCommentInsert(roModel.state.Graph.Root, 0, commentTemplate)
+	m = model.(*Model)
+	if cmd != nil || !strings.Contains(m.statusMessage, "read-only mode") {
+		t.Errorf("read-only: cmd=%v status=%q", cmd != nil, m.statusMessage)
+	}
+	// Busy model: the insertion is refused without touching the state.
+	busy := withEditor
+	busy.saving = true
+	model, cmd = busy.startCommentInsert(busy.state.Graph.Root, 0, commentTemplate)
+	m = model.(*Model)
+	if cmd != nil || m.editing || m.commentInsertActive {
+		t.Errorf("busy: cmd=%v editing=%v insert=%v", cmd != nil, m.editing, m.commentInsertActive)
+	}
+}
+
+// TestCommentInsert_PrepareErrorClearsState verifies a Prepare failure in
+// a comment insertion clears the insert state and surfaces the error.
+func TestCommentInsert_PrepareErrorClearsState(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "# header\nexample.test {\n}\n",
+	}))
+	editor := &fakeEditor{prepareErr: errors.New("boom")}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	for i := 0; i < 3; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := m.selectedItem(); sel.comment == nil {
+		t.Fatalf("expected a comment leaf, got %q", sel.label)
+	}
+	updated, launch := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	msg := launch()
+	errMsg, ok := msg.(editorErrorMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorErrorMsg", msg)
+	}
+	m.Update(errMsg)
+	if m.commentInsertActive || m.commentInsertPos != 0 || m.editing {
+		t.Fatalf("insert state not cleared after the error: active=%v pos=%d editing=%v", m.commentInsertActive, m.commentInsertPos, m.editing)
+	}
+	if !strings.Contains(m.statusMessage, "boom") {
+		t.Errorf("status = %q, want the prepare error", m.statusMessage)
+	}
+}
+
 // TestCommentContentOK verifies the comment-only content guard accepts
 // comment lines and blanks and rejects any non-comment content.
 func TestCommentContentOK(t *testing.T) {

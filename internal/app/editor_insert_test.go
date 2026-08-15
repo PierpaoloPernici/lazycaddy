@@ -40,6 +40,13 @@ func TestEditorPrepareInsert_SeedsTemplateAtOffset(t *testing.T) {
 	}
 }
 
+func TestEditorPrepareInsert_NilDocument(t *testing.T) {
+	e := newTestEditor(t)
+	if _, err := e.PrepareInsert(context.Background(), nil, 0, "# \n"); err == nil {
+		t.Fatal("PrepareInsert with a nil document must fail")
+	}
+}
+
 func TestEditorPrepareInsert_InvalidOffset(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "Caddyfile")

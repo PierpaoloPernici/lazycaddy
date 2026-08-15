@@ -295,6 +295,59 @@ func TestCommandPalette_DisabledReasons(t *testing.T) {
 	}
 }
 
+// TestCommandPalette_AddCommandReasons verifies the add command gates and
+// reasons across the writable/read-only, formatter and selection states.
+func TestCommandPalette_AddCommandReasons(t *testing.T) {
+	addCmd, ok := commandDefinition(commandAdd)
+	if !ok {
+		t.Fatal("commandAdd not found")
+	}
+	ro := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	writable := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+
+	// Read-only mode: disabled with the read-only reason.
+	roModel := newLoadedModel(t, fakeLoader{state: ro}, &fakeSaver{}, &fakeFormatter{})
+	if addCmd.Enabled(roModel) {
+		t.Error("add Enabled = true in read-only mode")
+	}
+	if got := addCmd.Reason(roModel); got != "read-only mode" {
+		t.Errorf("add Reason(ro) = %q, want %q", got, "read-only mode")
+	}
+	// Writable but no Caddy binary: the formatter reason.
+	noFormatter := newLoadedModel(t, fakeLoader{state: writable}, &fakeSaver{})
+	if got := addCmd.Reason(noFormatter); got != "Caddy binary unavailable" {
+		t.Errorf("add Reason(no formatter) = %q, want %q", got, "Caddy binary unavailable")
+	}
+	// Writable with everything, on the virtual comments branch: the
+	// selection reason (the branch is not a document).
+	withComments := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": commentFixture,
+	}))
+	branchModel := newLoadedModel(t, fakeLoader{state: withComments}, &fakeSaver{}, &fakeFormatter{})
+	branchModel = resize(branchModel, 120, 30)
+	for i := 0; i < 3; i++ {
+		branchModel = keyPress(t, branchModel, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := branchModel.selectedItem(); sel.label != "comments (3)" {
+		t.Fatalf("expected the comments branch, got %q", sel.label)
+	}
+	if addCmd.Enabled(branchModel) {
+		t.Error("add Enabled = true on the comments branch")
+	}
+	if got := addCmd.Reason(branchModel); got != "select a supported block, document or comment" {
+		t.Errorf("add Reason(branch) = %q, want the selection reason", got)
+	}
+	// Writable with everything, on a document row: enabled (placement).
+	docModel := newLoadedModel(t, fakeLoader{state: writable}, &fakeSaver{}, &fakeFormatter{})
+	if !addCmd.Enabled(docModel) {
+		t.Error("add Enabled = false on a document row, want true (comment placement)")
+	}
+}
+
 func TestCommandPalette_KeyHandling(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",

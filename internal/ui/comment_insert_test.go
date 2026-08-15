@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 )
 
@@ -239,6 +240,252 @@ func TestCommentInsert_PickerHelpOnCommentEntry(t *testing.T) {
 	}
 	if !strings.Contains(m.statusMessage, "no documentation page") {
 		t.Errorf("status = %q, want the no-documentation hint", m.statusMessage)
+	}
+}
+
+// TestCommentInsert_PlacementNavigation verifies the placement sub-picker
+// navigation: up/down move and clamp the cursor, unknown keys are inert,
+// and ctrl+c cancels.
+func TestCommentInsert_PlacementNavigation(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	if m.structuredAddMode != structuredAddCommentPlacement || m.structuredAddCursor != 0 {
+		t.Fatalf("placement state = mode:%v cursor:%d, want placement with cursor 0", m.structuredAddMode, m.structuredAddCursor)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.structuredAddCursor != 1 {
+		t.Fatalf("down moved cursor to %d, want 1", m.structuredAddCursor)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // clamped at the last item
+	if m.structuredAddCursor != 1 {
+		t.Fatalf("down clamped cursor to %d, want 1", m.structuredAddCursor)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.structuredAddCursor != 0 {
+		t.Fatalf("up moved cursor to %d, want 0", m.structuredAddCursor)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyCtrlK})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp}) // clamped at the first item
+	if m.structuredAddCursor != 0 {
+		t.Fatalf("up clamped cursor to %d, want 0", m.structuredAddCursor)
+	}
+	// An unknown key leaves the picker open and the cursor unchanged.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if !m.showStructuredAdd || m.structuredAddCursor != 0 {
+		t.Fatalf("unknown key changed the placement state: show=%v cursor=%d", m.showStructuredAdd, m.structuredAddCursor)
+	}
+	// ctrl+c cancels the flow.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if m.showStructuredAdd {
+		t.Fatal("ctrl+c must close the placement picker")
+	}
+}
+
+// TestCommentInsert_PlacementViewRenders verifies the placement sub-picker
+// renders its options and the footer advertises the placement keys.
+func TestCommentInsert_PlacementViewRenders(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	view := stripANSI(m.View())
+	for _, want := range []string{"Insert comment", commentPlacementTop, commentPlacementBottom, "choose placement"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestCommentInsert_FromDocumentRowBottom verifies the bottom placement
+// inserts at the end of the document.
+func TestCommentInsert_FromDocumentRowBottom(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	editor := &fakeEditor{}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // at the bottom of the file
+	updated, launch := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	launch()
+	if editor.capturedInsertPos != len(src) {
+		t.Fatalf("PrepareInsert pos = %d, want %d (end of the document)", editor.capturedInsertPos, len(src))
+	}
+}
+
+// TestCommentInsert_FromBlockBefore verifies the before-this-block
+// placement inserts at the block start.
+func TestCommentInsert_FromBlockBefore(t *testing.T) {
+	src := "example.test {\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	editor := &fakeEditor{}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	m.structuredAddCursor = 0 // the comment entry, sorted first
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m.structuredAddCursor = 0 // before this block
+	updated, launch := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	launch()
+	wantPos := state.Graph.Root.Nodes[0].Range.Start
+	if editor.capturedInsertPos != wantPos {
+		t.Fatalf("PrepareInsert pos = %d, want %d (start of the site block)", editor.capturedInsertPos, wantPos)
+	}
+}
+
+// TestCommentInsert_UnknownPlacementRejected verifies an unrecognized
+// placement string is refused instead of guessing an offset.
+func TestCommentInsert_UnknownPlacementRejected(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	editor := &fakeEditor{}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	m.structuredAddItems = []string{"somewhere else"}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("unknown placement must not launch an editor")
+	}
+	if !strings.Contains(m.statusMessage, "unknown placement") {
+		t.Errorf("status = %q, want the unknown-placement error", m.statusMessage)
+	}
+	if editor.prepareInsertCalls != 0 {
+		t.Errorf("PrepareInsert called %d times, want 0", editor.prepareInsertCalls)
+	}
+}
+
+// TestCommentInsert_PlacementCursorOutOfRange verifies a stale cursor does
+// not launch an editor.
+func TestCommentInsert_PlacementCursorOutOfRange(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	editor := &fakeEditor{}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	m.structuredAddCursor = 99
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("an out-of-range placement cursor must not launch an editor")
+	}
+	if editor.prepareInsertCalls != 0 {
+		t.Errorf("PrepareInsert called %d times, want 0", editor.prepareInsertCalls)
+	}
+}
+
+// TestCommentInsert_CursorOutOfRangeOnDocRow verifies a stale tree cursor
+// (no selection) refuses a with the add-unavailable hint.
+func TestCommentInsert_CursorOutOfRangeOnDocRow(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 30)
+	m.cursor = 99
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	if m.showStructuredAdd {
+		t.Fatal("a with no selection must not open a picker")
+	}
+	if !strings.Contains(m.statusMessage, "add unavailable") {
+		t.Errorf("status = %q, want the add-unavailable hint", m.statusMessage)
+	}
+}
+
+// TestIsTopLevelNodeNilDocument verifies the defensive nil handling.
+func TestIsTopLevelNodeNilDocument(t *testing.T) {
+	if isTopLevelNode(nil, caddyfile.Node{Name: "x"}) {
+		t.Error("isTopLevelNode(nil, …) = true, want false")
+	}
+}
+
+// TestCommentInsert_UnavailableOnNestedNonHandlerBlock verifies a on a
+// nested non-handler block (a log block inside a site) refuses both the
+// directive flow and the comment flow: comments inside blocks are not
+// first-class groups.
+func TestCommentInsert_UnavailableOnNestedNonHandlerBlock(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\tlog {\n\t\toutput file /tmp/lazycaddy-test.log\n\t}\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	for i := 0; i < 2; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test, log
+	}
+	if sel := m.selectedItem(); !sel.hasNode || sel.node.Name != "log" {
+		t.Fatalf("expected the nested log block, got %q", sel.label)
+	}
+	if m.canAddComment() {
+		t.Error("canAddComment = true on a nested non-handler block")
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	if m.showStructuredAdd {
+		t.Fatal("a on a nested non-handler block must not open a picker")
+	}
+}
+
+// TestCommentInsert_PlacementViewFromPicker verifies the placement view
+// rendered from a top-level block (via the picker entry) names the block
+// as its target.
+func TestCommentInsert_PlacementViewFromPicker(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	m.structuredAddCursor = 0 // the comment entry
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	view := stripANSI(m.View())
+	for _, want := range []string{"Target: example.test", commentPlacementBefore, commentPlacementAfter} {
+		if !strings.Contains(view, want) {
+			t.Errorf("placement view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestCommentInsert_PlacementViewTiny verifies the placement picker still
+// renders in a very small terminal (row-count clamps).
+func TestCommentInsert_PlacementViewTiny(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 30, 6)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Insert comment") {
+		t.Errorf("tiny placement view missing the title:\n%s", view)
 	}
 }
 

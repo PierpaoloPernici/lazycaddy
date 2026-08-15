@@ -144,6 +144,45 @@ func TestCopy_CommentGroupCopiesExactBytes(t *testing.T) {
 	}
 }
 
+// TestTree_ExpandAllWithComments verifies the + key expands the virtual
+// comments branch along with the structural branches.
+func TestTree_ExpandAllWithComments(t *testing.T) {
+	m := newLoadedModel(t, fakeLoader{state: commentState(t)})
+	m = resize(m, 120, 30)
+	labels := itemLabels(m.items)
+	if strings.Contains(labels, "lines 1-2") {
+		t.Fatalf("comment leaves visible before expand-all: %v", labels)
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	labels = itemLabels(m.items)
+	if !strings.Contains(labels, "lines 1-2 · header one → example.test") {
+		t.Errorf("comment leaves not expanded by +: %v", labels)
+	}
+}
+
+// TestCopy_CommentGroupInvalidRange verifies y on a comment leaf whose
+// range is corrupt refuses instead of slicing out of bounds.
+func TestCopy_CommentGroupInvalidRange(t *testing.T) {
+	clip := &fakeClipboard{}
+	m := newLoadedModel(t, fakeLoader{state: commentState(t)}, clip)
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	for i := 0; i < 4; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := m.selectedItem(); sel.comment == nil {
+		t.Fatalf("expected a comment leaf, got %q", sel.label)
+	}
+	m.items[m.cursor].comment.Range.Start = -1
+	m = pressCopy(t, m)
+	if clip.calls != 0 || len(clip.content) != 0 {
+		t.Fatal("copy with an invalid comment range must not touch the clipboard")
+	}
+	if !strings.Contains(m.statusMessage, "comment range is invalid") {
+		t.Errorf("status = %q, want the invalid-range error", m.statusMessage)
+	}
+}
+
 // TestTree_CollapseAllCollapsesCommentBranch verifies the - key
 // collapses the comments branch along with the structural branches.
 func TestTree_CollapseAllCollapsesCommentBranch(t *testing.T) {
