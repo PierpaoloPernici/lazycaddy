@@ -293,6 +293,27 @@ func TestCommentGroups_UnclosedBlockFooterExcluded(t *testing.T) {
 	}
 }
 
+// TestCommentGroups_ScannerLexError verifies scanComments surfaces a
+// lexing error instead of mis-recording comments.
+func TestCommentGroups_ScannerLexError(t *testing.T) {
+	if _, err := scanComments([]byte("respond \"unterminated")); err == nil {
+		t.Fatal("scanComments must surface the unterminated-string lex error")
+	}
+}
+
+// TestCommentGroups_FooterBeyondTokens verifies a comment far beyond the
+// last token line still resolves to depth 0 (the clamped final depth).
+func TestCommentGroups_FooterBeyondTokens(t *testing.T) {
+	src := "example.test {\n}\n\n\n\n\n\n\n\n\n# footer\n"
+	groups := parseGroups(t, src)
+	if len(groups) != 1 {
+		t.Fatalf("groups = %d, want 1 (the footer): %+v", len(groups), groups)
+	}
+	if groups[0].StartLine != 11 {
+		t.Errorf("group start line = %d, want 11", groups[0].StartLine)
+	}
+}
+
 // TestCommentGroups_GroupSummaries verifies the full grouped output of a
 // document that mixes top-level, nested and trailing comments, exercising
 // the After linkage and source order.

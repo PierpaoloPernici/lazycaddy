@@ -74,6 +74,21 @@ func TestTree_CommentBranchExpandShowsLeaves(t *testing.T) {
 	}
 }
 
+// TestTree_BareCommentLeafLabel verifies a bare "#" group renders with a
+// placeholder preview instead of an empty label.
+func TestTree_BareCommentLeafLabel(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "#\nexample.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	labels := itemLabels(m.items)
+	if !strings.Contains(labels, "lines 1-1 · #") {
+		t.Errorf("labels = %v, want the bare-comment placeholder", labels)
+	}
+}
+
 // TestTree_CommentSelectionRevealsRange verifies selecting a comment leaf
 // reveals its exact line range in the source pane and titles the pane
 // with the comment span.
