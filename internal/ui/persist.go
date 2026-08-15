@@ -20,6 +20,8 @@ func pendingEditVerb(pe *pendingEdit) string {
 			return "add"
 		case "new":
 			return "create"
+		case "reorder":
+			return "move after"
 		}
 	}
 	return "save"
@@ -32,6 +34,8 @@ func pendingEditName(pe *pendingEdit) string {
 			return "add"
 		case "new":
 			return "new node"
+		case "reorder":
+			return "move after"
 		}
 	}
 	return "edit"
@@ -242,9 +246,12 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 	pe := m.pendingEdit
 	cleanPath := filepath.Clean(path)
 	idx := -1
-	if pe != nil && pe.itemKey != "" {
+	if pe != nil && pe.itemKey != "" && (pe.operation != "reorder" || pe.startLine <= 0) {
 		// Prefer the exact pre-edit row identity: the node survived at
-		// the same range, so its stable key still matches.
+		// the same range, so its stable key still matches. A reorder with
+		// a recorded destination line skips this: the moved block vacates
+		// its old range, which another same-named sibling may now occupy,
+		// so the key match would land on the wrong row.
 		for i := range m.items {
 			if m.items[i].key == pe.itemKey {
 				idx = i
@@ -254,12 +261,26 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 	}
 	if idx < 0 && pe != nil && pe.nodeName != "" {
 		// The edit moved or resized the node: fall back to the same name
-		// in the saved document.
+		// in the saved document. A reorder records the moved block's exact
+		// post-edit line, so the nearest same-named candidate is the moved
+		// node itself even when siblings repeat (for example multiple
+		// handle blocks). Non-reorder edits keep the first same-name hit.
+		bestDistance := int(^uint(0) >> 1)
 		for i := range m.items {
 			it := &m.items[i]
 			if it.doc != nil && filepath.Clean(it.doc.Path) == cleanPath && it.hasNode && it.node.Name == pe.nodeName {
-				idx = i
-				break
+				if pe.operation != "reorder" || pe.startLine <= 0 {
+					idx = i
+					break
+				}
+				distance := it.node.Range.StartLine - pe.startLine
+				if distance < 0 {
+					distance = -distance
+				}
+				if distance < bestDistance {
+					bestDistance = distance
+					idx = i
+				}
 			}
 		}
 	}

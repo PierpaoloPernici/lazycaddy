@@ -287,6 +287,7 @@ E          Edit entire document (root or imported)
 Ctrl-E     Toggle raw source view
 a          Add (only when supported by the current release)
 d          Delete selected node (confirmation via diff; never on document rows or import directives)
+o          Reorder selected structural block with a same-document sibling (diff confirmation)
 v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
@@ -686,10 +687,17 @@ fixtures, source-preserving planner primitives, semantic roles and advisory
 catalog, structural-navigation primitives, the pane-aware selection model,
 and the planner's `CreateNode` API. The UI now exposes `a` for directive
 insertion, `m` for `reverse_proxy` fields, `n` for structural-node creation,
-`d` for deletion, and pane-aware mouse selection with full clipboard
-integration, all using validation, diff confirmation, save and post-save
+`d` for deletion, `o` for same-document structural reordering, and pane-aware
+mouse selection with full clipboard integration, all using validation, diff
+confirmation, save and post-save
 graph reload where applicable. Official Caddy help is available through
 `Ctrl-H`.
+
+The next structured-editing increment adds editable top-level comment groups.
+Comments remain source annotations rather than parser `Node` values: they are
+selectable source ranges that must not affect structural parsing, folding,
+deletion or reordering. The existing `E` full-document editor remains the
+escape hatch for arbitrary comment and source changes.
 
 - [x] Generalize tree navigation to arbitrary parent/child rows. Document rows,
   including imported documents, remain separate top-level rows, while visible
@@ -746,8 +754,8 @@ graph reload where applicable. Official Caddy help is available through
   compatible blocks. The `a` add action must be capability- and context-aware;
   unsupported or ambiguous insertions remain unavailable rather than guessing.
   The current UI covers directive insertion, `reverse_proxy` field editing,
-  structural-node creation and deletion. Dedicated forms for more common
-  directives and a reorder command remain product work.
+  structural-node creation, deletion and same-document sibling reordering.
+  Dedicated forms for more common directives remain product work.
   The `n` New node action exposes the planner's structural-node creation
   API for top-level sites, snippets, named routes and global options, plus
   nested handler blocks; `a` remains the directive-insertion action. For v0.3,
@@ -755,22 +763,37 @@ graph reload where applicable. Official Caddy help is available through
   hand-authored implementations; build-time form-schema generation from Caddy
   sources or documentation is deferred to v0.4 so it does not become a second
   syntax authority.
+- Add editable top-level comment groups as source annotations. Detect
+  contiguous full-line comments outside structural blocks, preserve their
+  exact byte ranges and keep them separate from `caddyfile.Node` values. Show
+  a virtual, collapsed `comments (N)` branch under each document; each leaf
+  identifies its line range, a short preview and, when available, the nearby
+  block it documents. Selecting a comment group reveals its exact range in the
+  source pane and enables `e` for editing only that range.
+- Make `a` context-aware for comment insertion: on a document, offer file
+  header/footer placement; on a top-level block, offer insertion before or
+  after the block; on a comment group, append a new group after it. Open the
+  new comment in the configured editor with a comment template, accept one or
+  more `#` lines and reject non-comment content with a safe instruction to use
+  `E` for a full document edit. Route additions and edits through validation,
+  diff review, backup, conflict detection, atomic save and post-save graph
+  reload. Preserve blank lines and every byte outside the targeted source
+  range.
 - Node deletion (`d`) is already covered by the exact-range patch plus the
   diff confirmation and post-save graph reload; the v0.3 work extends the
   same safety contract to insertion, reordering and structured directive
   editing.
-- Add inline validation and richer semantic highlighting when the parse tree
-  can identify roles reliably: site addresses, domains, paths, ports, IP/CIDR
-  values, matchers, placeholders, durations, status codes, strings and
-  heredoc boundaries.
+- [x] Add a conservative reorder workflow (`o`) for visible structural rows.
+  The picker moves the selected block after a same-document structural
+  sibling, keeps global options fixed at the top, preserves the exact bytes
+  between the two ranges,
+  and routes the candidate through validation, diff confirmation, backup,
+  conflict detection, atomic save and post-save tree re-anchoring. Hidden leaf
+  directives remain planner-supported but are not exposed as tree targets.
 - [x] Preserve token spans with line/column information alongside byte offsets
   so source selection and copy operations can identify the exact visible text
   without weakening byte-preserving patches. Inline diagnostics still need
   richer semantic validation.
-- Add structural navigation features derived from the parsed source: folding
-  for site blocks, snippets, named routes and nested handlers; navigation from
-  named matcher definitions to references; and brace-aware indentation or
-  movement where the source ranges make it safe.
 - [x] Add an advisory metadata catalog for descriptions and suggestions for common
   directives and global options. The catalog must never define valid syntax or
   hide unknown/plugin directives, and its entries should be version- and
@@ -788,10 +811,21 @@ unrelated bytes, comments and unknown syntax. Structural navigation remains
 usable with partially parsed files, and advisory metadata never prevents
 browsing, raw editing or preservation of unsupported syntax. Mouse selection is
 confined to the active text pane and copies the correct content across source,
-log and other supported views.
+log and other supported views. Top-level comments can be discovered in the
+document tree, edited or added without becoming structural nodes, and every
+comment operation preserves unrelated bytes and follows the normal validation,
+diff, backup and atomic-save safeguards.
 
 ### v0.4 — runtime and TLS dashboards
 
+- Add inline validation and richer semantic highlighting when the parse tree
+  can identify roles reliably: site addresses, domains, paths, ports, IP/CIDR
+  values, matchers, placeholders, durations, status codes, strings and
+  heredoc boundaries. Keep Caddy authoritative for syntax and validation.
+- Add structural navigation features derived from the parsed source: folding
+  for site blocks, snippets, named routes and nested handlers; navigation from
+  named matcher definitions to references; and brace-aware indentation or
+  movement where the source ranges make it safe.
 - Add read-only runtime observability and loaded-config inspection through
   separate, cancellable Admin API fetchers. Each panel must expose explicit
   `loading`, `available`, `stale` and `unavailable` states, refresh without

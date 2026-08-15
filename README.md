@@ -133,6 +133,9 @@ The inspector also provides:
   clipboard command (`pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip`);
 - exact-range node deletion (`d`) with diff confirmation and post-save tree
   rebuilding;
+- moving a structural block after a same-document sibling (`o`) through a
+  picker, with validation, diff confirmation, backup, atomic save and post-save
+  tree re-anchoring;
 - per-document diff review (`D`): the root diffs the validated working
   copy, while imported documents (and the root without a working copy) are
   diffed against their current on-disk bytes; the diff modal supports hunk
@@ -160,9 +163,10 @@ The merged v0.3 foundation also provides:
 - official Caddyfile help from the command palette and structured forms with
   `Ctrl-H`.
 
-The remaining v0.3 work includes dedicated forms for more common directives,
-reorder UI integration, mouse selection, richer inline validation and
-semantic highlighting, and full folding/matcher-reference navigation.
+The remaining v0.3 work includes editable top-level comment groups and
+dedicated forms for more common directives. Richer inline validation,
+semantic highlighting and full folding/matcher-reference navigation are now
+planned for v0.4.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,

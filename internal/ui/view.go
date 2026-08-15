@@ -501,7 +501,11 @@ func (m *Model) footer(width int) string {
 	case m.showReloadConfirm:
 		keys = "Enter reload · Esc cancel"
 	case m.showStructuredAdd:
-		keys = "type directive · Enter plan & validate · Esc cancel"
+		if m.structuredAddMode == structuredAddReorder {
+			keys = "↑/↓ choose sibling · Enter move after & validate · Esc cancel"
+		} else {
+			keys = "type directive · Enter plan & validate · Esc cancel"
+		}
 	case m.showRollbackConfirm:
 		keys = "Enter rollback · Esc cancel"
 	case m.showCommandPalette:

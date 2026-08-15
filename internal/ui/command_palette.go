@@ -29,6 +29,7 @@ const (
 	commandFullEdit      commandID = "full-edit"
 	commandAdd           commandID = "add-structured"
 	commandNew           commandID = "new-node"
+	commandReorder       commandID = "reorder"
 	commandEditReverse   commandID = "edit-reverse-proxy"
 	commandDelete        commandID = "delete"
 	commandBackups       commandID = "backups"
@@ -123,6 +124,17 @@ func commandDefinitions() []uiCommand {
 			}
 			return "select a document or structural block"
 		}},
+		{ID: commandReorder, Category: "Source", Label: "Move selected block after sibling", Description: "move after sibling", Keys: []string{"o"}, Enabled: func(m *Model) bool {
+			return m.canReorderSelected()
+		}, Reason: func(m *Model) string {
+			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
+				return "read-only mode"
+			}
+			if m.formatter == nil {
+				return "Caddy binary unavailable"
+			}
+			return "select a block with a reorderable sibling"
+		}},
 		{ID: commandEditReverse, Category: "Source", Label: "Edit reverse_proxy fields", Description: "matcher and upstreams", Keys: []string{"m"}, Enabled: func(m *Model) bool {
 			return m.canEditReverseProxy()
 		}, Reason: func(m *Model) string {
@@ -210,6 +222,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startStructuredAdd()
 	case commandNew:
 		return m.startNewNode()
+	case commandReorder:
+		return m.startReorder()
 	case commandEditReverse:
 		return m.startReverseProxyEdit()
 	case commandDelete:
