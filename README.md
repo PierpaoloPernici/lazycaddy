@@ -20,11 +20,11 @@
 
 ## Screenshot
 
-The `v0.2.0` TUI combines a navigable document tree, source inspection,
+The TUI combines a navigable document tree, source inspection,
 validation status and explicit editing actions in one terminal workspace.
 
 <p align="center">
-  <img src="docs/assets/lazycaddy-demo.gif" alt="lazycaddy v0.2.0 terminal user interface demo" width="1200">
+  <img src="docs/assets/lazycaddy-demo.gif" alt="lazycaddy terminal user interface demo" width="1200">
 </p>
 
 The project is under active development. Read the project direction and implementation constraints first:
@@ -86,7 +86,8 @@ The release process is documented in [docs/releasing.md](docs/releasing.md).
 
 The lossless Caddyfile parser and patcher are complete. The current application
 is a read-only-by-default inspector with an opt-in format, validate, diff,
-edit, save and reload workflow, plus the first v0.3 structured-editing flows:
+edit, save and reload workflow, and the complete v0.3 structured-editing
+milestone (released as v0.3.0):
 
 - load a Caddyfile and resolve nested imports while keeping imported files as
   separate documents;
@@ -165,9 +166,9 @@ The merged v0.3 foundation also provides:
 - official Caddyfile help from the command palette and structured forms with
   `Ctrl-H`.
 
-The v0.3 structured-editing milestone is complete. Richer inline
-validation, semantic highlighting and full folding/matcher-reference
-navigation are now planned for v0.4.
+The v0.3 structured-editing milestone is complete and released as v0.3.0.
+Richer inline validation, semantic highlighting and full
+folding/matcher-reference navigation are now planned for v0.4.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,
@@ -182,7 +183,8 @@ validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a compact navigation footer and exact
 source clipboard copying with OSC 52 and local fallbacks. The current roadmap
-is to complete the remaining v0.3 structured-editing work without weakening
+is v0.4: richer inline validation, semantic highlighting, full folding and
+matcher-reference navigation, and a runtime/TLS dashboard — without weakening
 the raw-source fallback or byte-preservation guarantees.
 
 The application is read-only by default and never reloads Caddy implicitly.
