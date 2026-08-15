@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -160,6 +161,125 @@ func TestEditorEdit_CommentsBranchNotEditable(t *testing.T) {
 	}
 	if editor.prepareCalls != 0 {
 		t.Errorf("Prepare called %d times, want 0", editor.prepareCalls)
+	}
+}
+
+// TestEditorEdit_CommentShortenedKeepsFollowingBlock verifies a comment
+// edit that shrinks the group is checked against the actual edited bytes
+// only: the following block must not be swallowed into the comment-only
+// check (the original range end no longer bounds the edited content).
+func TestEditorEdit_CommentShortenedKeepsFollowingBlock(t *testing.T) {
+	src := "# a\n# b\nexample.test {\n\trespond ok\n}\n"
+	composed := "# x\nexample.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(src),
+		Content:      []byte(composed),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	for i := 0; i < 3; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := m.selectedItem(); sel.comment == nil {
+		t.Fatalf("expected a comment leaf, got %q", sel.label)
+	}
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if !m.showDiff {
+		t.Fatalf("a shortened comment edit must open the diff; status = %q", m.statusMessage)
+	}
+}
+
+// TestEditorEdit_CommentLengthenedNonCommentRejected verifies non-comment
+// bytes appended at the end of a lengthened comment group do not escape
+// the comment-only check (the original range end no longer bounds the
+// edited content).
+func TestEditorEdit_CommentLengthenedNonCommentRejected(t *testing.T) {
+	src := "# a\nexample.test {\n}\n"
+	composed := "# a\nrespond ok\nexample.test {\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	editor := &fakeEditor{result: app.EditResult{
+		Original:     []byte(src),
+		Content:      []byte(composed),
+		Changed:      true,
+		SnapshotPath: "snap-1",
+	}}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	for i := 0; i < 3; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := m.selectedItem(); sel.comment == nil {
+		t.Fatalf("expected a comment leaf, got %q", sel.label)
+	}
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if m.showDiff || m.pendingEdit != nil {
+		t.Fatal("a lengthened non-comment edit must be rejected")
+	}
+	if !strings.Contains(m.statusMessage, "must contain only # comment lines") {
+		t.Errorf("status = %q, want the comment-only instruction", m.statusMessage)
+	}
+}
+
+// TestEditorError_ClearsCommentState verifies a Prepare failure during a
+// comment edit clears the comment state, so the next (node) round-trip is
+// not wrongly checked as a comment edit.
+func TestEditorError_ClearsCommentState(t *testing.T) {
+	src := "# header\nexample.test {\n\trespond ok\n}\n"
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	editor := &fakeEditor{prepareErr: errors.New("boom")}
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{}, editor)
+	m = resize(m, 120, 30)
+	m = expandAll(m)
+	for i := 0; i < 3; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := m.selectedItem(); sel.comment == nil {
+		t.Fatalf("expected a comment leaf, got %q", sel.label)
+	}
+	// First round-trip: a comment edit whose Prepare fails.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	msg := cmd()
+	errMsg, ok := msg.(editorErrorMsg)
+	if !ok {
+		t.Fatalf("got %T, want editorErrorMsg", msg)
+	}
+	m.Update(errMsg)
+	if m.commentEditStartLine != 0 || m.commentInsertActive {
+		t.Fatalf("comment state not cleared after the error: startLine=%d insert=%v", m.commentEditStartLine, m.commentInsertActive)
+	}
+	// Second round-trip: a node edit must not be checked as a comment.
+	composed := "# header\nexample.test {\n\trespond ok\n\tencode gzip\n}\n"
+	editor.prepareErr = nil
+	editor.result = app.EditResult{
+		Original:     []byte(src),
+		Content:      []byte(composed),
+		Changed:      true,
+		SnapshotPath: "snap-2",
+	}
+	// Back to the site block row: leaf, comments branch, example.test.
+	for i := 0; i < 2; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if sel := m.selectedItem(); !sel.hasNode {
+		t.Fatalf("expected the site block, got %q", sel.label)
+	}
+	done := pressEditorKey(t, m)
+	m.Update(done)
+	if !m.showDiff {
+		t.Fatalf("node edit must open the diff after a comment error; status = %q", m.statusMessage)
 	}
 }
 

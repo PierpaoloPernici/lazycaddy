@@ -34,6 +34,13 @@ func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 	if m.saving || m.editing || m.busy || m.reloading || m.deleting || m.rollingBack {
 		return m, nil
 	}
+	// A fresh round-trip never inherits comment state from a previous one,
+	// even when the previous one failed before handleEditorDone could
+	// clear it (handleEditorError and a failed session start clear it
+	// too, so the state is always consistent).
+	m.commentEditStartLine = 0
+	m.commentInsertActive = false
+	m.commentInsertPos = 0
 	sel := m.selectedItem()
 	if sel == nil || sel.doc == nil {
 		return m, nil
@@ -120,6 +127,10 @@ func (m *Model) startCommentInsert(doc *caddyfile.Document, pos int, template st
 	if m.saving || m.editing || m.busy || m.reloading || m.deleting || m.rollingBack {
 		return m, nil
 	}
+	// A fresh round-trip never inherits comment state from a previous one.
+	m.commentEditStartLine = 0
+	m.commentInsertActive = false
+	m.commentInsertPos = 0
 	m.editing = true
 	m.commentInsertActive = true
 	m.commentInsertPos = pos
@@ -142,6 +153,11 @@ func (m *Model) handleEditorReady(msg editorReadyMsg) (tea.Model, tea.Cmd) {
 	if msg.Session == nil || len(msg.Session.Cmd) == 0 {
 		m.editing = false
 		m.editorSession = nil
+		// A session that never started must not leave comment state
+		// behind for the next round-trip.
+		m.commentEditStartLine = 0
+		m.commentInsertActive = false
+		m.commentInsertPos = 0
 		m.statusMessage = "✗ editor session could not start"
 		return m, nil
 	}
@@ -243,16 +259,20 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ editor session missing a result"
 		return m, nil
 	}
-	if commentEdit && len(result.Content) > session.Range.Start {
+	if commentEdit {
 		// A comment edit must stay a comment: non-comment content inside
 		// the edited range is rejected with an instruction to use E for a
 		// full-document edit, keeping comment groups as source annotations
-		// that never become structural nodes.
-		end := session.Range.End
-		if end > len(result.Content) {
-			end = len(result.Content)
-		}
-		if !commentContentOK(result.Content[session.Range.Start:end]) {
+		// that never become structural nodes. The edited bytes occupy the
+		// original range length plus the document-length delta, because
+		// the operator may have shortened or lengthened the group: the
+		// original range end would either swallow the following block
+		// (shortened group) or let appended non-comment bytes escape the
+		// check (lengthened group).
+		editedLen := len(result.Content) - len(result.Original) + (session.Range.End - session.Range.Start)
+		end := session.Range.Start + editedLen
+		if editedLen < 0 || end < session.Range.Start || end > len(result.Content) ||
+			!commentContentOK(result.Content[session.Range.Start:end]) {
 			m.statusMessage = "✗ comment edit must contain only # comment lines — use E for a full document edit"
 			m.recordError("comment edit", "non-comment content in a comment range", "use E for a full document edit")
 			return m, nil
@@ -329,6 +349,13 @@ func (m *Model) handleEditorError(msg editorErrorMsg) (tea.Model, tea.Cmd) {
 	}
 	m.editing = false
 	m.editorSession = nil
+	// A Prepare or Complete failure ends the round-trip: comment state
+	// must not leak into the next edit, where it would wrongly apply the
+	// comment-only check (or, with a mismatched range, slice out of
+	// bounds).
+	m.commentEditStartLine = 0
+	m.commentInsertActive = false
+	m.commentInsertPos = 0
 	m.statusMessage = "✗ editor: " + msg.Err.Error()
 	if snapshot != "" {
 		m.statusMessage += " (recovery snapshot: " + snapshot + ")"

@@ -201,6 +201,32 @@ func TestCommentInsert_FromCommentGroupAppend(t *testing.T) {
 	}
 }
 
+// TestStructuredAddUnavailableOnCommentsBranch verifies a on the virtual
+// comments branch row is refused: the branch is a container, not a
+// document, so the header/footer placement picker is not offered.
+func TestStructuredAddUnavailableOnCommentsBranch(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": commentFixture,
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 30)
+	// doc, example.test, example.net, comments (3) branch.
+	for i := 0; i < 3; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if sel := m.selectedItem(); sel.label != "comments (3)" {
+		t.Fatalf("expected the comments branch, got %q", sel.label)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	if m.showStructuredAdd {
+		t.Fatal("a on the comments branch must not open a picker")
+	}
+	if !strings.Contains(m.statusMessage, "add unavailable") {
+		t.Errorf("status = %q, want the add-unavailable hint", m.statusMessage)
+	}
+}
+
 // TestCommentInsert_RejectsNonCommentContent verifies an insertion whose
 // composed bytes are not comments is rejected with the E instruction.
 func TestCommentInsert_RejectsNonCommentContent(t *testing.T) {

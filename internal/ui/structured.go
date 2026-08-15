@@ -152,7 +152,9 @@ func (m *Model) canAddComment() bool {
 		return true
 	}
 	if !sel.hasNode {
-		return true // document row
+		// Only the document row itself offers header/footer placement:
+		// the virtual comments branch is a container row, not a document.
+		return sel.key == itemKey(sel.doc, nil)
 	}
 	return isTopLevelNode(sel.doc, sel.node)
 }
