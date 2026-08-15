@@ -456,3 +456,248 @@ func TestDirectiveFormHelpOpensDocs(t *testing.T) {
 		t.Fatal("form help closed the form")
 	}
 }
+
+// TestDirectiveFormRejectsInvalidInput drives every form's guard: invalid
+// or empty field combinations are rejected before any validation or write,
+// with a directive-specific message.
+func TestDirectiveFormRejectsInvalidInput(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
+	}))
+	site := state.Graph.Documents[0].Nodes[0]
+
+	tests := []struct {
+		name    string
+		values  []string
+		wantMsg string
+	}{
+		{name: "respond", values: []string{"", "", ""}, wantMsg: "respond requires a status code or a body"},
+		{name: "redir", values: []string{"", "", ""}, wantMsg: "redir requires a destination"},
+		{name: "file_server", values: []string{"", "weird", ""}, wantMsg: `file_server mode must be "browse"`},
+		{name: "php_fastcgi", values: []string{"", "", ""}, wantMsg: "php_fastcgi requires at least one gateway"},
+		{name: "header", values: []string{"", "", "v", ""}, wantMsg: "header value and replacement require a field"},
+		{name: "tls", values: []string{"", "cert.pem", ""}, wantMsg: "tls requires both a certificate file and a key file, or neither"},
+		{name: "import", values: []string{"", "", ""}, wantMsg: "import requires a pattern"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			formatter := &fakeFormatter{}
+			saver := &fakeSaver{}
+			m := newLoadedModel(t, fakeLoader{state: state}, formatter, saver)
+			m = resize(m, 120, 40)
+			m.startFormModal(state.Graph.Documents[0], site, itemKey(state.Graph.Documents[0], &site), tt.name, nil, false)
+			m.structuredAddFields = make([]structuredInput, len(tt.values))
+			for i, v := range tt.values {
+				m.structuredAddFields[i] = structuredInput{value: []rune(v), cursor: len([]rune(v))}
+			}
+			updated, cmd := m.submitStructuredForm()
+			m = updated.(*Model)
+			if cmd != nil {
+				t.Fatal("invalid submit returned a validation command")
+			}
+			if !strings.Contains(m.statusMessage, tt.wantMsg) {
+				t.Fatalf("statusMessage = %q, want %q", m.statusMessage, tt.wantMsg)
+			}
+			if formatter.calls != 0 || saver.calls != 0 {
+				t.Fatalf("invalid submit touched the pipeline: formatter=%d saver=%d", formatter.calls, saver.calls)
+			}
+		})
+	}
+}
+
+// TestDirectiveFormFileServerBrowseAdd verifies the browse mode survives an
+// insertion through the form.
+func TestDirectiveFormFileServerBrowseAdd(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 40)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	for _, r := range []rune("file_server") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyTab}) // to the mode field
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("browse")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatalf("file_server submit returned no command (status=%q)", m.statusMessage)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if m.pendingEdit == nil || !strings.Contains(string(m.pendingEdit.content), "file_server browse") {
+		t.Fatalf("candidate missing file_server browse: %q", m.pendingEdit.content)
+	}
+}
+
+// TestDirectiveFormUnsupportedNameRejected verifies the submit and the
+// value loader refuse a directive without a form.
+func TestDirectiveFormUnsupportedNameRejected(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	site := state.Graph.Documents[0].Nodes[0]
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 40)
+	m.structuredAddName = "banana"
+	m.structuredAddDoc = state.Graph.Documents[0]
+	m.structuredAddParent = site
+	m.structuredAddFields = []structuredInput{}
+	updated, cmd := m.submitStructuredForm()
+	m = updated.(*Model)
+	if cmd != nil || !strings.Contains(m.statusMessage, "unsupported directive for structured form") {
+		t.Fatalf("submit = cmd:%v msg:%q, want unsupported error", cmd != nil, m.statusMessage)
+	}
+	if _, err := loadFormValues(caddyfile.NewPlanner(state.Graph.Documents[0]), caddyfile.Node{Name: "banana"}); err == nil {
+		t.Fatal("loadFormValues accepted an unsupported directive")
+	}
+}
+
+// TestDirectiveFormBusyRefuses verifies a submit while a structured
+// operation is in flight is ignored.
+func TestDirectiveFormBusyRefuses(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m.structuredAddBusy = true
+	if _, cmd := m.submitStructuredForm(); cmd != nil {
+		t.Fatal("busy submit returned a command")
+	}
+}
+
+// TestLoadFormValuesAmbiguousPerDirective verifies the value loader
+// surfaces the planner's ambiguity refusal for every directive that has a
+// form, so the command palette and the m action disable it consistently.
+func TestLoadFormValuesAmbiguousPerDirective(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{name: "respond", src: "example.test {\n\trespond 200 \"ok\"\n}\n"},
+		{name: "redir", src: "example.test {\n\tredir /a /b 308 extra\n}\n"},
+		{name: "file_server", src: "example.test {\n\tfile_server browse custom.html\n}\n"},
+		// php_fastcgi and encode are variadic (every token after the
+		// matcher is a gateway or format), so they have no ambiguous
+		// positional shape by design.
+		{name: "header", src: "example.test {\n\theader X a b c\n}\n"},
+		{name: "tls", src: "example.test {\n\ttls a b c d\n}\n"},
+		{name: "log", src: "example.test {\n\tlog one two\n}\n"},
+		{name: "import", src: "example.test {\n\timport\n}\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := caddyfile.Parse([]byte(tt.src))
+			if doc.Err != nil {
+				t.Fatalf("Parse: %v", doc.Err)
+			}
+			var target caddyfile.Node
+			walkNodesForForms(doc, func(n caddyfile.Node) bool {
+				if n.Kind == caddyfile.KindDirective && n.Name == tt.name {
+					target = n
+					return true
+				}
+				return false
+			})
+			if target.Name == "" {
+				t.Fatalf("directive %q not found in fixture", tt.name)
+			}
+			if _, err := loadFormValues(caddyfile.NewPlanner(doc), target); err == nil {
+				t.Fatal("loadFormValues accepted an ambiguous construct")
+			}
+		})
+	}
+}
+
+// walkNodesForForms visits the parse tree depth-first, calling visit until
+// it returns true. It mirrors walkNodes for the UI test package without
+// needing the caddyfile walk helper.
+func walkNodesForForms(doc *caddyfile.Document, visit func(n caddyfile.Node) bool) {
+	var walk func(nodes []caddyfile.Node) bool
+	walk = func(nodes []caddyfile.Node) bool {
+		for i := range nodes {
+			if visit(nodes[i]) {
+				return true
+			}
+			if walk(nodes[i].Children) {
+				return true
+			}
+		}
+		return false
+	}
+	walk(doc.Nodes)
+}
+
+// TestLoadFormValuesRoundTrip covers the value loader's redir success path
+// and its php_fastcgi/encode error paths (wrong node identity).
+func TestLoadFormValuesRoundTrip(t *testing.T) {
+	doc := caddyfile.Parse([]byte("example.test {\n\tredir /old /new permanent\n\tphp_fastcgi localhost:9000\n\tencode gzip\n}\n"))
+	if doc.Err != nil {
+		t.Fatalf("Parse: %v", doc.Err)
+	}
+	var redir, php, encode caddyfile.Node
+	walkNodesForForms(doc, func(n caddyfile.Node) bool {
+		switch n.Name {
+		case "redir":
+			redir = n
+		case "php_fastcgi":
+			php = n
+		case "encode":
+			encode = n
+		}
+		return false
+	})
+	values, err := loadFormValues(caddyfile.NewPlanner(doc), redir)
+	if err != nil || len(values) != 3 || values[0] != "/old" || values[1] != "/new" || values[2] != "permanent" {
+		t.Fatalf("redir values = %v err=%v", values, err)
+	}
+	// A stale identity refuses the loader with the planner error.
+	stalePHP := php
+	stalePHP.Range.Start = 99999
+	if _, err := loadFormValues(caddyfile.NewPlanner(doc), stalePHP); err == nil {
+		t.Fatal("loadFormValues accepted a stale php_fastcgi node")
+	}
+	staleEncode := encode
+	staleEncode.Range.Start = 99999
+	if _, err := loadFormValues(caddyfile.NewPlanner(doc), staleEncode); err == nil {
+		t.Fatal("loadFormValues accepted a stale encode node")
+	}
+}
+
+// TestDirectiveFormRedirEditPlansSet verifies the redir form's edit path
+// (editing=true) plans a SetRedirFields replacement, exercising the
+// planner closure the add path never invokes.
+func TestDirectiveFormRedirEditPlansSet(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\tredir /old /new permanent\n}\n",
+	}))
+	doc := state.Graph.Documents[0]
+	var redir caddyfile.Node
+	walkNodesForForms(doc, func(n caddyfile.Node) bool {
+		if n.Kind == caddyfile.KindDirective && n.Name == "redir" {
+			redir = n
+			return true
+		}
+		return false
+	})
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 40)
+	m.startFormModal(doc, redir, itemKey(doc, &redir), "redir", []string{"/old", "/new", "permanent"}, true)
+	m.structuredAddFields[1] = structuredInput{value: []rune("/newer")}
+	updated, cmd := m.submitStructuredForm()
+	m = updated.(*Model)
+	if cmd == nil {
+		t.Fatalf("redir edit submit returned no command (status=%q)", m.statusMessage)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if m.pendingEdit == nil || m.pendingEdit.operation != "edit" {
+		t.Fatalf("pendingEdit = %+v, want a redir edit", m.pendingEdit)
+	}
+	if !strings.Contains(string(m.pendingEdit.content), "redir /old /newer permanent") {
+		t.Fatalf("candidate missing the redir edit: %q", m.pendingEdit.content)
+	}
+}

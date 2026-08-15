@@ -348,6 +348,10 @@ func TestFormFields_GetRejectsWrongDirective(t *testing.T) {
 	doc, p := planDoc(t, "example.test {\n\trespond ok\n}\n")
 	respond := findNode(t, doc, "respond")
 	gets := []func(Node) error{
+		func(n Node) error { _, err := p.GetFileServerFields(n); return err },
+		func(n Node) error { _, err := p.GetPhpFastcgiFields(n); return err },
+		func(n Node) error { _, err := p.GetEncodeFields(n); return err },
+		func(n Node) error { _, err := p.GetHeaderFields(n); return err },
 		func(n Node) error { _, err := p.GetRedirFields(n); return err },
 		func(n Node) error { _, err := p.GetTlsFields(n); return err },
 		func(n Node) error { _, err := p.GetImportFields(n); return err },
@@ -456,5 +460,231 @@ func TestSplitFieldTokens(t *testing.T) {
 	}
 	if got := SplitFieldTokens(""); len(got) != 0 {
 		t.Fatalf("empty tokens = %q, want none", got)
+	}
+}
+
+// TestFormFields_EdgeShapes covers the remaining positional shapes of each
+// grammar: bare directives, single-token variants, matcher preservation in
+// Set and the documented three-argument tls form.
+func TestFormFields_EdgeShapes(t *testing.T) {
+	doc, p := planDoc(t, `example.test {
+	respond
+	redir
+	file_server
+	header
+	tls
+	log
+	encode
+	php_fastcgi
+	import snippets/common
+	respond /x "hello"
+	file_server browse
+	tls internal
+	tls admin@example.test cert.pem key.pem
+	header -X-Remove
+	log named
+	encode /api/* zstd
+	php_fastcgi /php/* localhost:9000
+	header X-Field value
+	header X-Field value replacement
+}
+`)
+
+	respond := findNode(t, doc, "respond")
+	// The first respond node is bare.
+	f, err := p.GetRespondFields(respond)
+	if err != nil {
+		t.Fatalf("bare GetRespondFields: %v", err)
+	}
+	if f.Matcher != "" || f.Status != "" || f.Body != "" {
+		t.Fatalf("bare respond fields = %+v, want all empty", f)
+	}
+
+	redir := findNode(t, doc, "redir")
+	rf, err := p.GetRedirFields(redir)
+	if err != nil {
+		t.Fatalf("bare GetRedirFields: %v", err)
+	}
+	if rf.To != "" || rf.Status != "" {
+		t.Fatalf("bare redir fields = %+v, want empty", rf)
+	}
+
+	fileServer := findNode(t, doc, "file_server")
+	ff, err := p.GetFileServerFields(fileServer)
+	if err != nil {
+		t.Fatalf("bare GetFileServerFields: %v", err)
+	}
+	if ff.Browse {
+		t.Fatal("bare file_server unexpectedly has browse")
+	}
+	// file_server browse sets the mode; a browse removal clears it.
+	browseNode := findNodes(t, doc, "file_server")[1]
+	bf, err := p.GetFileServerFields(browseNode)
+	if err != nil || !bf.Browse {
+		t.Fatalf("browse file_server fields = %+v err=%v, want browse", bf, err)
+	}
+	if _, err := p.SetFileServerFields(browseNode, FileServerFields{Browse: true}); err != nil {
+		t.Fatalf("SetFileServerFields browse: %v", err)
+	}
+
+	// header -X-Remove is a single-token field.
+	hc := findNodes(t, doc, "header")[1]
+	hf, err := p.GetHeaderFields(hc)
+	if err != nil || hf.Field != "-X-Remove" || hf.Value != "" {
+		t.Fatalf("single-token header fields = %+v err=%v", hf, err)
+	}
+
+	tc := findNodes(t, doc, "tls")[1]
+	tf, err := p.GetTlsFields(tc)
+	if err != nil || tf.Email != "internal" {
+		t.Fatalf("tls internal fields = %+v err=%v", tf, err)
+	}
+	three := findNodes(t, doc, "tls")[2]
+	t3, err := p.GetTlsFields(three)
+	if err != nil || t3.Email != "admin@example.test" || t3.CertFile != "cert.pem" || t3.KeyFile != "key.pem" {
+		t.Fatalf("three-token tls fields = %+v err=%v", t3, err)
+	}
+
+	logNode := findNodes(t, doc, "log")[1]
+	lf, err := p.GetLogFields(logNode)
+	if err != nil || lf.Name != "named" {
+		t.Fatalf("named log fields = %+v err=%v", lf, err)
+	}
+
+	encodeNode := findNodes(t, doc, "encode")[1]
+	ef, err := p.GetEncodeFields(encodeNode)
+	if err != nil || ef.Matcher != "/api/*" || len(ef.Formats) != 1 || ef.Formats[0] != "zstd" {
+		t.Fatalf("matcher encode fields = %+v err=%v", ef, err)
+	}
+	if _, err := p.SetEncodeFields(encodeNode, EncodeFields{Matcher: "/api/*", Formats: []string{"gzip"}}); err != nil {
+		t.Fatalf("SetEncodeFields with matcher: %v", err)
+	}
+
+	php := findNodes(t, doc, "php_fastcgi")[1]
+	pf, err := p.GetPhpFastcgiFields(php)
+	if err != nil || pf.Matcher != "/php/*" || len(pf.Upstreams) != 1 {
+		t.Fatalf("matcher php_fastcgi fields = %+v err=%v", pf, err)
+	}
+	if _, err := p.SetPhpFastcgiFields(php, PhpFastcgiFields{Matcher: "/php/*", Upstreams: []string{"localhost:9001"}}); err != nil {
+		t.Fatalf("SetPhpFastcgiFields with matcher: %v", err)
+	}
+
+	importNode := findNode(t, doc, "import")
+	imp, err := p.GetImportFields(importNode)
+	if err != nil || imp.Pattern != "snippets/common" || len(imp.Args) != 0 {
+		t.Fatalf("pattern-only import fields = %+v err=%v", imp, err)
+	}
+
+	// A body followed by a status is the documented respond two-argument
+	// form.
+	bodyStatus := findNodes(t, doc, "respond")[1]
+	bs, err := p.GetRespondFields(bodyStatus)
+	if err != nil || bs.Matcher != "/x" || bs.Body != "\"hello\"" || bs.Status != "" {
+		t.Fatalf("body-only respond fields = %+v err=%v", bs, err)
+	}
+
+	// A single-token header with a value; a three-token header with a
+	// replacement.
+	hv := findNodes(t, doc, "header")[2]
+	hvFields, err := p.GetHeaderFields(hv)
+	if err != nil || hvFields.Field != "X-Field" || hvFields.Value != "value" || hvFields.Replace != "" {
+		t.Fatalf("two-token header fields = %+v err=%v", hvFields, err)
+	}
+	hr := findNodes(t, doc, "header")[3]
+	hrFields, err := p.GetHeaderFields(hr)
+	if err != nil || hrFields.Replace != "replacement" {
+		t.Fatalf("three-token header fields = %+v err=%v", hrFields, err)
+	}
+}
+
+// TestFormFields_PlannerErrors verifies the shared helpers report their
+// error paths: a stale node, a non-directive node and an unlexable header.
+func TestFormFields_PlannerErrors(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\trespond ok\n}\n")
+	respond := findNode(t, doc, "respond")
+	// A stale identity is rejected by every Get before any edit is planned.
+	stale := respond
+	stale.Range.Start = 99999
+	if _, err := p.GetRespondFields(stale); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("stale Get err = %v, want ErrNodeNotFound", err)
+	}
+	// A site node is not a directive.
+	site := findNode(t, doc, "example.test")
+	if _, err := p.GetLogFields(site); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("site Get err = %v, want ErrUnsupported", err)
+	}
+}
+
+// TestSplitFieldTokens_UnlexableInput verifies the fallback keeps the raw
+// text when the field cannot be lexed as a token stream.
+func TestSplitFieldTokens_UnlexableInput(t *testing.T) {
+	got := SplitFieldTokens(`"unclosed`)
+	if len(got) != 1 || got[0] != `"unclosed` {
+		t.Fatalf("tokens = %q, want the raw fallback", got)
+	}
+	// Structural braces are never treated as tokens of a field.
+	if got := SplitFieldTokens("a { b"); len(got) != 2 {
+		t.Fatalf("tokens = %q, want 2 tokens", got)
+	}
+}
+
+// TestFormFields_SetsRejectWrongDirective verifies every Set refuses a node
+// of a different directive with ErrUnsupported before planning an edit.
+func TestFormFields_SetsRejectWrongDirective(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\trespond ok\n}\n")
+	// A site node is never a directive, so every Set must refuse it.
+	site := findNode(t, doc, "example.test")
+	sets := []func(Node) error{
+		func(n Node) error {
+			_, err := p.SetReverseProxyFields(n, ReverseProxyFields{Upstreams: []string{"localhost:8080"}})
+			return err
+		},
+		func(n Node) error { _, err := p.SetRespondFields(n, RespondFields{Status: "200"}); return err },
+		func(n Node) error { _, err := p.SetRedirFields(n, RedirFields{To: "/x"}); return err },
+		func(n Node) error { _, err := p.SetFileServerFields(n, FileServerFields{}); return err },
+		func(n Node) error {
+			_, err := p.SetPhpFastcgiFields(n, PhpFastcgiFields{Upstreams: []string{"x"}})
+			return err
+		},
+		func(n Node) error { _, err := p.SetEncodeFields(n, EncodeFields{}); return err },
+		func(n Node) error { _, err := p.SetHeaderFields(n, HeaderFields{}); return err },
+		func(n Node) error { _, err := p.SetTlsFields(n, TlsFields{}); return err },
+		func(n Node) error { _, err := p.SetLogFields(n, LogFields{}); return err },
+		func(n Node) error { _, err := p.SetImportFields(n, ImportFields{Pattern: "x"}); return err },
+	}
+	for _, set := range sets {
+		if err := set(site); !errors.Is(err, ErrUnsupported) {
+			t.Fatalf("Set err = %v, want ErrUnsupported", err)
+		}
+	}
+}
+
+// TestFormFields_GetSingleTokenShapes covers the remaining single-token
+// shapes of the grammars: a redir destination without a matcher, a bare
+// header, a bare tls and a file_server argument that is not browse.
+func TestFormFields_GetSingleTokenShapes(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\tredir https://example.com\n\theader\n\ttls\n\tfile_server exotic\n}\n")
+
+	redir := findNode(t, doc, "redir")
+	rf, err := p.GetRedirFields(redir)
+	if err != nil || rf.To != "https://example.com" || rf.Status != "" || rf.Matcher != "" {
+		t.Fatalf("single-token redir = %+v err=%v", rf, err)
+	}
+
+	header := findNode(t, doc, "header")
+	hf, err := p.GetHeaderFields(header)
+	if err != nil || hf.Field != "" || hf.Value != "" {
+		t.Fatalf("bare header = %+v err=%v", hf, err)
+	}
+
+	tls := findNode(t, doc, "tls")
+	tf, err := p.GetTlsFields(tls)
+	if err != nil || tf.Email != "" || tf.CertFile != "" || tf.KeyFile != "" {
+		t.Fatalf("bare tls = %+v err=%v", tf, err)
+	}
+
+	fileServer := findNode(t, doc, "file_server")
+	if _, err := p.GetFileServerFields(fileServer); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("exotic file_server err = %v, want ErrAmbiguous", err)
 	}
 }
