@@ -458,3 +458,39 @@ func TestReorderSubmitDefensiveBranches(t *testing.T) {
 		t.Errorf("statusMessage = %q, want the planner rejection", m.statusMessage)
 	}
 }
+
+func TestReorderReanchorsAfterFormatterShift(t *testing.T) {
+	// NewStartLine is computed on the candidate before the real caddy fmt
+	// runs; caddy fmt can shift lines (for example collapsing consecutive
+	// blank lines) before the save. The nearest-same-name re-anchor must
+	// still land on the moved block when the shift is small, which is the
+	// realistic magnitude for blank-line normalization.
+	src := "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\thandle /b {\n\t\trespond b\n\t}\n\thandle /c {\n\t\trespond c\n\t}\n}\n"
+	// The formatter inserts one blank line between the moved block and the
+	// target, pushing the moved handle /c from line 5 to line 6.
+	formatted := "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\n\thandle /c {\n\t\trespond c\n\t}\n\thandle /b {\n\t\trespond b\n\t}\n}\n"
+	fs := map[string]string{
+		"config/Caddyfile": src,
+	}
+	loader := app.NewLoader(config.Settings{
+		ConfigPath: "config/Caddyfile", ReadOnly: false, BackupDir: "config/backups",
+	}, fsReader(fs))
+	saver := &diskSaver{fs: fs, fakeSaver: fakeSaver{result: app.SaveResult{BackupPath: "config/backups/Caddyfile"}}}
+	m := newLoadedModel(t, loader, &fakeFormatter{formatted: []byte(formatted)}, saver)
+	m = resize(m, 120, 30)
+
+	m.cursor = 1 // example.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	m = runReorderAndSave(t, m, 4) // move handle /c after handle /a
+
+	selected := m.selectedItem()
+	if selected == nil || !selected.hasNode || selected.node.Name != "handle" {
+		t.Fatalf("selection after shifted reorder = %+v, want a handle row", selected)
+	}
+	if got := selected.node.Range.StartLine; got != 6 {
+		t.Errorf("selected handle starts at line %d, want 6 (the moved handle /c after the formatter shift)", got)
+	}
+	if got := string(m.state.Graph.Root.Source); got != formatted {
+		t.Errorf("root source after shifted reorder = %q, want formatted bytes %q", got, formatted)
+	}
+}
