@@ -92,7 +92,7 @@ func commandDefinitions() []uiCommand {
 			if m.editor == nil {
 				return "editor unavailable"
 			}
-			return "requires writable mode and a node selection"
+			return "requires writable mode and a block or comment selection"
 		}},
 		{ID: commandFullEdit, Category: "Source", Label: "Edit selected document", Description: "$EDITOR", Keys: []string{"E"}, Enabled: func(m *Model) bool {
 			return m.canEditDocument()
@@ -259,7 +259,7 @@ func (m *Model) commandForKey(key string) (commandID, bool) {
 
 func (m *Model) canEditSelection() bool {
 	sel := m.selectedItem()
-	return m.editor != nil && m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && sel.hasNode
+	return m.editor != nil && m.saver != nil && m.state != nil && !m.state.Settings.ReadOnly && sel != nil && (sel.hasNode || sel.comment != nil)
 }
 
 func (m *Model) canEditDocument() bool {

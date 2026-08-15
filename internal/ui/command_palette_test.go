@@ -279,7 +279,7 @@ func TestCommandPalette_DisabledReasons(t *testing.T) {
 		id     commandID
 		reason string
 	}{
-		{id: commandEdit, reason: "requires writable mode and a node selection"},
+		{id: commandEdit, reason: "requires writable mode and a block or comment selection"},
 		{id: commandFullEdit, reason: "requires writable mode and a document selection"},
 	} {
 		command, ok := commandDefinition(tc.id)

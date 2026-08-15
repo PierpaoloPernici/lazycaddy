@@ -201,6 +201,11 @@ type pendingEdit struct {
 	startLine    int
 	itemKey      string
 	operation    string
+	// commentStartLine is the pre-edit start line of a comment-group
+	// edit (0 otherwise). Comment groups are source annotations with no
+	// node identity, so the post-save re-anchor uses the nearest comment
+	// group by start line instead of a node name.
+	commentStartLine int
 }
 
 // pendingDelete holds a validated document with the selected node removed,
@@ -435,6 +440,12 @@ type Model struct {
 	structuredAddNewField       int
 	structuredAddNewTop         bool
 	structuredAddReorderTargets []caddyfile.Node
+
+	// commentEditStartLine records the start line of a comment-group
+	// edit while the $EDITOR round-trip is in flight (0 otherwise). It
+	// lets handleEditorDone enforce the comment-only content rule on the
+	// edited range.
+	commentEditStartLine int
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the

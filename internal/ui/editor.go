@@ -4,18 +4,20 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
+	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// startEditor begins the $EDITOR round-trip for the selected node. It is
-// gated on a configured editor, writable mode, a free busy state and a
-// selected node. A document row (no node) has no range to edit, so the
-// command is disabled there by design: there is no fallback to opening
-// the whole file.
+// startEditor begins the $EDITOR round-trip for the selected node or
+// comment group. It is gated on a configured editor, writable mode, a
+// free busy state and a selected node or comment group. A document row
+// (no node, no comment) has no range to edit, so the command is disabled
+// there by design: there is no fallback to opening the whole file.
 func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 	if m.state == nil || m.state.Graph == nil {
 		return m, nil
@@ -32,14 +34,23 @@ func (m *Model) startEditor() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	sel := m.selectedItem()
-	if sel == nil || !sel.hasNode || sel.doc == nil {
+	if sel == nil || sel.doc == nil {
+		return m, nil
+	}
+	var r caddyfile.SourceRange
+	switch {
+	case sel.hasNode:
+		r = sel.node.Range
+	case sel.comment != nil:
+		r = sel.comment.Range
+		m.commentEditStartLine = sel.comment.StartLine
+	default:
 		return m, nil
 	}
 	m.editing = true
 	m.statusMessage = "launching editor…"
 	editor := m.editor
 	doc := sel.doc
-	r := sel.node.Range
 	return m, func() tea.Msg {
 		session, err := editor.Prepare(context.Background(), doc, r)
 		if err != nil {
@@ -143,6 +154,10 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	m.editing = false
 	session := m.editorSession
 	m.editorSession = nil
+	// The comment-edit flag applies to exactly one round-trip: capture it
+	// here so a later non-comment edit is never checked against it.
+	commentEdit := m.commentEditStartLine > 0
+	m.commentEditStartLine = 0
 	if msg.ExecErr != nil {
 		m.statusMessage = "✗ could not start editor: " + msg.ExecErr.Error()
 		return m, nil
@@ -187,6 +202,21 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		m.statusMessage = "✗ editor session missing a result"
 		return m, nil
 	}
+	if commentEdit && len(result.Content) > session.Range.Start {
+		// A comment edit must stay a comment: non-comment content inside
+		// the edited range is rejected with an instruction to use E for a
+		// full-document edit, keeping comment groups as source annotations
+		// that never become structural nodes.
+		end := session.Range.End
+		if end > len(result.Content) {
+			end = len(result.Content)
+		}
+		if !commentContentOK(result.Content[session.Range.Start:end]) {
+			m.statusMessage = "✗ comment edit must contain only # comment lines — use E for a full document edit"
+			m.recordError("comment edit", "non-comment content in a comment range", "use E for a full document edit")
+			return m, nil
+		}
+	}
 	// During the editor flow the tree selection is still the edited node;
 	// capture its identity so the post-save tree refresh can re-anchor the
 	// selection even when the edit added or removed sections above it. A
@@ -195,22 +225,28 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	nodeName := ""
 	startLine := 0
 	itemKey := ""
+	commentStartLine := 0
 	if session.Mode == app.EditNode {
 		if sel := m.selectedItem(); sel != nil && sel.hasNode {
 			nodeName = sel.node.Name
 			startLine = sel.node.Range.StartLine
 			itemKey = sel.key
+		} else if sel := m.selectedItem(); sel != nil && sel.comment != nil {
+			startLine = sel.comment.StartLine
+			commentStartLine = sel.comment.StartLine
+			itemKey = sel.key
 		}
 	}
 	m.pendingEdit = &pendingEdit{
-		path:         session.DocPath,
-		original:     result.Original,
-		content:      result.Content,
-		snapshotPath: result.SnapshotPath,
-		nodeName:     nodeName,
-		startLine:    startLine,
-		itemKey:      itemKey,
-		operation:    "edit",
+		path:             session.DocPath,
+		original:         result.Original,
+		content:          result.Content,
+		snapshotPath:     result.SnapshotPath,
+		nodeName:         nodeName,
+		startLine:        startLine,
+		itemKey:          itemKey,
+		operation:        "edit",
+		commentStartLine: commentStartLine,
 	}
 	lines, err := diff.Unified(result.Original, result.Content, session.DocPath, session.DocPath+" (edited)")
 	if err != nil {
@@ -247,4 +283,21 @@ func recoverySnapshotNext(snapshotPath string) string {
 		return "the pre-edit snapshot survives for recovery: " + snapshotPath
 	}
 	return "retry the edit once the editor is available"
+}
+
+// commentContentOK reports whether every non-blank line of content is a
+// full-line comment: a '#' after optional leading whitespace. It guards
+// comment edits and comment insertions so a comment range never becomes
+// a structural construct; blank lines are allowed inside a group.
+func commentContentOK(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "#") {
+			return false
+		}
+	}
+	return true
 }

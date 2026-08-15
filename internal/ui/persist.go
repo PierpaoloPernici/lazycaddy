@@ -284,6 +284,26 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 			}
 		}
 	}
+	if idx < 0 && pe != nil && pe.commentStartLine > 0 {
+		// A comment edit can add or remove lines inside the group, so its
+		// range (and its stable key) may change. Comment groups carry no
+		// node identity: re-anchor on the nearest comment group by its
+		// start line in the saved document.
+		bestDistance := int(^uint(0) >> 1)
+		for i := range m.items {
+			it := &m.items[i]
+			if it.doc != nil && filepath.Clean(it.doc.Path) == cleanPath && it.comment != nil {
+				distance := it.comment.StartLine - pe.commentStartLine
+				if distance < 0 {
+					distance = -distance
+				}
+				if distance < bestDistance {
+					bestDistance = distance
+					idx = i
+				}
+			}
+		}
+	}
 	if idx < 0 {
 		// Fall back to the document row of the saved document.
 		for i := range m.items {
