@@ -23,18 +23,25 @@ func (m *Model) canReorderSelected() bool {
 	return len(m.reorderTargets(sel.doc, sel.node)) > 0
 }
 
-// reorderTargets returns visible structural siblings, excluding source. The
-// global options node is a valid target because moving after it keeps global
-// options first. Leaf directives remain in the parse tree and can be moved by
-// the planner, but they are not tree rows and therefore are not targets here.
+// reorderTargets returns the visible structural siblings after which the
+// planner can actually move source. The global options node is a valid
+// target because moving after it keeps global options first; leaf directives
+// remain in the parse tree but are not tree rows, so they are not targets.
+// Every returned target has already passed MoveAfter, so the picker never
+// offers a sibling the planner would reject (a no-op "already after" move or
+// a backward move across comments or non-structural directives).
 func (m *Model) reorderTargets(doc *caddyfile.Document, source caddyfile.Node) []caddyfile.Node {
-	siblings, err := caddyfile.NewPlanner(doc).SiblingNodes(source)
+	planner := caddyfile.NewPlanner(doc)
+	siblings, err := planner.SiblingNodes(source)
 	if err != nil {
 		return nil
 	}
 	targets := make([]caddyfile.Node, 0, len(siblings))
 	for _, sibling := range siblings {
 		if nodeKey(&sibling) == nodeKey(&source) || !renderedNode(sibling) {
+			continue
+		}
+		if _, err := planner.MoveAfter(source, sibling); err != nil {
 			continue
 		}
 		targets = append(targets, sibling)

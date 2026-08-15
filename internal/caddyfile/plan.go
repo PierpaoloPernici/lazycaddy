@@ -74,6 +74,11 @@ type PlannedEdit struct {
 	NewText string
 	// Op describes the operation that produced the edit.
 	Op EditOp
+	// NewStartLine is the 1-based line of the moved construct's first byte
+	// after the edit is applied. It is set only by EditReorder operations
+	// (0 otherwise) and lets the UI re-anchor the selection to the moved
+	// block after the document is saved and reloaded.
+	NewStartLine int
 }
 
 // Apply produces the new document bytes for a single edit.
@@ -723,8 +728,9 @@ func (p *Planner) SiblingNodes(n Node) ([]Node, error) {
 // MoveAfter plans moving source immediately after target. Both nodes must be
 // direct children of the same block (or both top-level nodes). The combined
 // span is replaced once, so every byte outside the moved range is preserved.
-// Moving a node backwards across comments or leaf directives is rejected
-// until the UI can represent those source annotations explicitly.
+// Moving a node backwards across comments, leaf directives or other
+// non-structural siblings is rejected until the UI can represent those source
+// annotations explicitly; structural blocks in the gap move wholesale.
 func (p *Planner) MoveAfter(source, target Node) (*PlannedEdit, error) {
 	ls, err := p.locate(source)
 	if err != nil {
@@ -768,30 +774,56 @@ func (p *Planner) MoveAfter(source, target Node) (*PlannedEdit, error) {
 
 	var span SourceRange
 	var text string
+	sourceText := ls.Range.Text(p.doc.Source)
+	targetText := lt.Range.Text(p.doc.Source)
+	// Position of the moved construct's first byte inside NewText. In both
+	// branches the source lands immediately after the target's end, which is
+	// always a line boundary, so the post-edit line of the moved block can be
+	// derived exactly from the newline counts.
+	sourcePos := 0
 	if sourceIndex < targetIndex {
 		span = SourceRange{Start: ls.Range.Start, End: lt.Range.End}
 		gap := string(p.doc.Source[ls.Range.End:lt.Range.Start])
-		text = gap + lt.Range.Text(p.doc.Source) + ls.Range.Text(p.doc.Source)
+		text = gap + targetText + sourceText
+		sourcePos = len(gap) + len(targetText)
 	} else {
 		span = SourceRange{Start: lt.Range.Start, End: ls.Range.End}
 		if !p.safeBackwardMove(lt.Range.End, ls.Range.Start, siblings, targetIndex, sourceIndex) {
-			return nil, fmt.Errorf("%w: cannot move backwards across comments or leaf directives", ErrInvalidContext)
+			return nil, fmt.Errorf("%w: cannot move backwards across comments or non-structural directives", ErrInvalidContext)
 		}
 		gap := string(p.doc.Source[lt.Range.End:ls.Range.Start])
-		text = lt.Range.Text(p.doc.Source) + ls.Range.Text(p.doc.Source) + gap
+		text = targetText + sourceText + gap
+		sourcePos = len(targetText)
 	}
-	return &PlannedEdit{DocID: p.doc.Path, Range: span, NewText: text, Op: EditReorder}, nil
+	newStartLine := bytes.Count(p.doc.Source[:span.Start], []byte{'\n'}) +
+		bytes.Count([]byte(text[:sourcePos]), []byte{'\n'}) + 1
+	return &PlannedEdit{DocID: p.doc.Path, Range: span, NewText: text, Op: EditReorder, NewStartLine: newStartLine}, nil
+}
+
+// structuralNode reports whether n is a full structural construct with an
+// unambiguous source range: the block kinds, or any directive with a nested
+// block. It mirrors the UI's rendered rows so the planner allows backward
+// moves across exactly the siblings the tree presents as rows, while leaf
+// directives and empty anonymous blocks stay conservative blockers.
+func (p *Planner) structuralNode(n Node) bool {
+	switch n.Kind {
+	case KindSite, KindGlobalOptions, KindSnippet, KindNamedRoute:
+		return true
+	default:
+		return len(n.Children) > 0
+	}
 }
 
 // safeBackwardMove reports whether moving a later sibling immediately after
 // an earlier one leaves only structural blocks and whitespace in the gap.
-// Comments and leaf directives are intentionally rejected because their
-// attachment cannot be inferred until comment groups are first-class nodes.
+// Comments, leaf directives and other non-structural siblings are
+// intentionally rejected because their attachment cannot be inferred until
+// comment groups are first-class nodes.
 func (p *Planner) safeBackwardMove(start, end int, siblings []Node, targetIndex, sourceIndex int) bool {
 	cursor := start
 	for i := targetIndex + 1; i < sourceIndex; i++ {
 		n := siblings[i]
-		if n.Kind == KindDirective || n.Range.Start < cursor || n.Range.End > end {
+		if !p.structuralNode(n) || n.Range.Start < cursor || n.Range.End > end {
 			return false
 		}
 		if len(bytes.TrimSpace(p.doc.Source[cursor:n.Range.Start])) > 0 {

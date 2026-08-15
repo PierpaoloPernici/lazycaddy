@@ -437,8 +437,11 @@ func (m *Model) queueStructuredAddValidation(name, operation string, edit *caddy
 	parent := m.structuredAddParent
 	itemKey := m.structuredAddKey
 	anchorStartLine := parent.Range.StartLine
-	if operation == "reorder" && m.structuredAddCursor >= 0 && m.structuredAddCursor < len(m.structuredAddReorderTargets) {
-		anchorStartLine = m.structuredAddReorderTargets[m.structuredAddCursor].Range.StartLine
+	// A reorder edit records the exact post-edit line of the moved block, so
+	// the selection can be re-anchored to the moved node after save even when
+	// several siblings share the same directive name.
+	if edit.NewStartLine > 0 {
+		anchorStartLine = edit.NewStartLine
 	}
 	m.closeStructuredAdd()
 	m.structuredAddBusy = true

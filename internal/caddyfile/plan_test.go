@@ -37,6 +37,23 @@ func findNode(t *testing.T, doc *Document, name string) Node {
 	return *found
 }
 
+// findNodes returns every node with the given name, in document order, so
+// tests can target repeated directive names (for example several handle
+// blocks) by index.
+func findNodes(t *testing.T, doc *Document, name string) []Node {
+	t.Helper()
+	var found []Node
+	walkNodes(doc.Nodes, func(n Node) {
+		if n.Name == name {
+			found = append(found, n)
+		}
+	})
+	if len(found) == 0 {
+		t.Fatalf("node %q not found", name)
+	}
+	return found
+}
+
 // applyPlanned applies a planned edit and asserts the result parses cleanly.
 func applyPlanned(t *testing.T, doc *Document, e *PlannedEdit) []byte {
 	t.Helper()
@@ -1055,6 +1072,76 @@ func TestPlanMoveAfterRejectsBackwardCommentCrossing(t *testing.T) {
 	c := findNode(t, doc, "c")
 	if _, err := p.MoveAfter(c, a); !errors.Is(err, ErrInvalidContext) {
 		t.Fatalf("MoveAfter across comment err = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanMoveAfterRejectsBackwardLeafCrossing(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\trespond ok\n\thandle /b {\n\t\trespond b\n\t}\n}\n")
+	handles := findNodes(t, doc, "handle")
+	if _, err := p.MoveAfter(handles[1], handles[0]); !errors.Is(err, ErrInvalidContext) {
+		t.Fatalf("MoveAfter across leaf err = %v, want ErrInvalidContext", err)
+	}
+}
+
+func TestPlanMoveAfterBackwardAcrossStructuralBlock(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\thandle /b {\n\t\trespond b\n\t}\n\thandle /c {\n\t\trespond c\n\t}\n}\n")
+	handles := findNodes(t, doc, "handle")
+	e, err := p.MoveAfter(handles[2], handles[0])
+	if err != nil {
+		t.Fatalf("MoveAfter handle /c after handle /a: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\thandle /c {\n\t\trespond c\n\t}\n\thandle /b {\n\t\trespond b\n\t}\n}\n"
+	if string(out) != want {
+		t.Errorf("backward structural move result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanMoveAfterBackwardAcrossBlankLines(t *testing.T) {
+	doc, p := planDoc(t, "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\n\thandle /b {\n\t\trespond b\n\t}\n\n\thandle /c {\n\t\trespond c\n\t}\n}\n")
+	handles := findNodes(t, doc, "handle")
+	e, err := p.MoveAfter(handles[2], handles[0])
+	if err != nil {
+		t.Fatalf("MoveAfter across blank lines: %v", err)
+	}
+	out := applyPlanned(t, doc, e)
+	want := "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\thandle /c {\n\t\trespond c\n\t}\n\n\thandle /b {\n\t\trespond b\n\t}\n\n}\n"
+	if string(out) != want {
+		t.Errorf("blank-line move result = %q, want %q", out, want)
+	}
+}
+
+func TestPlanMoveAfterRecordsNewStartLine(t *testing.T) {
+	// Forward move: the source lands immediately after the target's block.
+	doc, p := planDoc(t, "a.example.test {\n\trespond a\n}\nb.example.test {\n\trespond b\n}\n")
+	a := findNode(t, doc, "a.example.test")
+	b := findNode(t, doc, "b.example.test")
+	e, err := p.MoveAfter(a, b)
+	if err != nil {
+		t.Fatalf("MoveAfter forward: %v", err)
+	}
+	if e.NewStartLine != 4 {
+		t.Errorf("forward NewStartLine = %d, want 4 (moved a.example.test starts on line 4)", e.NewStartLine)
+	}
+
+	// Backward move across a structural sibling.
+	doc, p = planDoc(t, "example.test {\n\thandle /a {\n\t\trespond a\n\t}\n\thandle /b {\n\t\trespond b\n\t}\n\thandle /c {\n\t\trespond c\n\t}\n}\n")
+	handles := findNodes(t, doc, "handle")
+	e, err = p.MoveAfter(handles[2], handles[0])
+	if err != nil {
+		t.Fatalf("MoveAfter backward: %v", err)
+	}
+	if e.NewStartLine != 5 {
+		t.Errorf("backward NewStartLine = %d, want 5 (moved handle /c starts on line 5)", e.NewStartLine)
+	}
+
+	// Non-reorder operations leave the field at its zero value.
+	edit, err := p.SetArgs(handles[0], "")
+	if err != nil {
+		t.Fatalf("SetArgs: %v", err)
+	}
+	if edit.NewStartLine != 0 {
+		t.Errorf("SetArgs NewStartLine = %d, want 0", edit.NewStartLine)
 	}
 }
 
