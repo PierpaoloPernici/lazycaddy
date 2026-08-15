@@ -409,7 +409,9 @@ func TestDirectiveFormAnchorLine(t *testing.T) {
 }
 
 // TestDirectiveFormEscClosesEditForm verifies Esc on an m-opened form
-// cancels it instead of returning to a stale picker.
+// cancels it instead of returning to a stale picker, and that the status
+// message names the cancelled directive even though the modal state is
+// reset first.
 func TestDirectiveFormEscClosesEditForm(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n\tlog access {\n\t\toutput file /var/log/access.log\n\t}\n}\n",
@@ -422,8 +424,14 @@ func TestDirectiveFormEscClosesEditForm(t *testing.T) {
 		t.Fatal("form did not open")
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.showStructuredAdd || !strings.Contains(m.statusMessage, "form cancelled") {
-		t.Fatalf("esc = show:%v msg:%q, want cancelled edit form", m.showStructuredAdd, m.statusMessage)
+	if m.showStructuredAdd {
+		t.Fatal("esc left the form open")
+	}
+	if got := m.statusMessage; got != "log form cancelled" {
+		t.Fatalf("statusMessage = %q, want %q", got, "log form cancelled")
+	}
+	if m.structuredAddName != "" {
+		t.Fatalf("structuredAddName = %q, want reset after close", m.structuredAddName)
 	}
 }
 

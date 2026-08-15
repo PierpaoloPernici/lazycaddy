@@ -447,8 +447,11 @@ func (m *Model) updateStructuredFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		if m.structuredAddEditing {
+			// Capture the directive name before the modal state is reset:
+			// closeStructuredAdd clears structuredAddName.
+			name := m.structuredAddName
 			m.closeStructuredAdd()
-			m.statusMessage = m.structuredAddName + " form cancelled"
+			m.statusMessage = name + " form cancelled"
 			return m, nil
 		}
 		m.returnToStructuredPicker()
