@@ -292,7 +292,7 @@ v          Format and validate
 r          Validate and reload (confirmation required)
 s          Save without reload
 D          Diff current changes (selected document; root uses the working copy, imports and the root fallback use on-disk bytes)
-m          Edit reverse_proxy fields (when a reverse_proxy directive is selected)
+m          Edit the selected directive with its dedicated structured form (when a supported directive is selected)
 n          New structural node (normal view); next diff hunk (inside the diff modal)
 N          Previous diff hunk (inside the diff modal)
 h/l        Shift the diff horizontally for long lines (inside the diff modal)
@@ -753,9 +753,14 @@ escape hatch for arbitrary comment and source changes.
   values, insert supported directives, delete selected constructs and reorder
   compatible blocks. The `a` add action must be capability- and context-aware;
   unsupported or ambiguous insertions remain unavailable rather than guessing.
-  The current UI covers directive insertion, `reverse_proxy` field editing,
-  structural-node creation, deletion and same-document sibling reordering.
-  Dedicated forms for more common directives remain product work.
+  The UI covers directive insertion, dedicated structured forms (`m`) for
+  `reverse_proxy`, `respond`, `redir`, `file_server`, `php_fastcgi`, `encode`,
+  `header`, `tls`, `log` and `import`, structural-node creation, deletion and
+  same-document sibling reordering. Forms are explicit, hand-authored
+  implementations over planner Get/Set field models: ambiguous constructs
+  disable the form and keep the raw editor, nested blocks and every byte
+  outside the argument span survive, and both edit (`m`) and insertion (`a`)
+  flows route through validation, diff confirmation and the save pipeline.
   The `n` New node action exposes the planner's structural-node creation
   API for top-level sites, snippets, named routes and global options, plus
   nested handler blocks; `a` remains the directive-insertion action. For v0.3,
@@ -763,7 +768,7 @@ escape hatch for arbitrary comment and source changes.
   hand-authored implementations; build-time form-schema generation from Caddy
   sources or documentation is deferred to v0.4 so it does not become a second
   syntax authority.
-- Add editable top-level comment groups as source annotations. Detect
+- Add editable top-level comment groups as source annotations (PR #43). Detect
   contiguous full-line comments outside structural blocks, preserve their
   exact byte ranges and keep them separate from `caddyfile.Node` values. Show
   a virtual, collapsed `comments (N)` branch under each document; each leaf

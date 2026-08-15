@@ -50,8 +50,49 @@ The following behaviors are the compatibility boundaries for v0.3:
   directive operation that v0.3 supports.
 - [x] Verify that every structured edit preserves unrelated bytes, comments,
   unknown directives and exact file boundaries.
-- [ ] Record any Caddy release-specific change as a fixture, code, UI,
-  documentation or explicit no-change decision.
+- [x] Record the structured-form compatibility decisions below (2026-08-15,
+  official Caddy documentation reviewed against `v2.11.4`).
+
+## Structured forms — compatibility decisions (2026-08-15)
+
+The dedicated directive forms (`m`) are hand-authored over the documented
+positional grammar of each directive. Every decision below is a no-change or
+a conservative-refusal decision: when the form cannot interpret a construct
+without guessing, it is disabled and the raw `$EDITOR` remains the only path,
+so no byte is ever rewritten by a form that does not understand it.
+
+| Directive | Form fields | Refused shapes (raw editor remains) |
+| --- | --- | --- |
+| `reverse_proxy` | matcher, upstreams | — (matcher detection follows Caddy's inline-matcher convention: `@name`, `/path*`, `*`) |
+| `respond` | matcher, status, body | More than one non-matcher argument where the first is a status: the documented grammar is `<status>|<body> [<status>]` (a body followed by a status code), so `respond 200 "ok"` keeps the raw editor |
+| `redir` | matcher, to, status | More than matcher + destination + status; status is free-form (`3xx`, `401`, `temporary`, `permanent`, `html`, placeholders) |
+| `file_server` | matcher, mode (`browse`) | Any positional argument other than the documented `browse` (for example a browse template file on the header line) |
+| `php_fastcgi` | matcher, gateways | — (matcher detection follows the inline-matcher convention) |
+| `encode` | matcher, formats | — (an empty format list is valid: Caddy defaults to zstd + gzip) |
+| `header` | matcher, field, value/find, replace | More than three positional tokens (values spanning several tokens stay raw) |
+| `tls` | email/internal, cert file, key file | More than one marker plus one cert/key pair; a cert without its key is rejected before planning |
+| `log` | logger name | More than one positional token; the documented grammar is `log [<logger_name>]` in both site and global-options contexts |
+| `import` | pattern, args | A bare `import` with no pattern; the optional `{block}` is preserved verbatim (documented since v2.9) |
+
+Additional decisions:
+
+- **Inline matchers.** Caddy treats a leading token starting with `@`, `/` or
+  `*` as an inline matcher for directives that accept one. The forms use the
+  same rule, so a path matcher is never mistaken for an upstream, destination
+  or format. This also fixes `reverse_proxy` matcher detection, which
+  previously treated `/api/*` as an upstream.
+- **Leaf directives.** Leaf directives (no nested block) are not tree rows,
+  matching the existing v0.3 navigation design, so their forms are reachable
+  through `a` (insertion) and through `m` when a block form is present;
+  editing an existing leaf goes through the raw `E` editor. No change to the
+  tree model was made for this increment.
+- **Unknown arguments are never interpreted.** Any positional shape outside
+  the table above returns `ErrAmbiguous` (or `ErrUnsupported` for a different
+  directive) and disables the form. The bytes are never touched.
+- **`respond` status/body order.** The official documentation states that the
+  first non-matcher argument is a status or a body, and that a second argument
+  is a status code after a body. A status followed by another token is
+  therefore treated as ambiguous and keeps the raw editor instead of guessing.
 
 ## Release review procedure
 

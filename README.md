@@ -153,7 +153,9 @@ The inspector also provides:
 The merged v0.3 foundation also provides:
 
 - context-aware directive insertion with `a`;
-- structured `reverse_proxy` field editing with `m`;
+- dedicated structured forms with `m` for `reverse_proxy`, `respond`,
+  `redir`, `file_server`, `php_fastcgi`, `encode`, `header`, `tls`, `log`
+  and `import` (ambiguous constructs keep the raw editor);
 - structural-node creation with `n` for sites, snippets, named routes,
   global options and nested handler blocks;
 - exact-range deletion with `d`, all using byte-preserving patches,
@@ -163,10 +165,9 @@ The merged v0.3 foundation also provides:
 - official Caddyfile help from the command palette and structured forms with
   `Ctrl-H`.
 
-The remaining v0.3 work includes editable top-level comment groups and
-dedicated forms for more common directives. Richer inline validation,
-semantic highlighting and full folding/matcher-reference navigation are now
-planned for v0.4.
+The v0.3 structured-editing milestone is complete. Richer inline
+validation, semantic highlighting and full folding/matcher-reference
+navigation are now planned for v0.4.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,
