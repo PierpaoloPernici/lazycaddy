@@ -170,17 +170,24 @@ func TestNewNodeHelperFunctions(t *testing.T) {
 
 // --- structured add: availability -----------------------------------------
 
-func TestStructuredAddUnavailableOnDocumentRow(t *testing.T) {
+// TestStructuredAddOnDocumentRowOffersCommentPlacement verifies a on a
+// document row opens the comment-placement picker (header/footer), since
+// a document hosts no directives.
+func TestStructuredAddOnDocumentRowOffersCommentPlacement(t *testing.T) {
 	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	if m.showStructuredAdd {
-		t.Fatal("structured add opened on a document row")
+	if !m.showStructuredAdd {
+		t.Fatal("a on a document row must open the comment-placement picker")
 	}
-	if !strings.Contains(m.statusMessage, "add unavailable") {
-		t.Fatalf("statusMessage = %q, want add-unavailable error", m.statusMessage)
+	if m.structuredAddMode != structuredAddCommentPlacement {
+		t.Fatalf("mode = %v, want structuredAddCommentPlacement", m.structuredAddMode)
+	}
+	want := []string{commentPlacementTop, commentPlacementBottom}
+	if strings.Join(m.structuredAddItems, ",") != strings.Join(want, ",") {
+		t.Errorf("placements = %v, want %v", m.structuredAddItems, want)
 	}
 }
 
@@ -335,17 +342,21 @@ func TestStructuredAddPickerHelpClampsCursor(t *testing.T) {
 	})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	// A cursor beyond the filtered list is clamped before help opens.
+	// A cursor beyond the filtered list is clamped to the last item. On a
+	// top-level block the last picker entry is the synthetic comment
+	// entry, which has no documentation page: help is refused locally
+	// instead of opening a non-existent URL.
 	m.structuredAddCursor = 99
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
 	m = updated.(*Model)
-	if cmd == nil {
-		t.Fatal("ctrl+h did not return a browser command")
+	if cmd != nil {
+		t.Fatalf("ctrl+h on the comment entry must not open a browser command")
 	}
-	updated, _ = m.Update(cmd())
-	m = updated.(*Model)
-	if gotURL != "https://caddyserver.com/docs/caddyfile/directives/tls" {
-		t.Errorf("opened URL = %q, want the tls documentation", gotURL)
+	if gotURL != "" {
+		t.Errorf("opened URL = %q, want none for the comment entry", gotURL)
+	}
+	if !strings.Contains(m.statusMessage, "no documentation page") {
+		t.Errorf("status = %q, want the no-documentation hint", m.statusMessage)
 	}
 }
 
@@ -356,10 +367,13 @@ func TestStructuredAddPickerEnterClampsCursor(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	// A cursor beyond the filtered list is clamped to the last item: on a
+	// top-level block that is the comment entry, which opens the
+	// comment-placement sub-picker.
 	m.structuredAddCursor = 99
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddName != "tls" {
-		t.Fatalf("enter clamped to name %q, want tls (the last item)", m.structuredAddName)
+	if m.structuredAddMode != structuredAddCommentPlacement {
+		t.Fatalf("enter clamped to mode %v, want structuredAddCommentPlacement", m.structuredAddMode)
 	}
 }
 

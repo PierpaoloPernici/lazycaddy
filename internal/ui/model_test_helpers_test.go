@@ -105,17 +105,20 @@ func (f *fakeReloader) Reload(ctx context.Context, path string, saved []byte) (a
 // imported files), or the configured session / error. Complete records
 // the exit code and returns the configured result / error.
 type fakeEditor struct {
-	session          *app.EditSession
-	prepareErr       error
-	result           app.EditResult
-	completeErr      error
-	prepareCalls     int
-	prepareFullCalls int
-	completeCalls    int
-	capturedDoc      *caddyfile.Document
-	capturedRange    caddyfile.SourceRange
-	capturedFullDoc  *caddyfile.Document
-	capturedExit     int
+	session            *app.EditSession
+	prepareErr         error
+	result             app.EditResult
+	completeErr        error
+	prepareCalls       int
+	prepareFullCalls   int
+	prepareInsertCalls int
+	completeCalls      int
+	capturedDoc        *caddyfile.Document
+	capturedRange      caddyfile.SourceRange
+	capturedFullDoc    *caddyfile.Document
+	capturedInsertPos  int
+	capturedTemplate   string
+	capturedExit       int
 }
 
 type fakeClipboard struct {
@@ -169,6 +172,31 @@ func (f *fakeEditor) PrepareFull(ctx context.Context, doc *caddyfile.Document) (
 		Range:        caddyfile.SourceRange{Start: 0, End: len(doc.Source)},
 		Original:     append([]byte(nil), doc.Source...),
 		RangeBytes:   append([]byte(nil), doc.Source...),
+		TempFile:     "editor-temp",
+		SnapshotPath: "editor-snapshot",
+		Cmd:          []string{"vim", "editor-temp"},
+	}, nil
+}
+
+// PrepareInsert implements app.Editor for insertions: the session carries
+// the zero-length range at pos and the template as its range bytes.
+func (f *fakeEditor) PrepareInsert(ctx context.Context, doc *caddyfile.Document, pos int, template string) (*app.EditSession, error) {
+	f.prepareInsertCalls++
+	f.capturedDoc = doc
+	f.capturedInsertPos = pos
+	f.capturedTemplate = template
+	if f.prepareErr != nil {
+		return nil, f.prepareErr
+	}
+	if f.session != nil {
+		return f.session, nil
+	}
+	return &app.EditSession{
+		Mode:         app.EditNode,
+		DocPath:      doc.Path,
+		Range:        caddyfile.SourceRange{Start: pos, End: pos, StartLine: 1, EndLine: 1},
+		Original:     append([]byte(nil), doc.Source...),
+		RangeBytes:   []byte(template),
 		TempFile:     "editor-temp",
 		SnapshotPath: "editor-snapshot",
 		Cmd:          []string{"vim", "editor-temp"},

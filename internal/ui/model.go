@@ -446,6 +446,17 @@ type Model struct {
 	// lets handleEditorDone enforce the comment-only content rule on the
 	// edited range.
 	commentEditStartLine int
+	// commentInsertActive reports that the current $EDITOR round-trip
+	// inserts a new comment at commentInsertPos (a byte offset into the
+	// original document). handleEditorDone uses both to enforce the
+	// comment-only content rule on the inserted bytes and to re-anchor
+	// the selection on the new group.
+	commentInsertActive bool
+	commentInsertPos    int
+	// structuredAddPlacementFromPicker reports that the comment-placement
+	// sub-picker was opened from the directive picker (Esc returns to it)
+	// rather than directly from a document row (Esc closes the flow).
+	structuredAddPlacementFromPicker bool
 
 	// searcher runs read-only substring search across node labels,
 	// document paths/content and the loaded log history; nil disables the

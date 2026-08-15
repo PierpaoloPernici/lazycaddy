@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
@@ -97,6 +98,42 @@ func (m *Model) startFullEdit() (tea.Model, tea.Cmd) {
 	}
 }
 
+// startCommentInsert begins the $EDITOR round-trip that inserts a new
+// comment at a byte offset. The temp file is seeded with the comment
+// template; the flow is otherwise the standard editor round-trip
+// (snapshot, diff confirmation, backup, conflict detection, atomic save
+// and post-save graph reload), and handleEditorDone enforces that the
+// inserted bytes stay comment-only.
+func (m *Model) startCommentInsert(doc *caddyfile.Document, pos int, template string) (tea.Model, tea.Cmd) {
+	if doc == nil {
+		m.statusMessage = "✗ comment insert failed: source document is unavailable"
+		return m, nil
+	}
+	if m.editor == nil {
+		m.statusMessage = "✗ no editor configured (set $VISUAL or $EDITOR)"
+		return m, nil
+	}
+	if m.state == nil || m.state.Graph == nil || m.state.Settings.ReadOnly || m.saver == nil {
+		m.statusMessage = "read-only mode — start with --write to enable saving"
+		return m, nil
+	}
+	if m.saving || m.editing || m.busy || m.reloading || m.deleting || m.rollingBack {
+		return m, nil
+	}
+	m.editing = true
+	m.commentInsertActive = true
+	m.commentInsertPos = pos
+	m.statusMessage = "launching editor…"
+	editor := m.editor
+	return m, func() tea.Msg {
+		session, err := editor.PrepareInsert(context.Background(), doc, pos, template)
+		if err != nil {
+			return editorErrorMsg{Err: err}
+		}
+		return editorReadyMsg{Session: session}
+	}
+}
+
 // handleEditorReady stores the prepared session and returns a
 // tea.ExecProcess command that runs the editor argv directly — never
 // through a shell. Bubble Tea suspends the TUI while the editor runs and
@@ -158,6 +195,10 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	// here so a later non-comment edit is never checked against it.
 	commentEdit := m.commentEditStartLine > 0
 	m.commentEditStartLine = 0
+	commentInsert := m.commentInsertActive
+	insertPos := m.commentInsertPos
+	m.commentInsertActive = false
+	m.commentInsertPos = 0
 	if msg.ExecErr != nil {
 		m.statusMessage = "✗ could not start editor: " + msg.ExecErr.Error()
 		return m, nil
@@ -217,6 +258,18 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if commentInsert && result.Changed {
+		// The zero-length insertion range means the composed document is
+		// the original plus exactly len(Content)-len(Original) new bytes
+		// at insertPos. Those bytes must stay comments.
+		insertedLen := len(result.Content) - len(result.Original)
+		if insertedLen < 0 || insertPos < 0 || insertPos+insertedLen > len(result.Content) ||
+			!commentContentOK(result.Content[insertPos:insertPos+insertedLen]) {
+			m.statusMessage = "✗ comment insert must contain only # comment lines — use E for a full document edit"
+			m.recordError("comment insert", "non-comment content in a comment insertion", "use E for a full document edit")
+			return m, nil
+		}
+	}
 	// During the editor flow the tree selection is still the edited node;
 	// capture its identity so the post-save tree refresh can re-anchor the
 	// selection even when the edit added or removed sections above it. A
@@ -226,8 +279,16 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 	startLine := 0
 	itemKey := ""
 	commentStartLine := 0
+	operation := "edit"
 	if session.Mode == app.EditNode {
-		if sel := m.selectedItem(); sel != nil && sel.hasNode {
+		if commentInsert {
+			// The new group starts at the insertion line: the number of
+			// newlines before the insertion point, plus one. The prefix is
+			// unchanged by the insertion, so the line is exact.
+			startLine = bytes.Count(result.Original[:insertPos], []byte{'\n'}) + 1
+			commentStartLine = startLine
+			operation = "add"
+		} else if sel := m.selectedItem(); sel != nil && sel.hasNode {
 			nodeName = sel.node.Name
 			startLine = sel.node.Range.StartLine
 			itemKey = sel.key
@@ -245,7 +306,7 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 		nodeName:         nodeName,
 		startLine:        startLine,
 		itemKey:          itemKey,
-		operation:        "edit",
+		operation:        operation,
 		commentStartLine: commentStartLine,
 	}
 	lines, err := diff.Unified(result.Original, result.Content, session.DocPath, session.DocPath+" (edited)")

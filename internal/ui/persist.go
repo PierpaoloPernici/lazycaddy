@@ -241,10 +241,20 @@ func (m *Model) refreshAfterStructuralSave(path string) bool {
 		return false
 	}
 	m.state.Graph = state.Graph
-	m.items = buildItems(state.Graph, m.collapsed)
-
 	pe := m.pendingEdit
 	cleanPath := filepath.Clean(path)
+	if pe != nil && pe.commentStartLine > 0 {
+		// A comment edit or insertion may target a group inside the still
+		// collapsed comments branch: expand it so the re-anchor below can
+		// select the (now visible) leaf row.
+		for _, doc := range m.state.Graph.Documents {
+			if doc != nil && filepath.Clean(doc.Path) == cleanPath {
+				delete(m.collapsed, commentsKey(doc))
+				break
+			}
+		}
+	}
+	m.items = buildItems(state.Graph, m.collapsed)
 	idx := -1
 	if pe != nil && pe.itemKey != "" && (pe.operation != "reorder" || pe.startLine <= 0) {
 		// Prefer the exact pre-edit row identity: the node survived at
