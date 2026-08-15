@@ -677,9 +677,10 @@ func TestModelSave_KeepsSourceRevealed(t *testing.T) {
 	// the viewport pinned at the top.
 	m = resize(m, 120, 30)
 
-	// items: root doc, a.caddy doc, top.example.test, target.example.test.
-	if len(m.items) != 4 {
-		t.Fatalf("items = %d, want 4", len(m.items))
+	// items: root doc, a.caddy doc, top.example.test, target.example.test,
+	// comments (1) (the 70 padding lines form one collapsed group).
+	if len(m.items) != 5 {
+		t.Fatalf("items = %d, want 5", len(m.items))
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.caddy document row
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // top.example.test

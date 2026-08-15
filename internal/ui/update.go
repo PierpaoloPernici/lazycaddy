@@ -325,6 +325,13 @@ func (m *Model) startCopy() (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			content = selected.doc.Source[selected.node.Range.Start:selected.node.Range.End]
+		} else if selected.comment != nil {
+			if !selected.comment.Range.Valid(len(selected.doc.Source)) {
+				m.statusMessage = "✗ copy failed: selected comment range is invalid"
+				m.recordError("copy", "selected comment range is invalid", "reselect the comment and retry")
+				return m, nil
+			}
+			content = selected.doc.Source[selected.comment.Range.Start:selected.comment.Range.End]
 		}
 	} else {
 		m.statusMessage = "✗ copy unavailable: no source selected"
