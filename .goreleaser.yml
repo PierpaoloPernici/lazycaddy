@@ -53,6 +53,26 @@ release:
     Read-only inspection remains fully supported, while the editing workflow
     is now robust enough for real use, with validation, diff review,
     external-change detection, backups, rollback and explicit Caddy reloads.
+    {{- else if eq .Version "0.3.0" }}
+    lazycaddy {{ .Version }} is now available.
+
+    This release completes the v0.3 structured-editing milestone: the
+    Caddyfile workflow is now fully structured, safe and reviewable.
+
+    The tree navigates recursively through documents, sites, blocks and
+    handler chains, with a searchable command palette (?) and pane-aware
+    mouse selection with full clipboard integration. Editing is structured
+    for the common directives: dedicated forms (m) for reverse_proxy,
+    respond, redir, file_server, php_fastcgi, encode, header, tls, log and
+    import, context-aware insertion (a), structural-node creation (n),
+    exact-range deletion (d), same-document reordering (o) and editable
+    top-level comment groups (e).
+
+    Every operation keeps the Caddyfile as the single source of truth:
+    edits are byte-preserving patches reviewed through a diff, validated by
+    Caddy itself, backed up before writing, saved atomically and reloaded
+    only when you ask. Ambiguous constructs refuse the form instead of
+    guessing, and the raw editor remains the always-available escape hatch.
     {{- else }}
     lazycaddy {{ .Version }} is now available.
 
