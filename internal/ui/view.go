@@ -510,6 +510,8 @@ func (m *Model) footer(width int) string {
 	case m.showStructuredAdd:
 		if m.structuredAddMode == structuredAddReorder {
 			keys = "↑/↓ choose sibling · Enter move after & validate · Esc cancel"
+		} else if m.structuredAddMode == structuredAddCommentPlacement {
+			keys = "↑/↓ choose placement · Enter open editor · Esc cancel"
 		} else {
 			keys = "type directive · Enter plan & validate · Esc cancel"
 		}
