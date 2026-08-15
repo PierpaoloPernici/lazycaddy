@@ -429,13 +429,13 @@ func TestStructuredAddArgsEscAndCtrlC(t *testing.T) {
 		"config/Caddyfile": "example.test {\n\trespond ok\n}\n",
 	}))
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	for _, r := range []rune("encode") {
-		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	// Esc in the args form returns to the picker.
+	// Every catalogued picker directive now opens a dedicated form, so the
+	// raw args mode is only reachable as a fallback for future
+	// non-form directives; drive it directly.
+	m.structuredAddMode = structuredAddArgs
+	m.structuredAddName = "encode"
+	m.showStructuredAdd = true
+	// Esc in the args mode returns to the picker.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.structuredAddMode != structuredAddPicker || m.structuredAddName != "" {
 		t.Fatalf("esc state = mode:%v name:%q, want back at the picker", m.structuredAddMode, m.structuredAddName)
@@ -446,13 +446,10 @@ func TestStructuredAddArgsEscAndCtrlC(t *testing.T) {
 		t.Fatalf("picker esc = show:%v msg:%q, want closed", m.showStructuredAdd, m.statusMessage)
 	}
 
-	// Reopen and cancel from the args form with ctrl+c.
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	for _, r := range []rune("encode") {
-		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	// Reopen and cancel from the args mode with ctrl+c.
+	m.structuredAddMode = structuredAddArgs
+	m.structuredAddName = "encode"
+	m.showStructuredAdd = true
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
 	if m.showStructuredAdd || !strings.Contains(m.statusMessage, "add cancelled") {
 		t.Fatalf("ctrl+c state = show:%v msg:%q, want closed", m.showStructuredAdd, m.statusMessage)

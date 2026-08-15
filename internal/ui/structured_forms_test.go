@@ -709,3 +709,67 @@ func TestDirectiveFormRedirEditPlansSet(t *testing.T) {
 		t.Fatalf("candidate missing the redir edit: %q", m.pendingEdit.content)
 	}
 }
+
+// TestDirectiveFormKeyGuards covers the defensive branches of the form key
+// handler: an out-of-range field cursor is ignored, and the view renders
+// the Edit title and the label fallback when the label list is missing.
+func TestDirectiveFormKeyGuards(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\tlog access {\n\t\toutput file /var/log/access.log\n\t}\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m = resize(m, 120, 40)
+	m = selectDirective(t, m, "log")
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	// An out-of-range cursor must not panic or edit a field.
+	m.structuredAddFieldCursor = 99
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if got := m.structuredAddFields[0].String(); got != "access" {
+		t.Fatalf("field 0 = %q, want the prefilled value untouched by an OOB cursor", got)
+	}
+	// The editing view shows the Edit title.
+	view := stripANSI(m.structuredAddView(80, 20))
+	if !strings.Contains(view, "Edit log") {
+		t.Fatalf("editing view missing the Edit title:\n%s", view)
+	}
+	// The label fallback covers a missing label list.
+	m.structuredAddFieldLabels = nil
+	view = stripANSI(m.structuredAddView(80, 20))
+	if !strings.Contains(view, "field>") {
+		t.Fatalf("label fallback missing:\n%s", view)
+	}
+}
+
+// TestCommandPalette_FormCommandReasons covers the directive form command's
+// remaining availability reasons: a missing formatter and a selection that
+// is a supported directive with an ambiguous construct.
+func TestCommandPalette_FormCommandReasons(t *testing.T) {
+	command, ok := commandDefinition(commandEditForm)
+	if !ok {
+		t.Fatal("directive form command missing from catalog")
+	}
+	// Writable but without a formatter: the formatter reason.
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\tlog access {\n\t\toutput file /var/log/access.log\n\t}\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeSaver{})
+	m = resize(m, 120, 40)
+	m = selectDirective(t, m, "log")
+	if got := command.Reason(m); got != "Caddy binary unavailable" {
+		t.Errorf("form reason without formatter = %q, want %q", got, "Caddy binary unavailable")
+	}
+	// An ambiguous construct on a supported directive disables the form;
+	// the reason is the generic selection text.
+	ambiguous := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n\theader X a b c {\n\t\tmatch status 200\n\t}\n}\n",
+	}))
+	m2 := newLoadedModel(t, fakeLoader{state: ambiguous}, &fakeFormatter{}, &fakeSaver{})
+	m2 = resize(m2, 120, 40)
+	m2 = selectDirective(t, m2, "header")
+	if m2.canEditDirectiveForm() {
+		t.Fatal("canEditDirectiveForm = true on an ambiguous construct")
+	}
+	if got := command.Reason(m2); got != "select a supported directive" {
+		t.Errorf("form reason on ambiguous construct = %q, want %q", got, "select a supported directive")
+	}
+}
