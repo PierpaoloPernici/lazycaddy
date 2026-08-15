@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
@@ -176,12 +177,14 @@ func isTopLevelNode(doc *caddyfile.Document, n caddyfile.Node) bool {
 
 // structuredAddDirectiveItems returns the directive picker items for the
 // current parent, plus the synthetic comment entry for top-level blocks
-// (comments inside nested blocks are not first-class groups).
+// (comments inside nested blocks are not first-class groups). The result
+// is sorted so the comment entry sits at its alphabetical position.
 func (m *Model) structuredAddDirectiveItems() []string {
 	items := caddyfile.InsertableDirectiveNames(m.structuredAddParent)
 	if m.structuredAddDoc != nil && isTopLevelNode(m.structuredAddDoc, m.structuredAddParent) {
 		items = append(items, structuredAddCommentEntry)
 	}
+	sort.Strings(items)
 	return items
 }
 

@@ -342,21 +342,19 @@ func TestStructuredAddPickerHelpClampsCursor(t *testing.T) {
 	})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	// A cursor beyond the filtered list is clamped to the last item. On a
-	// top-level block the last picker entry is the synthetic comment
-	// entry, which has no documentation page: help is refused locally
-	// instead of opening a non-existent URL.
+	// A cursor beyond the filtered list is clamped to the last item
+	// before help opens. With the comment entry sorted alphabetically,
+	// the last item on a top-level block is a real directive (tls).
 	m.structuredAddCursor = 99
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
 	m = updated.(*Model)
-	if cmd != nil {
-		t.Fatalf("ctrl+h on the comment entry must not open a browser command")
+	if cmd == nil {
+		t.Fatal("ctrl+h did not return a browser command")
 	}
-	if gotURL != "" {
-		t.Errorf("opened URL = %q, want none for the comment entry", gotURL)
-	}
-	if !strings.Contains(m.statusMessage, "no documentation page") {
-		t.Errorf("status = %q, want the no-documentation hint", m.statusMessage)
+	updated, _ = m.Update(cmd())
+	m = updated.(*Model)
+	if gotURL != "https://caddyserver.com/docs/caddyfile/directives/tls" {
+		t.Errorf("opened URL = %q, want the tls documentation", gotURL)
 	}
 }
 
@@ -367,13 +365,14 @@ func TestStructuredAddPickerEnterClampsCursor(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	// A cursor beyond the filtered list is clamped to the last item: on a
-	// top-level block that is the comment entry, which opens the
-	// comment-placement sub-picker.
+	// A cursor beyond the filtered list is clamped to the last item. With
+	// the comment entry sorted alphabetically, the last item on a
+	// top-level block is a real directive: Enter selects tls and opens
+	// the args form.
 	m.structuredAddCursor = 99
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.structuredAddMode != structuredAddCommentPlacement {
-		t.Fatalf("enter clamped to mode %v, want structuredAddCommentPlacement", m.structuredAddMode)
+	if m.structuredAddMode != structuredAddArgs || m.structuredAddName != "tls" {
+		t.Fatalf("enter clamped to mode %v name %q, want the args form for tls", m.structuredAddMode, m.structuredAddName)
 	}
 }
 

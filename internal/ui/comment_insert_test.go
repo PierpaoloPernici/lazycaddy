@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -129,11 +130,18 @@ func TestCommentInsert_FromBlockAfter(t *testing.T) {
 	if m.structuredAddMode != structuredAddPicker {
 		t.Fatalf("mode = %v, want the directive picker", m.structuredAddMode)
 	}
-	last := len(m.structuredAddItems) - 1
-	if m.structuredAddItems[last] != structuredAddCommentEntry {
-		t.Fatalf("last picker item = %q, want the comment entry", m.structuredAddItems[last])
+	// The comment entry is sorted alphabetically with the directives
+	// (comment < encode < file_server < … < tls).
+	if len(m.structuredAddItems) < 2 || m.structuredAddItems[0] != structuredAddCommentEntry {
+		t.Fatalf("first picker item = %v, want the comment entry first", m.structuredAddItems)
 	}
-	m.structuredAddCursor = last
+	for i := 1; i < len(m.structuredAddItems); i++ {
+		if m.structuredAddItems[i-1] > m.structuredAddItems[i] {
+			t.Errorf("picker items not sorted at %d: %v", i, m.structuredAddItems)
+			break
+		}
+	}
+	m.structuredAddCursor = 0
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.structuredAddMode != structuredAddCommentPlacement {
 		t.Fatalf("mode = %v, want comment placement", m.structuredAddMode)
@@ -198,6 +206,39 @@ func TestCommentInsert_FromCommentGroupAppend(t *testing.T) {
 	sel = m.selectedItem()
 	if sel.comment == nil || sel.comment.Lines != 2 {
 		t.Fatalf("selection after save = %q, want the merged 2-line group", sel.label)
+	}
+}
+
+// TestCommentInsert_PickerHelpOnCommentEntry verifies ctrl+h on the
+// sorted-first comment entry is refused locally instead of opening a
+// non-existent documentation page.
+func TestCommentInsert_PickerHelpOnCommentEntry(t *testing.T) {
+	state := writableStateFor(t, "config/Caddyfile", "config/backups", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n}\n",
+	}))
+	var gotURL string
+	m := newLoadedModel(t, fakeLoader{state: state}, &fakeFormatter{}, &fakeSaver{})
+	m.browser = app.BrowserFunc(func(_ context.Context, url string) error {
+		gotURL = url
+		return nil
+	})
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // example.test
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m = updated.(*Model)
+	if len(m.structuredAddItems) == 0 || m.structuredAddItems[0] != structuredAddCommentEntry {
+		t.Fatalf("picker items = %v, want the comment entry first", m.structuredAddItems)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	m = updated.(*Model)
+	if cmd != nil {
+		t.Fatal("ctrl+h on the comment entry must not open a browser command")
+	}
+	if gotURL != "" {
+		t.Errorf("opened URL = %q, want none for the comment entry", gotURL)
+	}
+	if !strings.Contains(m.statusMessage, "no documentation page") {
+		t.Errorf("status = %q, want the no-documentation hint", m.statusMessage)
 	}
 }
 
@@ -277,16 +318,14 @@ func TestCommentInsert_EscNavigation(t *testing.T) {
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	m = updated.(*Model)
-	last := len(m.structuredAddItems) - 1
-	m.structuredAddCursor = last
+	m.structuredAddCursor = 0                          // the comment entry, sorted first
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // into placement
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if !m.showStructuredAdd || m.structuredAddMode != structuredAddPicker {
 		t.Fatalf("Esc from block placement must return to the picker; show=%v mode=%v", m.showStructuredAdd, m.structuredAddMode)
 	}
 	// The directive items, comment entry included, are restored.
-	restored := len(m.structuredAddItems) - 1
-	if restored < 0 || m.structuredAddItems[restored] != structuredAddCommentEntry {
+	if len(m.structuredAddItems) == 0 || m.structuredAddItems[0] != structuredAddCommentEntry {
 		t.Fatalf("picker items not restored after Esc: %v", m.structuredAddItems)
 	}
 	// Close the picker and go back to the document row.
