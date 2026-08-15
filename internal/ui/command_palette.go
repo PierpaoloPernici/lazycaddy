@@ -30,7 +30,7 @@ const (
 	commandAdd           commandID = "add-structured"
 	commandNew           commandID = "new-node"
 	commandReorder       commandID = "reorder"
-	commandEditReverse   commandID = "edit-reverse-proxy"
+	commandEditForm      commandID = "edit-directive-form"
 	commandDelete        commandID = "delete"
 	commandBackups       commandID = "backups"
 	commandErrors        commandID = "errors"
@@ -135,8 +135,8 @@ func commandDefinitions() []uiCommand {
 			}
 			return "select a block with a reorderable sibling"
 		}},
-		{ID: commandEditReverse, Category: "Source", Label: "Edit reverse_proxy fields", Description: "matcher and upstreams", Keys: []string{"m"}, Enabled: func(m *Model) bool {
-			return m.canEditReverseProxy()
+		{ID: commandEditForm, Category: "Source", Label: "Edit directive form", Description: "structured fields for common directives", Keys: []string{"m"}, Enabled: func(m *Model) bool {
+			return m.canEditDirectiveForm()
 		}, Reason: func(m *Model) string {
 			if m.state == nil || m.state.Settings.ReadOnly || m.saver == nil {
 				return "read-only mode"
@@ -144,7 +144,7 @@ func commandDefinitions() []uiCommand {
 			if m.formatter == nil {
 				return "Caddy binary unavailable"
 			}
-			return "select a reverse_proxy directive"
+			return "select a supported directive"
 		}},
 		{ID: commandDelete, Category: "Source", Label: "Delete selected block", Description: "validate then diff", Keys: []string{"d"}, Enabled: func(m *Model) bool {
 			return m.canDeleteSelected()
@@ -224,8 +224,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startNewNode()
 	case commandReorder:
 		return m.startReorder()
-	case commandEditReverse:
-		return m.startReverseProxyEdit()
+	case commandEditForm:
+		return m.startDirectiveForm()
 	case commandDelete:
 		return m.startDelete()
 	case commandBackups:
@@ -350,6 +350,9 @@ func (m *Model) filteredCommands() []uiCommand {
 	var matches []uiCommand
 	for _, command := range commandDefinitions() {
 		if command.ID == commandNew && !m.canNewNode() {
+			continue
+		}
+		if command.ID == commandEditForm && !m.formAvailableForSelection() {
 			continue
 		}
 		if command.ID == commandHelp && m.browser == nil {

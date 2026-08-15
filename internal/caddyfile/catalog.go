@@ -132,6 +132,13 @@ var directives = map[string]DirectiveMeta{
 		Ops:         allOps,
 		Suggestions: []string{"A bare status code responds with an empty body", "Combine a quoted body with a status code"},
 	},
+	"import": {
+		Name:        "import",
+		Description: "Includes a snippet, file or glob at this position.",
+		Args:        []ArgRole{ArgPath, ArgString},
+		Ops:         allOps,
+		Suggestions: []string{"The pattern is a file, glob pattern or snippet name", "Arguments map to the {args[n]} placeholders in the imported file"},
+	},
 }
 
 // globalOptions is the advisory catalog for common global options.

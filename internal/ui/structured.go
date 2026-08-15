@@ -30,7 +30,7 @@ type structuredAddMode int
 const (
 	structuredAddPicker structuredAddMode = iota
 	structuredAddArgs
-	structuredAddReverseProxy
+	structuredAddForm
 	structuredAddNewPicker
 	structuredAddNewForm
 	structuredAddReorder
@@ -52,11 +52,6 @@ const (
 
 // commentTemplate seeds the editor temp file for a comment insertion.
 const commentTemplate = "# \n"
-
-const (
-	structuredReverseProxyMatcher = iota
-	structuredReverseProxyUpstreams
-)
 
 func (i *structuredInput) update(msg tea.KeyMsg) {
 	switch msg.Type {
@@ -126,14 +121,37 @@ func (m *Model) canAddStructured() bool {
 		sel.node.Kind == caddyfile.KindNamedRoute || sel.node.Kind == caddyfile.KindGlobalOptions
 }
 
-func (m *Model) canEditReverseProxy() bool {
+// formAvailableForSelection reports whether the selected row is a
+// directive that has a dedicated structured form. It is the cheap gate
+// used by the command palette to hide the form command on unsupported
+// rows; canEditDirectiveForm adds the writable-mode and ambiguity checks.
+func (m *Model) formAvailableForSelection() bool {
+	if m.state == nil || m.state.Graph == nil {
+		return false
+	}
+	sel := m.selectedItem()
+	return sel != nil && sel.hasNode && sel.doc != nil && formSupported(sel.node.Name)
+}
+
+// canEditDirectiveForm reports whether the selected directive can be
+// edited through its dedicated structured form: the model must be
+// writable with a formatter and saver, the selection must be a supported
+// directive, and the planner must be able to read the construct without
+// ambiguity. Ambiguous constructs disable the form and keep the raw
+// editor available.
+func (m *Model) canEditDirectiveForm() bool {
 	if m.state == nil || m.state.Graph == nil || m.state.Settings.ReadOnly ||
 		m.saver == nil || m.formatter == nil || m.structuredAddBusy ||
 		m.busy || m.saving || m.editing || m.deleting || m.reloading || m.rollingBack {
 		return false
 	}
 	sel := m.selectedItem()
-	return sel != nil && sel.hasNode && sel.doc != nil && sel.node.IsDirective("reverse_proxy")
+	if sel == nil || !sel.hasNode || sel.doc == nil || !formSupported(sel.node.Name) {
+		return false
+	}
+	planner := caddyfile.NewPlanner(sel.doc)
+	_, err := loadFormValues(planner, sel.node)
+	return err == nil
 }
 
 // canAddComment reports whether the selected row supports comment
@@ -205,9 +223,9 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	m.structuredAddKey = sel.key
 	m.structuredAddName = ""
 	m.structuredAddCursor = 0
-	m.structuredAddMatcher = structuredInput{}
-	m.structuredAddUpstreams = structuredInput{}
-	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddFields = nil
+	m.structuredAddFieldLabels = nil
+	m.structuredAddFieldCursor = 0
 	m.structuredAddEditing = false
 	m.structuredAddPlacementFromPicker = false
 	m.showStructuredAdd = true
@@ -237,37 +255,18 @@ func (m *Model) startStructuredAdd() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) startReverseProxyEdit() (tea.Model, tea.Cmd) {
-	if !m.canEditReverseProxy() {
-		m.statusMessage = "✗ reverse_proxy edit unavailable: select a directive in writable mode"
-		return m, nil
+func (m *Model) startDirectiveForm() (tea.Model, tea.Cmd) {
+	return m.openStructuredForm()
+}
+
+// structuredAddFieldLabel returns the label for a form field, falling
+// back to a numbered placeholder when the label list is missing (for
+// example in stale modal state).
+func (m *Model) structuredAddFieldLabel(i int) string {
+	if i >= 0 && i < len(m.structuredAddFieldLabels) {
+		return m.structuredAddFieldLabels[i]
 	}
-	sel := m.selectedItem()
-	planner := caddyfile.NewPlanner(sel.doc)
-	fields, err := planner.GetReverseProxyFields(sel.node)
-	if err != nil {
-		m.statusMessage = "✗ reverse_proxy edit unavailable: " + err.Error()
-		return m, nil
-	}
-	m.structuredAddInput = structuredInput{}
-	m.structuredAddDoc = sel.doc
-	m.structuredAddParent = sel.node
-	m.structuredAddKey = sel.key
-	m.structuredAddMode = structuredAddReverseProxy
-	m.structuredAddName = "reverse_proxy"
-	m.structuredAddItems = nil
-	m.structuredAddCursor = 0
-	m.structuredAddMatcher = structuredInput{value: []rune(fields.Matcher), cursor: len([]rune(fields.Matcher))}
-	m.structuredAddUpstreams = structuredInput{value: []rune(strings.Join(fields.Upstreams, " "))}
-	m.structuredAddUpstreams.cursor = len(m.structuredAddUpstreams.value)
-	m.structuredAddRPField = structuredReverseProxyUpstreams
-	m.structuredAddEditing = true
-	m.showStructuredAdd = true
-	m.statusMessage = ""
-	// The reverse_proxy form is an unrelated workflow: any active text
-	// selection is dropped.
-	m.clearTextSelection()
-	return m, nil
+	return "field> "
 }
 
 // updateStructuredAddKey handles the text prompt and starts validation when
@@ -291,8 +290,8 @@ func (m *Model) updateStructuredAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.structuredAddName+" help",
 		)
 	}
-	if m.structuredAddMode == structuredAddReverseProxy {
-		return m.updateStructuredReverseProxyKey(msg)
+	if m.structuredAddMode == structuredAddForm {
+		return m.updateStructuredFormKey(msg)
 	}
 	switch msg.String() {
 	case "esc":
@@ -313,13 +312,13 @@ func (m *Model) returnToStructuredPicker() {
 	m.structuredAddMode = structuredAddPicker
 	m.structuredAddName = ""
 	m.structuredAddInput = structuredInput{}
-	m.structuredAddMatcher = structuredInput{}
-	m.structuredAddUpstreams = structuredInput{}
-	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddFields = nil
+	m.structuredAddFieldLabels = nil
+	m.structuredAddFieldCursor = 0
 	m.structuredAddEditing = false
 	m.structuredAddCursor = 0
 	// Restore the directive items: the placement sub-picker replaced
-	// them, and the reverse_proxy/args forms left them empty.
+	// them, and the form/args flows left them empty.
 	m.structuredAddItems = m.structuredAddDirectiveItems()
 	m.structuredAddPlacementFromPicker = false
 }
@@ -334,9 +333,9 @@ func (m *Model) closeStructuredAdd() {
 	m.structuredAddName = ""
 	m.structuredAddItems = nil
 	m.structuredAddCursor = 0
-	m.structuredAddMatcher = structuredInput{}
-	m.structuredAddUpstreams = structuredInput{}
-	m.structuredAddRPField = structuredReverseProxyUpstreams
+	m.structuredAddFields = nil
+	m.structuredAddFieldLabels = nil
+	m.structuredAddFieldCursor = 0
 	m.structuredAddEditing = false
 	m.structuredAddCreating = false
 	m.structuredAddNewKind = caddyfile.Kind(0)
@@ -424,12 +423,10 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.structuredAddName = name
 		m.structuredAddInput = structuredInput{}
-		if m.structuredAddName == "reverse_proxy" {
-			m.structuredAddMode = structuredAddReverseProxy
-			m.structuredAddMatcher = structuredInput{}
-			m.structuredAddUpstreams = structuredInput{}
-			m.structuredAddRPField = structuredReverseProxyUpstreams
-			m.structuredAddEditing = false
+		if formSupported(name) {
+			// Dedicated structured form: empty fields, insertion target
+			// is the selected block.
+			m.startFormModal(m.structuredAddDoc, m.structuredAddParent, m.structuredAddKey, name, nil, false)
 		} else {
 			m.structuredAddMode = structuredAddArgs
 		}
@@ -446,9 +443,17 @@ func (m *Model) updateStructuredPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) updateStructuredReverseProxyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateStructuredFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		if m.structuredAddEditing {
+			// Capture the directive name before the modal state is reset:
+			// closeStructuredAdd clears structuredAddName.
+			name := m.structuredAddName
+			m.closeStructuredAdd()
+			m.statusMessage = name + " form cancelled"
+			return m, nil
+		}
 		m.returnToStructuredPicker()
 		return m, nil
 	case "ctrl+c":
@@ -456,23 +461,26 @@ func (m *Model) updateStructuredReverseProxyKey(msg tea.KeyMsg) (tea.Model, tea.
 		m.statusMessage = "add cancelled"
 		return m, nil
 	case "tab", "down":
-		m.structuredAddRPField = structuredReverseProxyUpstreams
+		if m.structuredAddFieldCursor < len(m.structuredAddFields)-1 {
+			m.structuredAddFieldCursor++
+		}
 		return m, nil
 	case "shift+tab", "up":
-		m.structuredAddRPField = structuredReverseProxyMatcher
+		if m.structuredAddFieldCursor > 0 {
+			m.structuredAddFieldCursor--
+		}
 		return m, nil
 	case "enter":
-		if m.structuredAddRPField == structuredReverseProxyMatcher {
-			m.structuredAddRPField = structuredReverseProxyUpstreams
+		if m.structuredAddFieldCursor < len(m.structuredAddFields)-1 {
+			m.structuredAddFieldCursor++
 			return m, nil
 		}
-		return m.submitStructuredAdd()
+		return m.submitStructuredForm()
 	}
-	if m.structuredAddRPField == structuredReverseProxyMatcher {
-		m.structuredAddMatcher.update(msg)
-	} else {
-		m.structuredAddUpstreams.update(msg)
+	if m.structuredAddFieldCursor < 0 || m.structuredAddFieldCursor >= len(m.structuredAddFields) {
+		return m, nil
 	}
+	m.structuredAddFields[m.structuredAddFieldCursor].update(msg)
 	return m, nil
 }
 
@@ -547,8 +555,8 @@ func (m *Model) submitStructuredAdd() (tea.Model, tea.Cmd) {
 	if m.structuredAddBusy {
 		return m, nil
 	}
-	if m.structuredAddMode == structuredAddReverseProxy {
-		return m.submitStructuredReverseProxy()
+	if m.structuredAddMode == structuredAddForm {
+		return m.submitStructuredForm()
 	}
 	name := m.structuredAddName
 	args := strings.TrimSpace(m.structuredAddInput.String())
@@ -572,47 +580,6 @@ func (m *Model) submitStructuredAdd() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m.queueStructuredAddValidation(name, "add", edit)
-}
-
-func (m *Model) submitStructuredReverseProxy() (tea.Model, tea.Cmd) {
-	upstreamText := strings.TrimSpace(m.structuredAddUpstreams.String())
-	if upstreamText == "" {
-		m.statusMessage = "✗ reverse_proxy requires at least one upstream"
-		return m, nil
-	}
-	if m.structuredAddDoc == nil {
-		m.closeStructuredAdd()
-		m.statusMessage = "✗ add failed: source document is unavailable"
-		return m, nil
-	}
-	args := append([]string(nil), strings.Fields(upstreamText)...)
-	if matcher := strings.TrimSpace(m.structuredAddMatcher.String()); matcher != "" {
-		args = append([]string{matcher}, args...)
-	}
-	planner := caddyfile.NewPlanner(m.structuredAddDoc)
-	var edit *caddyfile.PlannedEdit
-	var err error
-	if m.structuredAddEditing {
-		edit, err = planner.SetReverseProxyFields(m.structuredAddParent, caddyfile.ReverseProxyFields{
-			Matcher:   strings.TrimSpace(m.structuredAddMatcher.String()),
-			Upstreams: strings.Fields(upstreamText),
-		})
-	} else {
-		edit, err = planner.Insert(m.structuredAddParent, caddyfile.DirectiveInsert{
-			Name:     "reverse_proxy",
-			Args:     strings.Join(args, " "),
-			Position: caddyfile.InsertAtEnd,
-		})
-	}
-	if err != nil {
-		m.statusMessage = "✗ reverse_proxy unavailable: " + err.Error()
-		return m, nil
-	}
-	operation := "add"
-	if m.structuredAddEditing {
-		operation = "edit"
-	}
-	return m.queueStructuredAddValidation("reverse_proxy", operation, edit)
 }
 
 func (m *Model) queueStructuredAddValidation(name, operation string, edit *caddyfile.PlannedEdit) (tea.Model, tea.Cmd) {
@@ -822,13 +789,20 @@ func (m *Model) structuredAddView(width, height int) string {
 			activeTitleStyle.Render("Move block after") + "\n" + body.String(),
 		)
 	}
-	if m.structuredAddMode == structuredAddReverseProxy {
-		body := target + "\n\n" +
-			structuredAddFieldLine("matcher> ", m.structuredAddMatcher, m.structuredAddRPField == structuredReverseProxyMatcher, contentW) + "\n" +
-			structuredAddFieldLine("upstreams> ", m.structuredAddUpstreams, m.structuredAddRPField == structuredReverseProxyUpstreams, contentW) + "\n\n" +
-			dimStyle.Render("Tab/↑↓ switch field · Enter continue/submit · Esc picker")
+	if m.structuredAddMode == structuredAddForm {
+		title := "Add " + m.structuredAddName
+		if m.structuredAddEditing {
+			title = "Edit " + m.structuredAddName
+		}
+		var body strings.Builder
+		body.WriteString(target + "\n\n")
+		for i, field := range m.structuredAddFields {
+			label := m.structuredAddFieldLabel(i)
+			body.WriteString(structuredAddFieldLine(label, field, m.structuredAddFieldCursor == i, contentW) + "\n")
+		}
+		body.WriteString("\n" + dimStyle.Render("Tab/↑↓ switch field · Enter continue/submit · Esc cancel"))
 		return focusedPaneStyle.Width(boxW - 2).Height(boxH - 2).Render(
-			activeTitleStyle.Render("Add reverse_proxy · Esc cancel") + "\n" + body,
+			activeTitleStyle.Render(title+" · Esc cancel") + "\n" + body.String(),
 		)
 	}
 	if m.structuredAddMode == structuredAddArgs {

@@ -284,34 +284,19 @@ type ReverseProxyFields struct {
 	Upstreams []string
 }
 
-// GetReverseProxyFields reads the optional named matcher and upstream tokens
-// from a reverse_proxy directive without interpreting the nested block.
+// GetReverseProxyFields reads the optional inline matcher (named @matcher,
+// bare path matcher or wildcard) and the upstream tokens from a
+// reverse_proxy directive without interpreting the nested block.
 func (p *Planner) GetReverseProxyFields(n Node) (ReverseProxyFields, error) {
-	located, err := p.locate(n)
+	if err := p.expectDirective(n, "reverse_proxy"); err != nil {
+		return ReverseProxyFields{}, err
+	}
+	args, err := p.positionalTokens(n)
 	if err != nil {
 		return ReverseProxyFields{}, err
 	}
-	if located.Kind != KindDirective || located.Name != "reverse_proxy" {
-		return ReverseProxyFields{}, fmt.Errorf("%w: node %q is not a reverse_proxy directive", ErrUnsupported, located.Name)
-	}
-	toks, openBrace, err := p.headerTokens(*located)
-	if err != nil {
-		return ReverseProxyFields{}, err
-	}
-	end := len(toks)
-	if openBrace >= 0 {
-		end = openBrace
-	}
-	var fields ReverseProxyFields
-	for i, tok := range toks[1:end] {
-		raw := string(p.doc.Source[located.Range.Start+tok.Start : located.Range.Start+tok.End])
-		if i == 0 && strings.HasPrefix(tok.Text, "@") {
-			fields.Matcher = raw
-			continue
-		}
-		fields.Upstreams = append(fields.Upstreams, raw)
-	}
-	return fields, nil
+	matcher, upstreams := splitMatcher(args)
+	return ReverseProxyFields{Matcher: matcher, Upstreams: append([]string(nil), upstreams...)}, nil
 }
 
 // SetReverseProxyFields plans a replacement of the positional fields of a
@@ -372,6 +357,9 @@ var insertSpecs = map[string]struct {
 	"respond":       {ctxSite | ctxSnippet | ctxNamedRoute | ctxHandler},
 	"tls":           {ctxSite | ctxSnippet},
 	"log":           {ctxSite | ctxSnippet | ctxGlobal},
+	// import is evaluated before structure parsing, so it can appear in
+	// any block context; validation still guards the candidate.
+	"import": {ctxSite | ctxSnippet | ctxNamedRoute | ctxGlobal | ctxHandler},
 }
 
 // parentCtx classifies the block kind of a node as an insertion context.

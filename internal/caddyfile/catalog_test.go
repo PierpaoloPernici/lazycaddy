@@ -6,7 +6,7 @@ import (
 )
 
 func TestCatalogKnownDirectives(t *testing.T) {
-	names := []string{"reverse_proxy", "tls", "encode", "log", "file_server", "php_fastcgi", "header", "redir", "respond"}
+	names := []string{"reverse_proxy", "tls", "encode", "log", "file_server", "php_fastcgi", "header", "redir", "respond", "import"}
 	for _, name := range names {
 		meta := Catalog(name)
 		if meta == nil {
