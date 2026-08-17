@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -360,7 +361,7 @@ func (j *JournalSource) runHistory() error {
 		"--unit=" + j.unit,
 		"--output=json",
 		"--no-pager",
-		"--lines=" + itoa(j.buffer.MaxLines()),
+		"--lines=" + strconv.Itoa(j.buffer.MaxLines()),
 	}
 	err := j.runAndStream(args)
 	if err == nil || j.isStopped() {
@@ -644,8 +645,4 @@ func stripNewline(seg []byte) []byte {
 		return seg[:n-1]
 	}
 	return seg
-}
-
-func itoa(n int) string {
-	return fmt.Sprintf("%d", n)
 }

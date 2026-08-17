@@ -13,7 +13,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
-// fakeRunner is a programmable runtime.CommandRunner. When runFn is set it
+// fakeRunner is a programmable validator.CommandRunner. When runFn is set it
 // takes precedence over the static fields, so tests can block on the
 // context to exercise timeouts.
 type fakeRunner struct {

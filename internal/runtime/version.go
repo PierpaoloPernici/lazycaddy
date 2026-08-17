@@ -8,18 +8,9 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-)
 
-// CommandRunner abstracts subprocess execution so the version query can be
-// faked in tests. It mirrors the shape used by internal/validator/runner.go;
-// internal/validator.ExecRunner satisfies it structurally.
-type CommandRunner interface {
-	// Run executes name with the given args and returns captured stdout,
-	// stderr and the process exit code. A nil error with a non-zero exit
-	// code means the command ran to completion but reported failure. The
-	// ctx value may cancel or time out the call.
-	Run(ctx context.Context, name string, args ...string) (stdout, stderr []byte, exitCode int, err error)
-}
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
+)
 
 // Sentinel errors returned by QueryVersion. They are wrapped by concrete
 // errors; callers should branch with errors.Is.
@@ -55,7 +46,7 @@ var (
 //
 // A timeout <= 0 means no explicit timeout and the caller's context is used
 // as-is; otherwise the query runs under context.WithTimeout.
-func QueryVersion(ctx context.Context, runner CommandRunner, binary string, timeout time.Duration) (string, error) {
+func QueryVersion(ctx context.Context, runner validator.CommandRunner, binary string, timeout time.Duration) (string, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)

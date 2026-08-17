@@ -37,6 +37,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/backup"
@@ -251,12 +252,6 @@ var teaProgram = func(model tea.Model) *tea.Program {
 	return tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 }
 
-// flagSet is the subset of *pflag.FlagSet used by resolvePaths, exposed as
-// an interface so tests can drive resolution against a real parsed command.
-type flagSet interface {
-	Changed(name string) bool
-}
-
 // resolvePaths applies v0.2 path discovery and sensible defaults to settings
 // before the application is wired. Explicit --config, --caddy-path and
 // --backup-dir values always take precedence; discovery fills the gaps:
@@ -270,7 +265,7 @@ type flagSet interface {
 //
 // All external lookups go through deps (discover.DefaultDeps in
 // production), keeping the rules deterministic under test.
-func resolvePaths(flags flagSet, settings *config.Settings, deps discover.Deps) error {
+func resolvePaths(flags *pflag.FlagSet, settings *config.Settings, deps discover.Deps) error {
 	resolver := discover.Resolver{Deps: deps}
 	configPath, err := resolver.ConfigPath(flags.Changed("config"), settings.ConfigPath)
 	if err != nil {

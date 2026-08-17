@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
 // Status is the runtime state of Caddy as far as lazycaddy can prove it.
@@ -64,7 +66,7 @@ type Report struct {
 // concurrent use: it holds no per-probe state.
 type Detector struct {
 	binary         string
-	runner         CommandRunner
+	runner         validator.CommandRunner
 	admin          *AdminClient
 	writable       bool
 	versionTimeout time.Duration
@@ -77,7 +79,7 @@ type Options struct {
 	Binary string
 	// Runner is used to run `caddy version`; required when Binary is
 	// non-empty.
-	Runner CommandRunner
+	Runner validator.CommandRunner
 	// Admin is the Admin API client; nil disables the AdminAPI, Readable
 	// and Reload capabilities and the status falls back to the binary
 	// probe alone.
