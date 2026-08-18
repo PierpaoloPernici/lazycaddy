@@ -546,7 +546,7 @@ func (m *Model) footer(width int) string {
 		if sel := m.selectedItem(); sel != nil && sel.hasChildren {
 			navKeys = "↑/↓ move · Enter toggle"
 		}
-		keys = navKeys + " · PgUp/PgDown · +/- all · ? commands"
+		keys = navKeys + " · PgUp/PgDown · +/- all · g matcher · ? commands"
 	default:
 		keys = "↑/↓ move · PgUp/PgDown · ? commands"
 	}

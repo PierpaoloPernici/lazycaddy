@@ -171,9 +171,10 @@ The source pane now also renders advisory semantic highlighting (site
 addresses, directive names, domains, paths, ports, IP/CIDR values, matchers,
 placeholders, durations, status codes, strings and heredoc boundaries) on top
 of the lexical base, so common patterns are easier to scan without weakening
-the raw-source fallback or byte-preservation guarantees. Richer inline
-validation and full folding/matcher-reference navigation are planned for
-v0.4.
+the raw-source fallback or byte-preservation guarantees. The `g` keybinding
+cycles through named matcher definitions and their references, re-anchoring the
+tree and source view on each occurrence. Richer inline validation and source
+folding remain planned for v0.4.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,
@@ -188,9 +189,10 @@ validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a compact navigation footer and exact
 source clipboard copying with OSC 52 and local fallbacks. The current roadmap
-is v0.4: richer inline validation, semantic highlighting, full folding and
-matcher-reference navigation, and a runtime/TLS dashboard — without weakening
-the raw-source fallback or byte-preservation guarantees.
+is v0.4: advisory semantic highlighting and matcher definition↔reference
+navigation are done, with richer inline validation, source folding and a
+runtime/TLS dashboard still ahead — without weakening the raw-source fallback
+or byte-preservation guarantees.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing

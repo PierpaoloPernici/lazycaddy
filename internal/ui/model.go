@@ -479,6 +479,13 @@ type Model struct {
 	// reveal. It is consumed by syncSource on the next render.
 	sourceRevealLine int
 
+	// matcherNav drives the matcher definition↔reference cycler (the g
+	// keybinding): it holds the named matcher occurrences of the document
+	// the session was built for and a cursor. A nil session (or a session
+	// keyed on a different document) makes the next press rebuild the list
+	// and start at-or-after the current selection.
+	matcherNav *matcherNav
+
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard

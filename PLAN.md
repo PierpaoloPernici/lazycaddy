@@ -831,10 +831,12 @@ diff, backup and atomic-save safeguards.
 - [ ] Add inline validation when the parse tree can identify roles reliably
   and wire it into the UI, keeping Caddy authoritative for syntax and
   validation.
-- Add structural navigation features derived from the parsed source: folding
-  for site blocks, snippets, named routes and nested handlers; navigation from
-  named matcher definitions to references; and brace-aware indentation or
-  movement where the source ranges make it safe.
+- [x] Navigate from named matcher definitions to their references (the `g`
+  keybinding, PR …): `caddyfile.Matchers` lists every occurrence and the
+  cycler re-anchors the tree and reveals each line, wrapping at the end.
+- [ ] Add source folding for site blocks, snippets, named routes and nested
+  handlers, and brace-aware indentation/movement where the source ranges make
+  it safe.
 - Add read-only runtime observability and loaded-config inspection through
   separate, cancellable Admin API fetchers. Each panel must expose explicit
   `loading`, `available`, `stale` and `unavailable` states, refresh without
