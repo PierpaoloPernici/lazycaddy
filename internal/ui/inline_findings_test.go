@@ -624,6 +624,25 @@ func TestInlineReviewLabel_Unknown(t *testing.T) {
 	}
 }
 
+// TestInlineReviewLabel_UsesGutterBadges verifies the advisory markers in
+// the review use the same background badges as the source-pane gutter.
+func TestInlineReviewLabel_UsesGutterBadges(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	// Render the labels first, then resolve the badge SGRs: sgrOf restores
+	// the Ascii profile after each call.
+	hint := inlineReviewLabel(caddyfile.SeverityAdvisoryHint)
+	info := inlineReviewLabel(caddyfile.SeverityAdvisoryInfo)
+	hintSgr := sgrOf(gutterHintBadgeStyle)
+	infoSgr := sgrOf(gutterInfoBadgeStyle)
+	if !strings.Contains(hint, hintSgr) || !strings.Contains(stripANSI(hint), "hint") {
+		t.Errorf("hint label = %q, want the amber gutter badge + word", hint)
+	}
+	if !strings.Contains(info, infoSgr) || !strings.Contains(stripANSI(info), "info") {
+		t.Errorf("info label = %q, want the blue gutter badge + word", info)
+	}
+}
+
 func TestInlineReview_Reveal_Fallback(t *testing.T) {
 	// revealInlineFinding with no tree graph still reveals the line.
 	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")

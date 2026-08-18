@@ -463,12 +463,11 @@ func (m *Model) inlineCaddyBlock(maxRows int) string {
 }
 
 // inlineCaddyRow renders one caddy diagnostic row: an "E error · line N ·
-// path" headline (path relative to the root Caddyfile directory) with the
-// diagnostic message indented below, mirroring the advisory rows.
+// path" headline (the marker as a gutter badge like the source pane, the
+// path relative to the root Caddyfile directory) with the diagnostic
+// message indented below, mirroring the advisory rows.
 func (m *Model) inlineCaddyRow(d validator.Diagnostic, selected bool) string {
-	// errorStyle carries horizontal padding, so trim the styled label back
-	// to its text before joining it with the line/path segments.
-	label := strings.TrimSpace(errorStyle.Render("E error"))
+	label := caddySeverityLabel(d.Severity)
 	line := m.caddyDiagDisplayLine(d)
 	pathLabel := m.caddyDiagPathLabel(d)
 	head := label
@@ -482,6 +481,18 @@ func (m *Model) inlineCaddyRow(d validator.Diagnostic, selected bool) string {
 		return cursorStyle.Render(" > ") + head + "\n    " + dimStyle.Render(d.Message) + "\n"
 	}
 	return "  " + head + "\n    " + dimStyle.Render(d.Message) + "\n"
+}
+
+// caddySeverityLabel renders the caddy severity marker as the same gutter
+// badge used in the source pane, followed by the severity word (trimmed:
+// the word styles carry horizontal padding).
+func caddySeverityLabel(sev validator.Severity) string {
+	switch sev {
+	case validator.SeverityWarning:
+		return gutterMarkerBadge('W') + " " + strings.TrimSpace(syntaxCaddyWarningStyle.Render("warning"))
+	default:
+		return gutterMarkerBadge('E') + " " + strings.TrimSpace(errorStyle.Render("error"))
+	}
 }
 
 // inlineCaddyStateRow renders the single state row of the CADDY VALIDATION
@@ -506,15 +517,16 @@ func warningStyleText(s string) string {
 	return errorStyle.Render(s)
 }
 
-// inlineReviewLabel returns the severity label for the review list, styled to
-// match the source-pane marker so hint/info are visually consistent without
-// relying on colour alone.
+// inlineReviewLabel returns the severity label for the review list: the
+// marker as the same background badge used in the source-pane gutter,
+// followed by the severity word, so the review and the source agree at a
+// glance without relying on colour alone.
 func inlineReviewLabel(sev caddyfile.InlineSeverity) string {
 	switch sev {
 	case caddyfile.SeverityAdvisoryHint:
-		return "! " + syntaxInlineHintStyle.Render("hint")
+		return gutterMarkerBadge('!') + " " + syntaxInlineHintStyle.Render("hint")
 	case caddyfile.SeverityAdvisoryInfo:
-		return "i " + syntaxInlineInfoStyle.Render("info")
+		return gutterMarkerBadge('i') + " " + syntaxInlineInfoStyle.Render("info")
 	default:
 		return "? unknown"
 	}
