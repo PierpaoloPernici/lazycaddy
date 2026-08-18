@@ -508,6 +508,10 @@ type Model struct {
 	// used), keeping the source it was computed against so the view marks the
 	// result stale after an edit or reload.
 	inlineCaddy *inlineCaddyState
+	// inlineReviewReturn is set while a caddy validate launched from the review
+	// is finishing, so the review is restored (directly, or after the
+	// diagnostics view closes) instead of returning to the home view.
+	inlineReviewReturn bool
 
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.

@@ -306,15 +306,16 @@ func TestInlineReview_FooterAdvisoryCounts(t *testing.T) {
 func TestSetInlineCaddyOutcome(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
 	src := m.sourceDoc.Source
-	m.setInlineCaddyOutcome(0, true, src, "")
-	if m.inlineCaddy == nil || m.inlineCaddy.phase != "result" || m.inlineCaddy.errors != 0 || m.inlineCaddy.summary != "" {
+	m.setInlineCaddyOutcome(0, true, src, "", nil)
+	if m.inlineCaddy == nil || m.inlineCaddy.phase != "result" || m.inlineCaddy.errors != 0 || m.inlineCaddy.summary != "" || len(m.inlineCaddy.details) != 0 {
 		t.Errorf("clean outcome = %+v", m.inlineCaddy)
 	}
-	m.setInlineCaddyOutcome(2, true, src, "unrecognized matcher name: @phantom")
-	if m.inlineCaddy.errors != 2 || m.inlineCaddy.summary != "unrecognized matcher name: @phantom" {
-		t.Errorf("2-errors outcome summary = %q, want the first-error text", m.inlineCaddy.summary)
+	details := []validator.Diagnostic{{Line: 168, Message: "unrecognized matcher name: @phantom"}}
+	m.setInlineCaddyOutcome(2, true, src, "unrecognized matcher name: @phantom", details)
+	if m.inlineCaddy.errors != 2 || m.inlineCaddy.summary != "unrecognized matcher name: @phantom" || len(m.inlineCaddy.details) != 1 {
+		t.Errorf("2-errors outcome = %+v, want retained details", m.inlineCaddy)
 	}
-	m.setInlineCaddyOutcome(0, false, src, "")
+	m.setInlineCaddyOutcome(0, false, src, "", nil)
 	if m.inlineCaddy.phase != "result" || m.inlineCaddy.summary != "validation failed" {
 		t.Errorf("failed outcome = %+v", m.inlineCaddy)
 	}
@@ -470,11 +471,13 @@ func TestInlineReview_CaddyResultPersistsAcrossReopen(t *testing.T) {
 // validation row switches to the existing diagnostics view.
 func TestInlineReview_EnterOnCaddyRowOpensDiagnostics(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
-	// Provide diagnostics so the open path can show them.
-	m.diagnostics = []validator.Diagnostic{{Message: "boom"}}
 	m.showInlineReview = true
 	m.inlineReviewCursor = len(m.inlineFindings) // the Caddy row
-	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "boom", source: m.sourceDoc.Source}
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 1, summary: "boom",
+		details: []validator.Diagnostic{{Line: 2, Message: "boom"}},
+		source:  m.sourceDoc.Source,
+	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	rm := updated.(*Model)
 	if rm.showInlineReview {
@@ -482,6 +485,9 @@ func TestInlineReview_EnterOnCaddyRowOpensDiagnostics(t *testing.T) {
 	}
 	if !rm.showDiagnostics {
 		t.Error("Enter on the Caddy row should open the diagnostics view")
+	}
+	if rm.sourceRevealLine != 2 {
+		t.Errorf("Enter on the Caddy row should reveal the first error line, got %d", rm.sourceRevealLine)
 	}
 }
 
@@ -579,6 +585,7 @@ func TestOpenCaddyDiagnostics_NoDiagnostics(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
 	m.showInlineReview = true
 	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "x"}
+	m.inlineCaddy.details = nil // no retained diagnostics
 	m.diagnostics = nil
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	rm := updated.(*Model)
@@ -587,6 +594,13 @@ func TestOpenCaddyDiagnostics_NoDiagnostics(t *testing.T) {
 	}
 	if !strings.Contains(rm.statusMessage, "press v to validate") {
 		t.Errorf("status = %q, want a prompt to validate", rm.statusMessage)
+	}
+
+	// openCaddyDiagnostics with an empty Caddy state shows the prompting status.
+	m.inlineCaddy = nil
+	m.openCaddyDiagnostics()
+	if !strings.Contains(m.statusMessage, "press v to validate") {
+		t.Errorf("nil-caddy status = %q, want a prompt to validate", m.statusMessage)
 	}
 }
 
@@ -608,5 +622,71 @@ func TestInlineReviewFooter_Clean(t *testing.T) {
 	footer := m.inlineReviewFooter()
 	if !strings.Contains(footer, "Advisory: 0 hint · 0 info") {
 		t.Errorf("clean advisory footer = %q", footer)
+	}
+}
+
+// TestInlineReview_ReturnAfterDiagnostics verifies that when the Caddy
+// diagnostics view (opened from the review) is closed, control returns to the
+// review view rather than the home view.
+func TestInlineReview_ReturnAfterDiagnostics(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
+	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "boom", details: []validator.Diagnostic{{Line: 2, Message: "boom"}}}
+	m.showInlineReview = true
+	m.inlineReviewCursor = len(m.inlineFindings) // Caddy row
+
+	// Enter opens the diagnostics and marks that we should return to review.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+	if !m.showDiagnostics {
+		t.Fatal("Enter on the Caddy row should open diagnostics")
+	}
+	if m.inlineReviewReturn != true {
+		t.Fatal("closing diagnostics should restore the review")
+	}
+
+	// Closing the diagnostics (Esc) returns to the review view.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.showInlineReview {
+		t.Error("closing diagnostics should return to the review view")
+	}
+	if m.inlineReviewReturn {
+		t.Error("inlineReviewReturn should be cleared after restoring the review")
+	}
+}
+
+// TestInlineReview_ReturnAfterValidateClean verifies that a caddy validate
+// launched from the review with no errors reopens the review immediately to
+// show the clean outcome.
+func TestInlineReview_ReturnAfterValidateClean(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
+	// Simulate a clean validate outcome with no diagnostics opened.
+	m.showInlineReview = true
+	m.inlineReviewReturn = true
+	m.showDiagnostics = false
+	m.setInlineCaddyOutcome(0, true, m.sourceDoc.Source, "", nil)
+	m.returnToInlineReviewIfNeeded()
+	if !m.showInlineReview {
+		t.Error("a clean validate from the review should restore the review view")
+	}
+	if m.inlineReviewReturn {
+		t.Error("inlineReviewReturn should be cleared after a clean result")
+	}
+}
+
+// TestInlineReview_ReturnDeferredWhileDiagnosticsOpen verifies that when the
+// validation opens the diagnostics view, the review restore is deferred until
+// that view closes.
+func TestInlineReview_ReturnDeferredWhileDiagnosticsOpen(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
+	// v closed the review and the validation opened the diagnostics view.
+	m.showInlineReview = false
+	m.inlineReviewReturn = true
+	m.showDiagnostics = true // diagnostics opened with the errors
+	m.returnToInlineReviewIfNeeded()
+	if m.showInlineReview {
+		t.Error("review must not reopen while the diagnostics view is open")
+	}
+	if !m.inlineReviewReturn {
+		t.Error("return flag must stay set until the diagnostics view closes")
 	}
 }

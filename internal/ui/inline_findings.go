@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -21,6 +22,10 @@ type inlineCaddyState struct {
 	// summary is a readable one-line description of the first/most relevant
 	// error (e.g. "unrecognized matcher name: @phantom").
 	summary string
+	// details retains the full error diagnostics so the review can reopen the
+	// Caddy diagnostics view (with line/column) even after the diagnostics
+	// modal has been closed.
+	details []validator.Diagnostic
 	// source is a copy of the document source the outcome was computed
 	// against; when the current document source differs, the result is stale.
 	source []byte
@@ -79,6 +84,23 @@ func (m *Model) closeInlineReview() {
 	m.inlineReviewCursor = 0
 }
 
+// returnToInlineReviewIfNeeded restores the review view after a caddy
+// validate launched from the review completes. When the validation opened the
+// diagnostics view (errors with details) the restore is deferred until that
+// view closes; otherwise the review is reopened immediately so the outcome is
+// visible.
+func (m *Model) returnToInlineReviewIfNeeded() {
+	if !m.inlineReviewReturn {
+		return
+	}
+	if m.showDiagnostics {
+		// The diagnostics view is open; closing it restores the review.
+		return
+	}
+	m.inlineReviewReturn = false
+	m.openInlineReview()
+}
+
 // inlineReviewRowCount returns the number of navigable rows in the review:
 // one per advisory finding, plus the Caddy validation row when an outcome exists.
 func (m *Model) inlineReviewRowCount() int {
@@ -105,9 +127,10 @@ func (m *Model) updateInlineReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m.activateInlineReviewRow()
 	case "v":
-		// Reuse the authoritative caddy validate workflow. The review view
-		// closes so the existing diagnostics view can take over; the outcome
-		// is captured separately so the review can show it on reopening.
+		// Reuse the authoritative caddy validate workflow. Mark that the review
+		// launched it so the review is restored when the outcome arrives (or
+		// when the diagnostics view closes) instead of returning to home.
+		m.inlineReviewReturn = true
 		m.closeInlineReview()
 		return m.startFormatAndValidate()
 	}
@@ -122,6 +145,10 @@ func (m *Model) activateInlineReviewRow() (tea.Model, tea.Cmd) {
 	caddyRow := len(m.inlineFindings)
 	if m.inlineReviewCursor == caddyRow && m.inlineCaddy != nil {
 		if m.inlineCaddy.phase == "result" {
+			// The user opened the details from the review, so restore the
+			// review when the diagnostics view closes instead of returning home.
+			m.inlineReviewReturn = true
+			m.closeInlineReview()
 			return m.openCaddyDiagnostics()
 		}
 		m.closeInlineReview()
@@ -133,18 +160,26 @@ func (m *Model) activateInlineReviewRow() (tea.Model, tea.Cmd) {
 }
 
 // openCaddyDiagnostics switches to the existing Caddy diagnostics view when
-// the validation results are available, returning to its cursor.
+// validation details are available. It restores the captured diagnostics (so
+// Enter on the review's Caddy row works even after the modal was closed) and
+// reveals the first error's line in the source pane.
 func (m *Model) openCaddyDiagnostics() (tea.Model, tea.Cmd) {
-	if m.state == nil {
-		return m, nil
-	}
-	if len(m.diagnostics) == 0 {
+	if m.inlineCaddy == nil {
 		m.statusMessage = "no Caddy diagnostics to show — press v to validate"
 		return m, nil
 	}
-	m.closeInlineReview()
+	if len(m.inlineCaddy.details) == 0 {
+		m.statusMessage = "no Caddy diagnostics to show — press v to validate"
+		return m, nil
+	}
+	m.diagnostics = append([]validator.Diagnostic(nil), m.inlineCaddy.details...)
 	m.diagCursor = 0
 	m.showDiagnostics = true
+	// Reveal the first error's line in the source pane, mirroring how the
+	// advisory findings reveal their own line.
+	if line := m.inlineCaddy.details[0].Line; line > 0 {
+		m.sourceRevealLine = line
+	}
 	m.clearTextSelection()
 	return m, nil
 }
@@ -332,8 +367,10 @@ func (m *Model) inlineReviewFooter() string {
 // the review Caddy section can reflect it separately from the advisory
 // findings. summary is a readable one-line description of the first error (may
 // be empty when validation was clean). It stores the source the outcome was
-// computed against so a later edit marks it stale.
-func (m *Model) setInlineCaddyOutcome(errors int, ok bool, src []byte, summary string) {
+// computed against so a later edit marks it stale, and retains the full error
+// diagnostics so the review can reopen the Caddy diagnostics view with
+// line/column details.
+func (m *Model) setInlineCaddyOutcome(errors int, ok bool, src []byte, summary string, details []validator.Diagnostic) {
 	if m.inlineCaddy == nil {
 		m.inlineCaddy = &inlineCaddyState{}
 	}
@@ -341,9 +378,11 @@ func (m *Model) setInlineCaddyOutcome(errors int, ok bool, src []byte, summary s
 	if !ok {
 		m.inlineCaddy.errors = 0
 		m.inlineCaddy.summary = "validation failed"
+		m.inlineCaddy.details = nil
 	} else {
 		m.inlineCaddy.errors = errors
 		m.inlineCaddy.summary = summary
+		m.inlineCaddy.details = append([]validator.Diagnostic(nil), details...)
 	}
 	m.inlineCaddy.source = append([]byte(nil), src...)
 }
