@@ -681,3 +681,78 @@ func TestSearch_ViewSizing(t *testing.T) {
 		t.Errorf("syncSearchViewport(1, 5) width = %d, want 1", m.searchViewport.Width)
 	}
 }
+
+// TestSearch_CommentHitSelectsCommentRow verifies that activating a search
+// hit inside a top-level comment selects the comment's row in the comments
+// branch (expanding it) and reveals the exact line, instead of jumping back
+// to the document row at the top of the tree.
+func TestSearch_CommentHitSelectsCommentRow(t *testing.T) {
+	src := "# leading comment about grafana\n" +
+		"example.test {\n\trespond ok\n}\n" +
+		"# trailing comment about grafana\n" +
+		"other.test {\n\trespond ok\n}\n"
+	state := stateFor(t, "Caddyfile", fsReader(map[string]string{"Caddyfile": src}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	_ = m.View()
+
+	// Move the cursor deep (the second site) so the jump is observable.
+	for m.selectedItem() == nil || m.selectedItem().label != "other.test" {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	before := m.cursor
+
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range []rune("grafana") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	// Both comment hits are content hits (comments are not nodes).
+	if len(m.searchResults) != 2 {
+		t.Fatalf("results = %d, want the two comment line hits", len(m.searchResults))
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sel := m.selectedItem()
+	if sel == nil || sel.comment == nil || sel.label != "lines 1–1" {
+		t.Fatalf("selection = %+v (cursor %d, before %d), want the comment leaf row", sel, m.cursor, before)
+	}
+	if m.cursor == 0 {
+		t.Error("cursor = 0, want the comment row in the comments branch, not the document row")
+	}
+	if m.sourceRevealLine != 1 {
+		t.Errorf("sourceRevealLine = %d, want 1 (the comment line)", m.sourceRevealLine)
+	}
+	// The source pane identifies the comment selection.
+	_ = m.View()
+	if !strings.Contains(m.sourceTitle, "comment (lines 1-1)") {
+		t.Errorf("source title = %q, want the comment line span", m.sourceTitle)
+	}
+}
+
+// TestSearch_CommentInsideBlockSelectsBlock verifies a comment inside a
+// structural block (not a top-level comment group) still selects the
+// containing block, never the document row.
+func TestSearch_CommentInsideBlockSelectsBlock(t *testing.T) {
+	src := "example.test {\n\t# inner note\n\trespond ok\n}\n"
+	state := stateFor(t, "Caddyfile", fsReader(map[string]string{"Caddyfile": src}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	_ = m.View()
+
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range []rune("inner note") {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if len(m.searchResults) != 1 {
+		t.Fatalf("results = %d, want the inner comment hit", len(m.searchResults))
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	sel := m.selectedItem()
+	if sel == nil || !sel.hasNode || sel.node.Name != "example.test" {
+		t.Errorf("selection = %+v, want the containing site block", sel)
+	}
+	if m.sourceRevealLine != 2 {
+		t.Errorf("sourceRevealLine = %d, want 2 (the comment line)", m.sourceRevealLine)
+	}
+}

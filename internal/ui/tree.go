@@ -394,6 +394,21 @@ func appendCommentItems(items *[]item, doc *caddyfile.Document, groups []caddyfi
 	}
 }
 
+// commentGroupAtLine returns the top-level comment group whose line span
+// contains the 1-based line, or nil when the line is not inside one (for
+// example a comment inside a structural block, which belongs to the
+// block's source range).
+func commentGroupAtLine(doc *caddyfile.Document, line int) *caddyfile.CommentGroup {
+	groups := caddyfile.CommentGroups(doc)
+	for i := range groups {
+		g := &groups[i]
+		if line >= g.StartLine && line <= g.EndLine {
+			return g
+		}
+	}
+	return nil
+}
+
 // commentsKey is the stable identity of the virtual comments branch row
 // of a document.
 func commentsKey(doc *caddyfile.Document) string {

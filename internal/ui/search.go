@@ -182,10 +182,19 @@ func (m *Model) activateSearchResult(r app.SearchResult) {
 		var node *caddyfile.Node
 		if r.Line > 0 {
 			node = structuralNodeAtLine(r.Doc, r.Line)
-			if node != nil {
-				expandNodeAncestors(r.Doc, *node, m.collapsed)
-			} else {
+			if node == nil {
+				// A top-level comment is not a structural node: select its
+				// row in the comments branch (expanding the branch first) so
+				// the hit never jumps back to the document row at the top.
+				if g := commentGroupAtLine(r.Doc, r.Line); g != nil {
+					delete(m.collapsed, commentsKey(r.Doc))
+					m.rebuildTree(commentKey(r.Doc, g))
+					m.sourceRevealLine = r.Line
+					return
+				}
 				delete(m.collapsed, itemKey(r.Doc, nil))
+			} else {
+				expandNodeAncestors(r.Doc, *node, m.collapsed)
 			}
 		}
 		m.rebuildTree(itemKey(r.Doc, node))
