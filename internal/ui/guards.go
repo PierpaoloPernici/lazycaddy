@@ -144,8 +144,11 @@ func (m *Model) closeErrorHistory() {
 // shows the failed operation and message on the first line and the safe
 // next action on an indented second line, so recovery is never hidden.
 func (m *Model) errorHistoryView(width, height int) string {
-	title := fmt.Sprintf("Error history · %d entr%s · Esc close", len(m.errorHistory), pluralEntr(len(m.errorHistory)))
-	bodyH := height - 3 // border (2) + title (1)
+	// Verso full-screen: title carries only the view name + context; the
+	// Esc close command lives in the system footer. A blank line separates
+	// the title from the content, like the other full-screen views.
+	title := fmt.Sprintf("Error history · %d entr%s", len(m.errorHistory), pluralEntr(len(m.errorHistory)))
+	bodyH := height - 4 // border (2) + title (1) + blank (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -154,7 +157,7 @@ func (m *Model) errorHistoryView(width, height int) string {
 		paneContentW = 1
 	}
 	m.syncErrorHistoryViewport(paneContentW, bodyH)
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + m.errorHistoryViewport.View())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + m.errorHistoryViewport.View())
 }
 
 // syncErrorHistoryViewport sizes the error-history viewport and rebuilds

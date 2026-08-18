@@ -31,28 +31,40 @@ func sourceGutterWidth(lineCount int) int {
 // section: its line numbers are emphasized and a subtle vertical bar is
 // drawn in the gutter for those lines. Passing 0 for both bounds renders
 // the gutter plainly. Returns the dim "(empty source ...)" message for an
-// empty src, exactly like numberedSource.
-func highlightSource(src []byte, selStartLine, selEndLine int) string {
+// empty src, exactly like numberedSource. Optional inline findings are
+// layered over the source (advisory, non-destructive) so suspicious
+// parse-tree patterns stand out without changing any byte.
+func highlightSource(src []byte, selStartLine, selEndLine int, findings ...caddyfile.InlineFinding) string {
 	if len(src) == 0 {
 		return dimStyle.Render("(empty source — raw view still available)")
 	}
 	lineSpans := caddyfile.Highlight(src)
 	roles := caddyfile.Classify(src).Spans
+	inlineByLine := inlineFindingsByLine(src, findings)
 	lines := strings.Split(string(src), "\n")
 	gutterW := sourceGutterWidth(len(lines))
 	var b strings.Builder
 	base := 0
 	for i, ln := range lines {
 		lineNo := i + 1
+		marker := inlineGutterMarker(inlineByLine[lineNo])
 		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
 			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-2, lineNo)))
 			b.WriteString(selectedGutterBarStyle.Render("▎"))
+			if marker != 0 {
+				b.WriteByte(marker)
+			}
 			b.WriteByte(' ')
 		} else {
-			fmt.Fprintf(&b, "%*d│ ", gutterW-2, lineNo)
+			fmt.Fprintf(&b, "%*d", gutterW-2, lineNo)
+			b.WriteRune('│')
+			if marker != 0 {
+				b.WriteByte(marker)
+			}
+			b.WriteByte(' ')
 		}
 		if i < len(lineSpans) {
-			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles))
+			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles, inlineByLine[lineNo]))
 		} else {
 			b.WriteString(ln)
 		}
@@ -70,9 +82,10 @@ func highlightSource(src []byte, selStartLine, selEndLine int) string {
 // spans so a role overrides the lexical base only where the parse tree
 // identified it reliably; nested role sub-spans (ports, paths, heredoc
 // markers) override their parent role because they arrive later in source
-// order.
-func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []caddyfile.Classified) string {
-	styled := make([]styledSpan, 0, len(spans)+len(roles))
+// order. Inline advisory findings, when supplied for this line, are layered
+// last so a suspicious token is unmistakable.
+func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []caddyfile.Classified, inline []caddyfile.InlineFinding) string {
+	styled := make([]styledSpan, 0, len(spans)+len(roles)+len(inline))
 	for _, sp := range spans {
 		clamped, ok := clampSpan(sp.Start, sp.End, base, len(ln), styleKeyFor(sp.Kind))
 		if ok {
@@ -89,7 +102,49 @@ func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []
 			styled = append(styled, clamped)
 		}
 	}
+	for _, f := range inline {
+		key := inlineStyleKeyFor(f.Severity)
+		if key == 0 {
+			continue
+		}
+		if clamped, ok := clampSpan(f.Start, f.End, base, len(ln), key); ok {
+			styled = append(styled, clamped)
+		}
+	}
 	return renderStyledLine(ln, styled, styleForKey)
+}
+
+// inlineFindingsByLine groups advisory findings by their 1-based source line.
+// Findings whose range cannot be pinned (column 0, out-of-range) are ignored
+// so the source view is never annotated on unreliable coordinates.
+func inlineFindingsByLine(src []byte, findings []caddyfile.InlineFinding) map[int][]caddyfile.InlineFinding {
+	out := map[int][]caddyfile.InlineFinding{}
+	srcLen := len(src)
+	for _, f := range findings {
+		if f.StartLine <= 0 || f.Start < 0 || f.End > srcLen || f.Start >= f.End {
+			continue
+		}
+		line := f.StartLine
+		out[line] = append(out[line], f)
+	}
+	return out
+}
+
+// inlineGutterMarker returns the gutter marker byte for the findings on one
+// line: '!' for a hint (likely problem), 'i' for an info, or 0 when the line
+// has no finding. It never relies on colour alone, so the marker is always a
+// distinct character even in monochrome terminals.
+func inlineGutterMarker(findings []caddyfile.InlineFinding) byte {
+	var marker byte
+	for _, f := range findings {
+		switch f.Severity {
+		case caddyfile.SeverityAdvisoryHint:
+			return '!'
+		case caddyfile.SeverityAdvisoryInfo:
+			marker = 'i'
+		}
+	}
+	return marker
 }
 
 // clampSpan converts an absolute [start, end) byte range to a line-relative
@@ -232,7 +287,8 @@ func styleKeyFor(k caddyfile.SpanKind) int {
 
 // styleForKey returns the style for a grouping key produced by styleKeyFor.
 // The zero key renders verbatim (no ANSI codes). Lexical keys occupy 1-5;
-// semantic role keys occupy 6+ and are resolved to their own role styles.
+// semantic role keys occupy 6-16; inline advisory findings use 100+ so they
+// never collide with the lexical or semantic spaces.
 func styleForKey(key int) lipgloss.Style {
 	switch key {
 	case 1:
@@ -267,8 +323,25 @@ func styleForKey(key int) lipgloss.Style {
 		return syntaxStatusCodeStyle
 	case 16:
 		return syntaxHeredocMarkerStyle
+	case 100:
+		return syntaxInlineHintStyle
+	case 101:
+		return syntaxInlineInfoStyle
 	default:
 		return syntaxWordStyle
+	}
+}
+
+// inlineStyleKeyFor maps an advisory finding severity to a style key in the
+// inline space (100+), or 0 for an unknown severity (no annotation).
+func inlineStyleKeyFor(s caddyfile.InlineSeverity) int {
+	switch s {
+	case caddyfile.SeverityAdvisoryHint:
+		return 100
+	case caddyfile.SeverityAdvisoryInfo:
+		return 101
+	default:
+		return 0
 	}
 }
 

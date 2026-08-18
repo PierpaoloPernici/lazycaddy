@@ -127,8 +127,12 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 				m.statusMessage = "✗ validation failed (working copy retained, not saved)"
 			}
 			m.recordError("format & validate", "validation failed", "fix the reported errors and re-run v")
+			m.setInlineCaddyOutcome(len(errors), true, m.state.Graph.Root.Source, firstErrMessage(errors), errors)
+			m.returnToInlineReviewIfNeeded()
 			return m, nil
 		}
+		m.setInlineCaddyOutcome(0, false, m.state.Graph.Root.Source, "", nil)
+		m.returnToInlineReviewIfNeeded()
 		m.statusMessage = "✗ validation failed (working copy not saved): " + msg.Err.Error()
 		m.recordError("format & validate", msg.Err.Error(), "fix the reported issue and re-run v")
 		return m, nil
@@ -136,16 +140,24 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 	m.diagnostics = nil
 	m.showDiagnostics = false
 	m.workingValidated = true
+	m.setInlineCaddyOutcome(0, true, m.state.Graph.Root.Source, "", nil)
+	m.returnToInlineReviewIfNeeded()
 	m.statusMessage = "✓ validated (working copy updated, not saved)"
 	return m, nil
 }
 
 // closeDiagnostics dismisses the diagnostics modal and clears its
-// state. Called by Esc and q from inside the modal.
+// state. Called by Esc and q from inside the modal. When a caddy validate (or
+// diagnostics detail) was opened from the inline review, closing returns to the
+// review instead of the home view.
 func (m *Model) closeDiagnostics() {
 	m.showDiagnostics = false
 	m.diagnostics = nil
 	m.diagCursor = 0
+	if m.inlineReviewReturn {
+		m.inlineReviewReturn = false
+		m.openInlineReview()
+	}
 }
 
 // diagnosticsView renders the validation results modal. It lists the
@@ -153,8 +165,8 @@ func (m *Model) closeDiagnostics() {
 // closing the modal through closeDiagnostics. The bottom footer shows
 // the context-aware keys, so the pane itself carries no hint line.
 func (m *Model) diagnosticsView(width, height int) string {
-	title := fmt.Sprintf("Validation · %d diagnostic(s) · Esc close", len(m.diagnostics))
-	bodyH := height - 3 // border (2) + title (1)
+	title := fmt.Sprintf("Validation · %d diagnostic(s)", len(m.diagnostics))
+	bodyH := height - 4 // border (2) + title (1) + blank line (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -199,7 +211,16 @@ func (m *Model) diagnosticsView(width, height int) string {
 			body.WriteString(line + "\n")
 		}
 	}
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + body.String())
+}
+
+// firstErrMessage returns the message of the first diagnostic (for the
+// advisory review's Caddy summary), or "" when there is none.
+func firstErrMessage(diags []validator.Diagnostic) string {
+	if len(diags) == 0 {
+		return ""
+	}
+	return diags[0].Message
 }
 
 // diagnosticDetailView renders the full diagnostic for the entry
@@ -226,7 +247,7 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	if paneContentW < 1 {
 		paneContentW = 1
 	}
-	bodyH := height - 3 // border (2) + title (1)
+	bodyH := height - 4 // border (2) + title (1) + blank line (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -240,6 +261,6 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	}
 
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(
-		activeTitleStyle.Render(title) + "\n" + m.detailViewport.View(),
+		activeTitleStyle.Render(title) + "\n\n" + m.detailViewport.View(),
 	)
 }

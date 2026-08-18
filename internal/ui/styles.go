@@ -280,6 +280,22 @@ var (
 	syntaxHeredocMarkerStyle = lipgloss.NewStyle().
 					Bold(true).
 					Foreground(warningColor)
+	// Inline advisory finding styles mark suspicious parse-tree patterns in
+	// the source pane. They are presentation-only and never block a save,
+	// write or reload; Caddy's own validation stays authoritative. A hint
+	// (likely problem) is underlined in an orange tone; an info (benign but
+	// suspicious pattern) is a softer blue. Fixed ANSI colors are used (like
+	// the domain/path styles) so the findings render deterministically in
+	// tests regardless of the terminal background detection.
+	// syntaxInlineHintStyle renders an advisory hint token underlined in
+	// orange.
+	syntaxInlineHintStyle = lipgloss.NewStyle().
+				Underline(true).
+				Foreground(lipgloss.Color("214"))
+	// syntaxInlineInfoStyle renders an advisory info token in a distinct
+	// blue-violet that does not collide with the semantic domain/path styles.
+	syntaxInlineInfoStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("68"))
 
 	// Log token styles follow the zap CapitalColorLevelEncoder palette:
 	// the token text itself carries the level/status label, so color is a

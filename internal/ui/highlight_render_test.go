@@ -26,7 +26,7 @@ func renderWithANSISelected(src []byte, startLine, endLine int) string {
 	return highlightSource(src, startLine, endLine)
 }
 
-var gutterRe = regexp.MustCompile(`^\s*\d+[│▎] `)
+var gutterRe = regexp.MustCompile(`^\s*\d+[│▎][!i]? `)
 
 // assertSourceLossless verifies that every source line appears in the
 // stripped rendered output exactly once, with the gutter removed: byte
