@@ -832,9 +832,9 @@ diff, backup and atomic-save safeguards.
   and wire it into the UI, keeping Caddy authoritative for syntax and
   validation.
 - [x] Navigate from named matcher definitions to their references (the `g`
-  keybinding): `caddyfile.Matchers` lists every occurrence and the cycler
-  re-anchors the tree and reveals each line, wrapping at the end. The session
-  is invalidated when the selected document changes or is reloaded.
+  keybinding, PR #46): `caddyfile.Matchers` lists every occurrence and the
+  cycler re-anchors the tree and reveals each line, wrapping at the end. The
+  session is invalidated when the selected document changes or is reloaded.
 - [ ] Add source folding for site blocks, snippets, named routes and nested
   handlers, and brace-aware indentation/movement where the source ranges make
   it safe.
