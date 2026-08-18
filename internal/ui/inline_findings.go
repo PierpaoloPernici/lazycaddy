@@ -215,12 +215,15 @@ func (m *Model) revealInlineFinding() {
 // document source) and does not reuse the temporary status strip for the main
 // summary.
 func (m *Model) inlineReviewView(width, height int) string {
-	title := activeTitleStyle.Render(fmt.Sprintf("INLINE FINDINGS (%d)", len(m.inlineFindings)))
-	header := renderLineOnSurface(title, width-2, chromeBackground)
-	// The navigation footer is rendered once by the system footer (View/footer),
-	// so the pane carries no hint line; only the title, the two sections and the
-	// pane border frame the content.
-	bodyH := height - 5 // header (1) + border (2) + separators (2)
+	paneContentW := width - paneStyle.GetVerticalFrameSize()
+	if paneContentW < 1 {
+		paneContentW = 1
+	}
+	title := activeTitleStyle.Render(fmt.Sprintf("Inline findings (%d)", len(m.inlineFindings)))
+	// The title carries only the view name and count (no command hints, which
+	// live once in the system footer), styled like every other view title (accent
+	// foreground, no background) with a blank line before the content.
+	bodyH := height - 6 // title (1) + blank (1) + border (2) + separators (2)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -229,8 +232,8 @@ func (m *Model) inlineReviewView(width, height int) string {
 	body.WriteString(m.inlineAdvisoryBlock(bodyH))
 	body.WriteString("\n" + dimStyle.Render("CADDY VALIDATION") + "\n")
 	body.WriteString(m.inlineCaddyBlock(bodyH))
-	return focusedPaneStyle.Width(width - paneStyle.GetVerticalFrameSize()).Height(height).Render(
-		header + "\n" + body.String(),
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(
+		title + "\n\n" + body.String(),
 	)
 }
 

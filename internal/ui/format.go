@@ -165,8 +165,8 @@ func (m *Model) closeDiagnostics() {
 // closing the modal through closeDiagnostics. The bottom footer shows
 // the context-aware keys, so the pane itself carries no hint line.
 func (m *Model) diagnosticsView(width, height int) string {
-	title := fmt.Sprintf("Validation · %d diagnostic(s) · Esc close", len(m.diagnostics))
-	bodyH := height - 3 // border (2) + title (1)
+	title := fmt.Sprintf("Validation · %d diagnostic(s)", len(m.diagnostics))
+	bodyH := height - 4 // border (2) + title (1) + blank line (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -211,7 +211,7 @@ func (m *Model) diagnosticsView(width, height int) string {
 			body.WriteString(line + "\n")
 		}
 	}
-	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n\n" + body.String())
 }
 
 // firstErrMessage returns the message of the first diagnostic (for the
@@ -247,7 +247,7 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	if paneContentW < 1 {
 		paneContentW = 1
 	}
-	bodyH := height - 3 // border (2) + title (1)
+	bodyH := height - 4 // border (2) + title (1) + blank line (1)
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -261,6 +261,6 @@ func (m *Model) diagnosticDetailView(width, height int) string {
 	}
 
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(
-		activeTitleStyle.Render(title) + "\n" + m.detailViewport.View(),
+		activeTitleStyle.Render(title) + "\n\n" + m.detailViewport.View(),
 	)
 }

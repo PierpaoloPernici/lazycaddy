@@ -428,7 +428,7 @@ func TestInlineReviewView_Sections(t *testing.T) {
 	m.inlineReviewCursor = 0
 	m.inlineCaddy = &inlineCaddyState{phase: "not run"}
 	view := stripANSI(m.inlineReviewView(50, 20))
-	if !strings.Contains(view, "INLINE FINDINGS (1)") {
+	if !strings.Contains(view, "Inline findings (1)") {
 		t.Errorf("view missing title with count:\n%s", view)
 	}
 	if !strings.Contains(view, "ADVISORY") || !strings.Contains(view, "CADDY VALIDATION") {
