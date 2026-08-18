@@ -56,9 +56,9 @@ func TestMouseSelectionSourcePressDragRelease(t *testing.T) {
 
 	// Press on the first character of line 1, drag to byte 7 of line 1,
 	// release.
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	if m.textSel.pane != textPaneSource {
 		t.Fatalf("selection pane = %d, want source", m.textSel.pane)
@@ -79,9 +79,9 @@ func TestMouseSelectionCopiesExactSourceBytes(t *testing.T) {
 	geo := m.sourcePaneGeometry()
 
 	// Select "example" (bytes 0..7) of line 1.
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	m = pressCopy(t, m)
 	if !bytes.Equal(clip.content, []byte("example")) {
@@ -98,9 +98,9 @@ func TestRightClickCopiesActiveSourceSelection(t *testing.T) {
 	m := selectionSource(t, source, clip)
 	geo := m.sourcePaneGeometry()
 
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	updated, cmd := m.Update(tea.MouseMsg{
 		X:      geo.x + 10,
@@ -144,9 +144,9 @@ func TestMouseSelectionMultiLineCopy(t *testing.T) {
 	geo := m.sourcePaneGeometry()
 
 	// Select from line 1 offset 3 to line 2 offset 10 ("mple.test {\n\trespond /").
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+10, geo.y+1, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+10, geo.y+1, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+10, geo.y+1, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+10, geo.y+1, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	m = pressCopy(t, m)
 	want := "mple.test {\n\trespond /"
@@ -162,8 +162,8 @@ func TestMouseSelectionRejectedOutsideSourcePane(t *testing.T) {
 
 	// Seed a valid selection first so we can prove it is dropped when the
 	// press lands on a non-text region.
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
 	if m.textSel.pane != textPaneSource {
 		t.Fatal("seed selection failed")
 	}
@@ -199,7 +199,7 @@ func TestMouseSelectionConfinedToPane(t *testing.T) {
 
 	// Press in the source pane, then drag far beyond the pane into the
 	// tree. The cursor must clamp to the pane's content.
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
 	m = mouseAt(t, m, 0, m.height-1, tea.MouseActionMotion, tea.MouseButtonLeft)
 	m = mouseAt(t, m, 0, m.height-1, tea.MouseActionRelease, tea.MouseButtonNone)
 
@@ -225,7 +225,7 @@ func TestSourceCoordinateMappingGutterAndScroll(t *testing.T) {
 	m := selectionSource(t, sb.String())
 	geo := m.sourcePaneGeometry()
 
-	// The gutter occupies the first 6 content cells: a press there must
+	// The gutter occupies the first 7 content cells (including the reserved marker cell): a press there must
 	// not select.
 	before := mouseAt(t, m, geo.x+3, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
 	if before.textSel.pane != textPaneNone {
@@ -244,7 +244,7 @@ func TestSourceCoordinateMappingGutterAndScroll(t *testing.T) {
 	scroll := m.viewport.YOffset
 
 	// The first visible row now shows the scrolled line.
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
 	r, ok := m.textSel.state.Range()
 	if !ok || r.Start.Line != scroll || r.Start.Offset != 0 {
 		t.Errorf("press after scroll = %+v, want line %d offset 0", r.Start, scroll)
@@ -258,9 +258,9 @@ func TestSourceCoordinateMappingWideChars(t *testing.T) {
 	geo := m.sourcePaneGeometry()
 
 	// Content cell 2 is 本 (bytes 3..6); content cell 6 is 'a' (byte 9).
-	m = mouseAt(t, m, geo.x+6+2, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+6, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+6, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7+2, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+6, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+6, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 	r, ok := m.textSel.state.Range()
 	if !ok {
 		t.Fatal("no selection on wide-char line")
@@ -403,9 +403,9 @@ func TestCopyYPrefersActiveTextSelection(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(*Model)
 	_ = m.View()
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	m = pressCopy(t, m)
 	if !bytes.Equal(clip.content, []byte("example")) {
@@ -449,9 +449,9 @@ func TestCopyYReportsBackendErrorForSelection(t *testing.T) {
 	clip := &fakeClipboard{err: errors.New("pipe broken")}
 	m := selectionSource(t, source, clip)
 	geo := m.sourcePaneGeometry()
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+4, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+4, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+4, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+4, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	m = pressCopy(t, m)
 	if !strings.Contains(m.statusMessage, "copy failed") {
@@ -474,8 +474,8 @@ func TestSelectionClearedOnViewSwitch(t *testing.T) {
 
 	// Select in the source pane.
 	geo := m.sourcePaneGeometry()
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
 	if m.textSel.pane != textPaneSource {
 		t.Fatal("seed source selection failed")
 	}
@@ -535,8 +535,8 @@ func TestSelectionClearedOnTreeNavigation(t *testing.T) {
 	m := selectionSource(t, source)
 	geo := m.sourcePaneGeometry()
 
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
 	if m.textSel.pane != textPaneSource {
 		t.Fatal("seed source selection failed")
 	}
@@ -554,8 +554,8 @@ func TestSelectionClearedOnModalOpen(t *testing.T) {
 	m := selectionSource(t, source)
 	geo := m.sourcePaneGeometry()
 
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
 	if m.textSel.pane != textPaneSource {
 		t.Fatal("seed source selection failed")
 	}
@@ -675,9 +675,9 @@ func TestSelectionRenderingPreservesText(t *testing.T) {
 	m := selectionSource(t, source)
 	geo := m.sourcePaneGeometry()
 
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+14, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+14, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+14, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+14, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	view := m.View()
 	plain := stripANSI(view)
@@ -722,8 +722,8 @@ func TestSourceTextPaneGeometry(t *testing.T) {
 	_ = m.View()
 	p := m.sourceTextPane()
 
-	if p.GutterWidth != 6 {
-		t.Errorf("GutterWidth = %d, want 6", p.GutterWidth)
+	if p.GutterWidth != 7 {
+		t.Errorf("GutterWidth = %d, want 7", p.GutterWidth)
 	}
 	if p.Scroll != m.viewport.YOffset {
 		t.Errorf("Scroll = %d, want viewport YOffset %d", p.Scroll, m.viewport.YOffset)
@@ -812,7 +812,7 @@ func TestMouseSelectionIgnoredWhileModalOpen(t *testing.T) {
 	m = updated.(*Model)
 
 	geo := m.sourcePaneGeometry()
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
 	if m.textSel.pane != textPaneNone {
 		t.Error("mouse press through a modal created a selection")
 	}
@@ -844,9 +844,9 @@ func TestSourceSelectionSurvivesResize(t *testing.T) {
 	m := selectionSource(t, source, clip)
 	geo := m.sourcePaneGeometry()
 
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+7, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 
 	// A resize re-lays-out the panes but does not change the content: the
 	// selection (anchored in source bytes) stays valid.
@@ -863,8 +863,8 @@ func TestSelectionClearedOnSourceRefresh(t *testing.T) {
 	m := selectionSource(t, source)
 	geo := m.sourcePaneGeometry()
 
-	m = mouseAt(t, m, geo.x+6, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
 	if m.textSel.pane != textPaneSource {
 		t.Fatal("seed source selection failed")
 	}
@@ -912,7 +912,7 @@ func TestSelectionGutterDragClampsToLineStart(t *testing.T) {
 
 	// Press on the first character, drag far left into the gutter: the
 	// selection clamps to the line start.
-	m = mouseAt(t, m, geo.x+6+3, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
+	m = mouseAt(t, m, geo.x+7+3, geo.y, tea.MouseActionPress, tea.MouseButtonLeft)
 	m = mouseAt(t, m, geo.x, geo.y, tea.MouseActionMotion, tea.MouseButtonLeft)
 	m = mouseAt(t, m, geo.x, geo.y, tea.MouseActionRelease, tea.MouseButtonNone)
 

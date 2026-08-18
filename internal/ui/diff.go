@@ -128,7 +128,7 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
 		return m.startCopy()
-	case "esc", "q":
+	case "esc", "q", "left":
 		if m.showChangeConflict && m.changeCompare {
 			// Esc from the conflict compare returns to the conflict
 			// options; the conflict modal stays open.

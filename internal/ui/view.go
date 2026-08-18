@@ -3,10 +3,12 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -364,6 +366,12 @@ func (m *Model) syncSource(srcW, paneH int) {
 	// selection reuses the cache so this is not per-frame work).
 	m.syncInlineFindings(doc)
 
+	// The authoritative caddy diagnostics for this document, when the last
+	// validate outcome covers it and is not stale. The overlay is derived
+	// from the same outcome the review's CADDY VALIDATION section shows, so
+	// the two surfaces never disagree.
+	diags := m.caddyDiagsForDoc(doc)
+
 	// The finding summary lives in the pane title, not the temporary status
 	// strip: it is scoped to the selected document and survives transient
 	// status messages. On narrow terminals it degrades to a short form.
@@ -386,12 +394,16 @@ func (m *Model) syncSource(srcW, paneH int) {
 
 	// A refresh (set by a save) forces the content reload and the reveal
 	// even when the selection key is unchanged; it is consumed here so it
-	// applies to exactly one render.
+	// applies to exactly one render. A changed caddy diagnostic overlay (a
+	// fresh validate outcome, or a result flagged stale after an edit)
+	// rebuilds the content too, so the 'E' markers and token highlights
+	// appear or disappear without a selection change.
 	refresh := m.sourceRefresh
 	m.sourceRefresh = false
 	prevDoc := m.sourceDoc
 	prevSel := m.lastSel
-	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel
+	diagsChanged := !slices.Equal(m.lastCaddyDiags, diags)
+	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged
 	if needsContent {
 		// The source pane is about to render different content: any text
 		// selection anchored in the previous document or node is stale.
@@ -405,7 +417,8 @@ func (m *Model) syncSource(srcW, paneH int) {
 		if doc != nil {
 			src = doc.Source
 		}
-		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings...))
+		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings, diags))
+		m.lastCaddyDiags = diags
 		if doc != prevDoc && !refresh {
 			// New document: start at the top; revealRange then scrolls
 			// just enough for the selected node. A save refresh stays put
@@ -536,24 +549,24 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ navigate · PgUp/PgDown scroll · Enter run · Esc close"
 	case m.showBackups:
 		if m.canRollback() {
-			keys = "↑/↓ move · Enter compare & rollback · Esc close"
+			keys = "↑/↓ move · Enter/→ compare & rollback · Esc close"
 		} else {
-			keys = "↑/↓ move · Enter compare · Esc close"
+			keys = "↑/↓ move · Enter/→ compare · Esc close"
 		}
 	case m.showDetail:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
 	case m.showDiagnostics:
-		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
+		keys = "↑/↓ navigate · Enter/+ or → detail · Esc/← close"
 	case m.logDetailOpen:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back · q quit"
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back · q quit"
 	case m.showLogs:
-		keys = "↑/↓ move · PgUp/PgDown page · Enter detail · f follow (on/off) · p pause/resume · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · p pause/resume · Esc close · q quit"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.showInlineReview:
-		keys = "↑/↓ move · Enter reveal/details · v validate · Esc close"
+		keys = "↑/↓ move · Enter reveal · → detail · v validate · Esc close"
 	case m.state != nil && m.state.Graph != nil:
 		// The normal footer is deliberately navigation-only. Operational
 		// actions remain available through their direct hotkeys and the
@@ -648,25 +661,36 @@ func wrapText(text string, width int) string {
 
 // numberedSource renders the source pane content: line numbers, the exact
 // source bytes and syntax highlighting. Optional advisory inline findings
-// are layered over the source when supplied, so suspicious parse-tree
-// patterns stand out without changing any byte.
-func numberedSource(src []byte, selStartLine, selEndLine int, findings ...caddyfile.InlineFinding) string {
-	return highlightSource(src, selStartLine, selEndLine, findings...)
+// and authoritative caddy diagnostics are layered over the source when
+// supplied, so suspicious parse-tree patterns and real validation errors
+// stand out without changing any byte.
+func numberedSource(src []byte, selStartLine, selEndLine int, findings []caddyfile.InlineFinding, diags []validator.Diagnostic) string {
+	return highlightSource(src, selStartLine, selEndLine, findings, diags)
 }
 
 // sourceTitleWithFindings appends the advisory finding summary to the source
 // pane title, scoped to the selected document. With findings it reads
 // e.g. "; 2 findings · [i] review" (as per the review view handover); without
-// findings it reads "; advisory: clean". The summary lives in the title so
-// transient status messages never overwrite it.
+// findings it reads "; advisory: clean". When the authoritative caddy
+// outcome has errors on this document, the error count is appended as well
+// (e.g. "; 2 caddy error(s)"). The summary lives in the title so transient
+// status messages never overwrite it.
 func (m *Model) sourceTitleWithFindings(base string, doc *caddyfile.Document) string {
 	if doc == nil || doc.Err != nil || !m.inlineFindingsReady(doc) {
+		if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
+			return base + fmt.Sprintf(" · %d caddy error(s)", n)
+		}
 		return base
 	}
 	if len(m.inlineFindings) == 0 {
-		return base + " · advisory: clean"
+		base += " · advisory: clean"
+	} else {
+		base += fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
 	}
-	return base + fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
+	if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
+		base += fmt.Sprintf(" · %d caddy error(s)", n)
+	}
+	return base
 }
 
 // inlineFindingsReady reports whether the cached findings belong to the given

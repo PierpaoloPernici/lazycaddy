@@ -95,7 +95,7 @@ func TestModelFormatAndValidate_SuccessStoresWorkingCopy(t *testing.T) {
 	}
 }
 
-func TestModelFormatAndValidate_FailureShowsModal(t *testing.T) {
+func TestModelFormatAndValidate_FailureRevealsFirstError(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "garbage\n",
 	}))
@@ -111,14 +111,14 @@ func TestModelFormatAndValidate_FailureShowsModal(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	msg := cmd()
 	m.Update(msg) // process the result
-	if !m.showDiagnostics {
-		t.Fatal("showDiagnostics = false, want true on validation failure with diagnostics")
+	// A failed v no longer forces the diagnostics modal open: it reveals the
+	// first authoritative error in the source pane instead, so the operator
+	// does not have to hunt. The list stays available in the i review.
+	if m.showDiagnostics {
+		t.Fatal("showDiagnostics = true, want false: v must not force the modal")
 	}
-	if len(m.diagnostics) != 1 {
-		t.Fatalf("len(diagnostics) = %d, want 1", len(m.diagnostics))
-	}
-	if m.diagCursor != 0 {
-		t.Errorf("diagCursor = %d, want 0 on open", m.diagCursor)
+	if m.sourceRevealLine != 1 {
+		t.Errorf("sourceRevealLine = %d, want 1 (first error line revealed)", m.sourceRevealLine)
 	}
 	if string(m.workingBytes) != "formatted working copy" {
 		t.Errorf("workingBytes = %q, want formatted working copy", m.workingBytes)
@@ -129,11 +129,12 @@ func TestModelFormatAndValidate_FailureShowsModal(t *testing.T) {
 	if !strings.Contains(m.statusMessage, "working copy retained") {
 		t.Errorf("statusMessage = %q, want retained working copy state", m.statusMessage)
 	}
-	view := m.View()
-	for _, want := range []string{"Validation", "boom", "config/Caddyfile:1:1"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("View missing %q:\n%s", want, view)
-		}
+	// The outcome is retained for the i review and the source overlay.
+	if m.inlineCaddy == nil || m.inlineCaddy.phase != "result" || len(m.inlineCaddy.details) != 1 {
+		t.Errorf("inline outcome not retained after v failure: %+v", m.inlineCaddy)
+	}
+	if got := m.caddyDiagsForDoc(m.selectedItem().doc); len(got) != 1 {
+		t.Errorf("source overlay diags = %d, want 1 for the root document", len(got))
 	}
 }
 
@@ -157,7 +158,7 @@ func TestModelFormatAndValidate_FailureEmptyDiags(t *testing.T) {
 	}
 }
 
-func TestModelFormatAndValidate_DiagnosticsModalNavigation(t *testing.T) {
+func TestModelDiagnosticsList_Navigation(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "garbage\n",
 	}))
@@ -166,12 +167,15 @@ func TestModelFormatAndValidate_DiagnosticsModalNavigation(t *testing.T) {
 		{Path: "p", Line: 2, Message: "second", Severity: validator.SeverityError},
 		{Path: "p", Line: 3, Message: "third", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd()) // open the modal
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 80, 24)
+	// The diagnostics modal is now reachable from the delete/edit flows and
+	// the review detail (→), not from a plain v: drive it directly.
+	m.diagnostics = diags
+	m.diagCursor = 0
+	m.showDiagnostics = true
 	if !m.showDiagnostics {
-		t.Fatal("modal not open after result delivery")
+		t.Fatal("modal not open")
 	}
 	if m.diagCursor != 0 {
 		t.Fatalf("diagCursor = %d, want 0 on open", m.diagCursor)
@@ -207,9 +211,6 @@ func TestModelFormatAndValidate_DiagnosticsModalNavigation(t *testing.T) {
 	}
 	if len(m.diagnostics) != 0 {
 		t.Errorf("diagnostics not cleared after Esc: %v", m.diagnostics)
-	}
-	if !strings.Contains(m.statusMessage, "validation failed") {
-		t.Errorf("statusMessage = %q, want validation failure state after closing modal", m.statusMessage)
 	}
 }
 
@@ -315,26 +316,38 @@ func TestModelFormatAndValidate_InfoDiagnosticsFilteredOut(t *testing.T) {
 	}
 	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 80, 24)
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	m.Update(cmd())
-	if !m.showDiagnostics {
-		t.Fatal("expected modal open (error diagnostic present)")
+	// A failed v does not open the modal; the outcome retains only the
+	// error-level diagnostic for the review and the source overlay.
+	if m.showDiagnostics {
+		t.Fatal("v must not open the diagnostics modal")
 	}
-	if len(m.diagnostics) != 1 {
-		t.Fatalf("len(m.diagnostics) = %d, want 1 (info must be filtered out)", len(m.diagnostics))
+	if m.inlineCaddy == nil || len(m.inlineCaddy.details) != 1 {
+		t.Fatalf("outcome details = %+v, want 1 (info must be filtered out)", m.inlineCaddy)
 	}
-	if m.diagnostics[0].Severity != validator.SeverityError {
-		t.Errorf("filtered diagnostic severity = %v, want error", m.diagnostics[0].Severity)
+	if m.inlineCaddy.details[0].Severity != validator.SeverityError {
+		t.Errorf("filtered diagnostic severity = %v, want error", m.inlineCaddy.details[0].Severity)
 	}
-	if m.diagnostics[0].Line != 47 {
-		t.Errorf("filtered diagnostic line = %d, want 47", m.diagnostics[0].Line)
+	if m.inlineCaddy.details[0].Line != 47 {
+		t.Errorf("filtered diagnostic line = %d, want 47", m.inlineCaddy.details[0].Line)
+	}
+	if m.sourceRevealLine != 47 {
+		t.Errorf("first error line not revealed, got %d", m.sourceRevealLine)
 	}
 	view := m.View()
 	if strings.Contains(view, "info noise") {
 		t.Errorf("View should not contain info diagnostic, but does:\n%s", view)
 	}
-	if !strings.Contains(view, "module not registered") {
-		t.Errorf("View missing error diagnostic:\n%s", view)
+	// The filtered error is listed in the i review, not in the source view.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	review := stripANSI(m.View())
+	if !strings.Contains(review, "module not registered") {
+		t.Errorf("review missing the error diagnostic:\n%s", review)
+	}
+	if strings.Contains(review, "info noise") {
+		t.Errorf("review should not contain the info diagnostic:\n%s", review)
 	}
 }
 
@@ -377,11 +390,9 @@ func TestModelDiagnosticsView_LongMessageTruncated(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 60, 20) // narrow window
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	view := m.View()
 	if !strings.Contains(view, "…") {
 		t.Errorf("expected the long message to be truncated with '…', view:\n%s", view)
@@ -404,11 +415,9 @@ func TestModelDiagnosticsDetail_EnterOpensDetail(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 47, Column: 1, Message: "module not registered: dns.providers.cloudflare", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	if !m.showDiagnostics {
 		t.Fatal("modal must be open before opening detail")
 	}
@@ -442,11 +451,9 @@ func TestModelDiagnosticsDetail_PlusOpensDetail(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
 	if !m.showDetail {
 		t.Error("showDetail = false after '+', want true ('+' is an alias for Enter)")
@@ -463,11 +470,9 @@ func TestModelDiagnosticsDetail_EscReturnsToList(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open detail
 	if !m.showDetail {
 		t.Fatal("detail should be open after Enter")
@@ -491,11 +496,9 @@ func TestModelDiagnosticsDetail_EscClosesModal(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // Esc from list
 	if m.showDiagnostics {
 		t.Error("showDiagnostics = true after Esc from list, want false")
@@ -517,11 +520,9 @@ func TestModelDiagnosticsDetail_LongMessageWraps(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 60, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	view := m.View()
 	for i, line := range strings.Split(view, "\n") {
@@ -550,11 +551,9 @@ func TestModelDiagnosticsDetail_PgUpPgDownScroll(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 60, 12) // short window so the body overflows
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	initialY := m.detailViewport.YOffset
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
@@ -579,11 +578,9 @@ func TestModelDiagnosticsDetail_ArrowKeysScroll(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 60, 12)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	initialY := m.detailViewport.YOffset
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
@@ -609,11 +606,9 @@ func TestModelDiagnosticsDetail_ListStillTruncates(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: longMsg, Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 60, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	listView := m.View()
 	if !strings.Contains(listView, "…") {
 		t.Errorf("list view should still truncate with '…', got:\n%s", listView)

@@ -296,6 +296,45 @@ var (
 	// blue-violet that does not collide with the semantic domain/path styles.
 	syntaxInlineInfoStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("68"))
+	// syntaxCaddyErrorStyle renders the token (or whole line) flagged by the
+	// authoritative caddy validate outcome. It is stronger than the advisory
+	// styles: bold red underline marks a real validation error, and the
+	// gutter carries a matching 'E' marker so the distinction never relies
+	// on colour alone.
+	syntaxCaddyErrorStyle = lipgloss.NewStyle().
+				Bold(true).
+				Underline(true).
+				Foreground(lipgloss.Color("196"))
+	// syntaxCaddyWarningStyle renders a non-blocking caddy validation
+	// warning (reserved: the diagnostics modal filters to errors today).
+	syntaxCaddyWarningStyle = lipgloss.NewStyle().
+				Underline(true).
+				Foreground(lipgloss.Color("208"))
+
+	// Gutter marker badges render the advisory and caddy markers on a
+	// colored background so they read as small chips next to the line
+	// number. Every line reserves the marker cell (a plain space when the
+	// line is clean), so the source text never shifts horizontally between
+	// marked and unmarked lines. The badge background echoes the token
+	// styles: blue for advisory info, amber for advisory hint, red for
+	// caddy errors (white bold text) and orange for caddy warnings. Fixed
+	// ANSI colors are used so the badges render deterministically in tests.
+	gutterInfoBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("27")).
+				Foreground(lipgloss.Color("231")).
+				Bold(true)
+	gutterHintBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("214")).
+				Foreground(lipgloss.Color("0")).
+				Bold(true)
+	gutterErrorBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("196")).
+				Foreground(lipgloss.Color("231")).
+				Bold(true)
+	gutterWarningBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("208")).
+				Foreground(lipgloss.Color("231")).
+				Bold(true)
 
 	// Log token styles follow the zap CapitalColorLevelEncoder palette:
 	// the token text itself carries the level/status label, so color is a

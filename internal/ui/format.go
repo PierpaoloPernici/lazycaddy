@@ -15,7 +15,7 @@ func (m *Model) updateDiagnosticsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDetailKey(msg)
 	}
 	switch msg.String() {
-	case "esc", "q":
+	case "esc", "q", "left":
 		m.closeDiagnostics()
 	case "up", "k":
 		if m.diagCursor > 0 {
@@ -25,10 +25,11 @@ func (m *Model) updateDiagnosticsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.diagCursor < len(m.diagnostics)-1 {
 			m.diagCursor++
 		}
-	// Enter and '+' open the detail view for the diagnostic under the
-	// cursor. '+' is a Vim-style alias and is intentionally a no-op
-	// outside the diagnostics modal.
-	case "enter", "+":
+	// Enter, '+' and Right open the detail view for the diagnostic under
+	// the cursor. '+' is a Vim-style alias and Right follows the
+	// master-detail convention (→ opens a deeper detail); both are
+	// intentionally no-ops outside the diagnostics modal.
+	case "enter", "+", "right":
 		m.openDetail()
 	}
 	return m, nil
@@ -104,11 +105,9 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 		// A failed validation must never be savable.
 		m.workingValidated = false
 		// Caddy emits info-level log lines alongside parse errors
-		// (e.g. "INFO  using config from file"). The modal is for
-		// actionable findings, so filter to error-level diagnostics
-		// before opening it. If no errors remain after the filter,
-		// fall back to the status line so the underlying error is
-		// still visible.
+		// (e.g. "INFO  using config from file"). Only error-level
+		// diagnostics are actionable, so the review lists just those; if no
+		// errors remain the status line surfaces the underlying error.
 		var errors []validator.Diagnostic
 		for _, d := range msg.Diagnostics {
 			if d.Severity == validator.SeverityError {
@@ -116,19 +115,22 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 			}
 		}
 		if len(errors) > 0 {
-			m.diagnostics = errors
-			m.diagCursor = 0
-			m.showDiagnostics = true
+			// The operator must not hunt for the first problem: a failed v
+			// from the main view selects the first authoritative error's
+			// document and reveals its line / pinned token in the source
+			// pane (the E marker and red token show there). The full list
+			// stays available in the i review; the diagnostics modal is
+			// still used by the delete/edit and review-detail flows.
+			m.setInlineCaddyOutcome(len(errors), true, m.state.Graph.Root.Source, firstErrMessage(errors), errors)
 			m.statusMessage = "✗ validation failed (working copy not saved)"
-			// The diagnostics modal is an unrelated workflow: any active
-			// text selection is dropped.
-			m.clearTextSelection()
 			if msg.Formatted != nil {
 				m.statusMessage = "✗ validation failed (working copy retained, not saved)"
 			}
 			m.recordError("format & validate", "validation failed", "fix the reported errors and re-run v")
-			m.setInlineCaddyOutcome(len(errors), true, m.state.Graph.Root.Source, firstErrMessage(errors), errors)
 			m.returnToInlineReviewIfNeeded()
+			if !m.showInlineReview {
+				m.revealFirstCaddyError()
+			}
 			return m, nil
 		}
 		m.setInlineCaddyOutcome(0, false, m.state.Graph.Root.Source, "", nil)

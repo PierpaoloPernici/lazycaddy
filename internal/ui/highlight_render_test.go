@@ -23,10 +23,10 @@ func renderWithANSI(src []byte) string {
 func renderWithANSISelected(src []byte, startLine, endLine int) string {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
-	return highlightSource(src, startLine, endLine)
+	return highlightSource(src, startLine, endLine, nil, nil)
 }
 
-var gutterRe = regexp.MustCompile(`^\s*\d+[│▎][!i]? `)
+var gutterRe = regexp.MustCompile(`^\s*\d+[│▎][ !iEW] `)
 
 // assertSourceLossless verifies that every source line appears in the
 // stripped rendered output exactly once, with the gutter removed: byte
@@ -141,8 +141,8 @@ func TestHighlightSourceCommentStyled(t *testing.T) {
 	got := renderWithANSI(src)
 	stripped := stripANSI(got)
 	line := strings.Split(stripped, "\n")[0]
-	if line != "   1│ # hello" {
-		t.Errorf("stripped line = %q, want %q", line, "   1│ # hello")
+	if line != "   1│  # hello" {
+		t.Errorf("stripped line = %q, want %q", line, "   1│  # hello")
 	}
 	if !strings.Contains(got, "\x1b[") || !strings.Contains(got, sgrOf(syntaxCommentStyle)) {
 		t.Errorf("comment must be styled with the theme comment style, got:\n%s", got)
@@ -157,11 +157,11 @@ func TestHighlightSourcePlaceholderStyled(t *testing.T) {
 	got := renderWithANSI(src)
 	stripped := stripANSI(got)
 	line := strings.Split(stripped, "\n")[0]
-	if line != "   1│ respond {$MSG}" {
-		t.Errorf("stripped line = %q, want %q", line, "   1│ respond {$MSG}")
+	if line != "   1│  respond {$MSG}" {
+		t.Errorf("stripped line = %q, want %q", line, "   1│  respond {$MSG}")
 	}
-	if w := lipgloss.Width(line); w != 20 {
-		t.Errorf("stripped line width = %d, want 20", w)
+	if w := lipgloss.Width(line); w != 21 {
+		t.Errorf("stripped line width = %d, want 21", w)
 	}
 	if !strings.Contains(got, "{$MSG}") {
 		t.Errorf("placeholder text missing from the rendered view:\n%s", got)

@@ -99,7 +99,7 @@ func (m *Model) updateBackupsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.backupViewport.PageUp()
 	case "pgdown":
 		m.backupViewport.PageDown()
-	case "enter":
+	case "enter", "right":
 		if m.backupCursor >= 0 && m.backupCursor < len(m.backups) {
 			return m, m.openBackupCompareCmd(m.backups[m.backupCursor])
 		}

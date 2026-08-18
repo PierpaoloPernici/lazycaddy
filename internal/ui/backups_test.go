@@ -1084,3 +1084,24 @@ func TestBackups_TinySizes(t *testing.T) {
 	m.syncBackupViewport(1, 1)
 	m.syncBackupViewport(5, 0)
 }
+
+func TestBackups_FooterRollbackHint(t *testing.T) {
+	// With writable settings plus a saver, formatter and rollbacker, the
+	// backup-list footer advertises the rollback path (Enter/→ compare &
+	// rollback).
+	loader := app.NewLoader(config.Settings{ConfigPath: "Caddyfile", ReadOnly: false, BackupDir: "/backups"}, fsReader(map[string]string{
+		"Caddyfile": "example.test {\n}\n",
+	}))
+	entry := backupEntry(t, "/backups", "2026-08-01T20-10-00-001-Caddyfile", 1, "Caddyfile")
+	rb := &fakeRollbacker{entries: []backup.Entry{entry}}
+	m := newLoadedModel(t, loader, rb, &fakeSaver{}, &fakeFormatter{})
+	m = resize(m, 80, 24)
+	m = pressB(t, m)
+	if !m.showBackups {
+		t.Fatal("showBackups = false after B")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Enter/→ compare & rollback") {
+		t.Errorf("rollback-capable backups footer missing the hint, got:\n%s", view)
+	}
+}

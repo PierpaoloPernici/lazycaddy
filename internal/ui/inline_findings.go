@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -66,6 +67,45 @@ func (m *Model) markInlineCaddyStaleIfNeeded(doc *caddyfile.Document) {
 	}
 }
 
+// caddyDiagsForDoc returns the authoritative caddy validate diagnostics that
+// belong to the given document, or nil when the outcome is unavailable
+// (never validated, flagged stale after an edit or reload, no reported
+// lines, or no diagnostics for this path). Paths are matched with
+// filepath.Clean so the display path and the graph document paths agree
+// regardless of minor separator differences; a diagnostic whose path cannot
+// be matched is never overlaid on another document's lines. Diagnostics
+// caddy reported without any position (Line 0, e.g. "unrecognized matcher
+// name: @phantom") are pinned onto the token they name in the document
+// source as a best-effort presentation mapping; an unpinnable one is
+// simply not overlaid. The overlay is driven by the same outcome as the
+// review's CADDY VALIDATION section, so the two surfaces never disagree.
+func (m *Model) caddyDiagsForDoc(doc *caddyfile.Document) []validator.Diagnostic {
+	if doc == nil || m.inlineCaddy == nil || m.inlineCaddy.phase != "result" {
+		return nil
+	}
+	if len(m.inlineCaddy.details) == 0 {
+		return nil
+	}
+	docPath := filepath.Clean(doc.Path)
+	var out []validator.Diagnostic
+	for _, d := range m.inlineCaddy.details {
+		if filepath.Clean(d.Path) != docPath {
+			continue
+		}
+		if d.Line > 0 {
+			out = append(out, d)
+			continue
+		}
+		if line, col := pinDiagnostic(doc.Source, d.Message); line > 0 {
+			pinned := d
+			pinned.Line = line
+			pinned.Column = col
+			out = append(out, pinned)
+		}
+	}
+	return out
+}
+
 // openInlineReview opens the interactive "Review inline findings" view. It
 // computes the findings for the current document if not cached yet and starts
 // the list cursor at the first row. It never runs caddy validate implicitly.
@@ -102,13 +142,23 @@ func (m *Model) returnToInlineReviewIfNeeded() {
 }
 
 // inlineReviewRowCount returns the number of navigable rows in the review:
-// one per advisory finding, plus the Caddy validation row when an outcome exists.
+// one per advisory finding, plus the Caddy validation rows (one per error
+// diagnostic, or a single state row for not run / stale / clean).
 func (m *Model) inlineReviewRowCount() int {
-	n := len(m.inlineFindings)
-	if m.inlineCaddy != nil {
-		n++
+	return len(m.inlineFindings) + m.caddyReviewRowCount()
+}
+
+// caddyReviewRowCount returns the number of CADDY VALIDATION rows: one per
+// error diagnostic when an outcome with errors is available, otherwise a
+// single state row (not run / stale / clean).
+func (m *Model) caddyReviewRowCount() int {
+	if m.inlineCaddy == nil {
+		return 1
 	}
-	return n
+	if m.inlineCaddy.phase == "result" && len(m.inlineCaddy.details) > 0 {
+		return len(m.inlineCaddy.details)
+	}
+	return 1
 }
 
 // updateInlineReviewKey handles keys while the review view is open.
@@ -126,10 +176,14 @@ func (m *Model) updateInlineReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		return m.activateInlineReviewRow()
+	case "right":
+		// → opens the full diagnostic detail for a Caddy row, following the
+		// master-detail convention; advisory rows have no deeper detail.
+		return m.openCaddyReviewDetail()
 	case "v":
 		// Reuse the authoritative caddy validate workflow. Mark that the review
-		// launched it so the review is restored when the outcome arrives (or
-		// when the diagnostics view closes) instead of returning to home.
+		// launched it so the review is restored when the outcome arrives
+		// instead of returning to home.
 		m.inlineReviewReturn = true
 		m.closeInlineReview()
 		return m.startFormatAndValidate()
@@ -138,50 +192,158 @@ func (m *Model) updateInlineReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // activateInlineReviewRow handles Enter in the review view: revealing an
-// advisory finding line, or opening the Caddy diagnostics for a completed
-// validation result row. On a "not run" / "stale" Caddy row (no diagnostics
-// to show) it simply closes the review.
+// advisory finding line, or selecting the diagnostic's document and
+// revealing its line / pinned token for a Caddy row. On a state row (not
+// run / stale / clean) it simply closes the review.
 func (m *Model) activateInlineReviewRow() (tea.Model, tea.Cmd) {
-	caddyRow := len(m.inlineFindings)
-	if m.inlineReviewCursor == caddyRow && m.inlineCaddy != nil {
-		if m.inlineCaddy.phase == "result" {
-			// The user opened the details from the review, so restore the
-			// review when the diagnostics view closes instead of returning home.
-			m.inlineReviewReturn = true
-			m.closeInlineReview()
-			return m.openCaddyDiagnostics()
-		}
-		m.closeInlineReview()
-		return m, nil
+	findings := len(m.inlineFindings)
+	if m.inlineReviewCursor >= findings {
+		return m.activateCaddyReviewRow(m.inlineReviewCursor - findings)
 	}
 	m.revealInlineFinding()
 	m.closeInlineReview()
 	return m, nil
 }
 
-// openCaddyDiagnostics switches to the existing Caddy diagnostics view when
-// validation details are available. It restores the captured diagnostics (so
-// Enter on the review's Caddy row works even after the modal was closed) and
-// reveals the first error's line in the source pane.
-func (m *Model) openCaddyDiagnostics() (tea.Model, tea.Cmd) {
-	if m.inlineCaddy == nil {
-		m.statusMessage = "no Caddy diagnostics to show — press v to validate"
+// activateCaddyReviewRow handles Enter on a Caddy validation row: it
+// selects the diagnostic's document and reveals the error line or pinned
+// token in the source pane, closing the review (mirroring the advisory
+// rows). State rows (not run / stale / clean) close without revealing.
+func (m *Model) activateCaddyReviewRow(idx int) (tea.Model, tea.Cmd) {
+	m.closeInlineReview()
+	if m.inlineCaddy == nil || m.inlineCaddy.phase != "result" {
 		return m, nil
 	}
-	if len(m.inlineCaddy.details) == 0 {
-		m.statusMessage = "no Caddy diagnostics to show — press v to validate"
+	if idx < 0 || idx >= len(m.inlineCaddy.details) {
+		return m, nil
+	}
+	m.revealCaddyDiagnostic(m.inlineCaddy.details[idx])
+	return m, nil
+}
+
+// openCaddyReviewDetail opens the full diagnostic detail for the Caddy row
+// under the cursor (→). It reuses the diagnostics modal: the cursor is
+// positioned on the selected diagnostic and the detail view opens
+// immediately; closing returns to the review list.
+func (m *Model) openCaddyReviewDetail() (tea.Model, tea.Cmd) {
+	findings := len(m.inlineFindings)
+	if m.inlineReviewCursor < findings || m.inlineCaddy == nil {
+		return m, nil
+	}
+	idx := m.inlineReviewCursor - findings
+	if m.inlineCaddy.phase != "result" || idx < 0 || idx >= len(m.inlineCaddy.details) {
 		return m, nil
 	}
 	m.diagnostics = append([]validator.Diagnostic(nil), m.inlineCaddy.details...)
-	m.diagCursor = 0
+	m.diagCursor = idx
 	m.showDiagnostics = true
-	// Reveal the first error's line in the source pane, mirroring how the
-	// advisory findings reveal their own line.
-	if line := m.inlineCaddy.details[0].Line; line > 0 {
-		m.sourceRevealLine = line
-	}
+	m.inlineReviewReturn = true
+	m.openDetail()
 	m.clearTextSelection()
 	return m, nil
+}
+
+// revealCaddyDiagnostic selects the document of a caddy diagnostic (matched
+// by clean path), expands the tree to the row containing the diagnostic's
+// line (or the token pinned from its message when caddy reported no
+// position) and reveals it in the source pane, where the E marker and the
+// authoritative red styling show. It reports whether the diagnostic could
+// be resolved; an unresolvable one leaves the selection untouched.
+func (m *Model) revealCaddyDiagnostic(d validator.Diagnostic) bool {
+	if m.state == nil || m.state.Graph == nil {
+		if d.Line > 0 {
+			m.sourceRevealLine = d.Line
+			return true
+		}
+		return false
+	}
+	doc := m.docAtPath(d.Path)
+	if doc == nil {
+		return false
+	}
+	line := d.Line
+	if line <= 0 {
+		line, _ = pinDiagnostic(doc.Source, d.Message)
+	}
+	if line <= 0 {
+		return false
+	}
+	// structuralNodeAtLine returns the deepest rendered (tree-row) node, so
+	// the row always exists in the rebuilt tree; expand the containing
+	// ancestors first so it is visible even when collapsed, then select it
+	// (the document row when the line falls outside every tree row),
+	// mirroring the search activation.
+	if n := structuralNodeAtLine(doc, line); n != nil {
+		expandNodeAncestors(doc, *n, m.collapsed)
+		m.rebuildTree(itemKey(doc, n))
+	} else {
+		m.rebuildTree(itemKey(doc, nil))
+	}
+	m.sourceRevealLine = line
+	m.clearTextSelection()
+	return true
+}
+
+// revealFirstCaddyError selects the document of the first authoritative
+// error diagnostic that resolves to a source line (positioned or pinned)
+// and reveals it, so a failed v from the main view lands the operator on
+// the first problem without hunting. The full list stays available in the
+// i review.
+func (m *Model) revealFirstCaddyError() {
+	if m.inlineCaddy == nil {
+		return
+	}
+	for _, d := range m.inlineCaddy.details {
+		if m.revealCaddyDiagnostic(d) {
+			return
+		}
+	}
+}
+
+// docAtPath returns the graph document whose clean path matches path, or
+// nil when the graph is unavailable or the path is not part of it.
+func (m *Model) docAtPath(path string) *caddyfile.Document {
+	if m.state == nil || m.state.Graph == nil {
+		return nil
+	}
+	clean := filepath.Clean(path)
+	for _, d := range m.state.Graph.Documents {
+		if filepath.Clean(d.Path) == clean {
+			return d
+		}
+	}
+	return nil
+}
+
+// caddyDiagDisplayLine returns the 1-based source line of a caddy
+// diagnostic for display: the reported line, or the token pinned from the
+// message when caddy reported no position (0 when it cannot be pinned).
+func (m *Model) caddyDiagDisplayLine(d validator.Diagnostic) int {
+	if d.Line > 0 {
+		return d.Line
+	}
+	if doc := m.docAtPath(d.Path); doc != nil {
+		line, _ := pinDiagnostic(doc.Source, d.Message)
+		return line
+	}
+	return 0
+}
+
+// caddyDiagPathLabel renders the document path of a caddy diagnostic
+// relative to the root Caddyfile's directory when the diagnostic lives
+// under it (so an import shows e.g. "snippets/auth.caddy"), falling back to
+// the full path when the diagnostic refers outside the root directory or
+// the relative form would be ambiguous.
+func (m *Model) caddyDiagPathLabel(d validator.Diagnostic) string {
+	if m.state == nil || m.state.Settings.ConfigPath == "" {
+		return d.Path
+	}
+	rootDir := filepath.Dir(filepath.Clean(m.state.Settings.ConfigPath))
+	rel, err := filepath.Rel(rootDir, d.Path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return d.Path
+	}
+	return rel
 }
 
 // revealInlineFinding re-anchors the tree on the node containing the finding
@@ -270,70 +432,78 @@ func (m *Model) inlineAdvisoryBlock(maxRows int) string {
 	return b.String()
 }
 
-// inlineCaddyBlock renders the Caddy validation section: either the outcome
-// summary (with the error styled distinctly) or the "not run" placeholder. It
-// is a separate navigable row at the end of the review list.
+// inlineCaddyBlock renders the CADDY VALIDATION rows: one row per error
+// diagnostic (with its line and relative path) when an outcome with errors
+// is available, otherwise a single state row (not run / stale / clean).
 func (m *Model) inlineCaddyBlock(maxRows int) string {
 	c := m.inlineCaddy
 	if c == nil {
 		c = &inlineCaddyState{phase: "not run"}
 	}
-	caddyRow := len(m.inlineFindings)
-	selected := m.inlineReviewCursor == caddyRow
+	findings := len(m.inlineFindings)
+	var b strings.Builder
+	if c.phase == "result" && len(c.details) > 0 {
+		// The cursor is bounded by the review row count, so start never
+		// exceeds the details length; only the window end needs clamping.
+		start := m.inlineReviewCursor - findings - maxRows/2
+		if start < 0 {
+			start = 0
+		}
+		end := start + maxRows
+		if end > len(c.details) {
+			end = len(c.details)
+		}
+		for i := start; i < end; i++ {
+			b.WriteString(m.inlineCaddyRow(c.details[i], m.inlineReviewCursor == findings+i))
+		}
+		return b.String()
+	}
+	b.WriteString(m.inlineCaddyStateRow(c, m.inlineReviewCursor == findings))
+	return b.String()
+}
+
+// inlineCaddyRow renders one caddy diagnostic row: an "E error · line N ·
+// path" headline (path relative to the root Caddyfile directory) with the
+// diagnostic message indented below, mirroring the advisory rows.
+func (m *Model) inlineCaddyRow(d validator.Diagnostic, selected bool) string {
+	// errorStyle carries horizontal padding, so trim the styled label back
+	// to its text before joining it with the line/path segments.
+	label := strings.TrimSpace(errorStyle.Render("E error"))
+	line := m.caddyDiagDisplayLine(d)
+	pathLabel := m.caddyDiagPathLabel(d)
+	head := label
+	if line > 0 {
+		head += " · line " + strconv.Itoa(line)
+	}
+	if pathLabel != "" {
+		head += " · " + pathLabel
+	}
+	if selected {
+		return cursorStyle.Render(" > ") + head + "\n    " + dimStyle.Render(d.Message) + "\n"
+	}
+	return "  " + head + "\n    " + dimStyle.Render(d.Message) + "\n"
+}
+
+// inlineCaddyStateRow renders the single state row of the CADDY VALIDATION
+// section when no error diagnostics are listed: not run, clean or stale.
+func (m *Model) inlineCaddyStateRow(c *inlineCaddyState, selected bool) string {
+	var line string
 	switch c.phase {
 	case "result":
-		if c.errors > 0 {
-			// A readable error summary with a distinct error marker/colour.
-			line := errorStyle.Render("!") + " " + caddyOutcomeSummary(c)
-			if c.summary != "" {
-				line += "\n    " + dimStyle.Render(c.summary)
-			}
-			if selected {
-				line = cursorStyle.Render(" > ") + line
-			} else {
-				line = "  " + line
-			}
-			return line + "\n"
-		}
-		if selected {
-			return cursorStyle.Render(" > ") + statusSuccessStyle.Render("✓") + " caddy validation clean\n"
-		}
-		return "  " + statusSuccessStyle.Render("✓") + " caddy validation clean\n"
+		line = statusSuccessStyle.Render("✓") + " caddy validation clean"
 	case "stale":
-		line := warningStyleText("Caddy validation: stale") + " — re-run v after the change"
-		if selected {
-			line = cursorStyle.Render(" > ") + line
-		} else {
-			line = "  " + line
-		}
-		return line + "\n"
+		line = warningStyleText("Caddy validation: stale") + " — re-run v after the change"
 	default: // not run
-		line := dimStyle.Render("Caddy validation: not run")
-		if selected {
-			line = cursorStyle.Render(" > ") + line
-		} else {
-			line = "  " + line
-		}
-		return line + "\n"
+		line = dimStyle.Render("Caddy validation: not run")
 	}
+	if selected {
+		return cursorStyle.Render(" > ") + line + "\n"
+	}
+	return "  " + line + "\n"
 }
 
 func warningStyleText(s string) string {
 	return errorStyle.Render(s)
-}
-
-// caddyOutcomeSummary builds a readable line for a failing Caddy outcome:
-// the error count plus the first error's message when available.
-func caddyOutcomeSummary(c *inlineCaddyState) string {
-	n := c.errors
-	if n <= 0 {
-		return "validation failed"
-	}
-	plural := "error"
-	if n != 1 {
-		plural = "errors"
-	}
-	return fmt.Sprintf("%d %s · press Enter for details", n, plural)
 }
 
 // inlineReviewLabel returns the severity label for the review list, styled to

@@ -81,6 +81,41 @@ func TestParseDiagnostics(t *testing.T) {
 			},
 		},
 		{
+			name: "adapting wrapper with position strips the wrapper",
+			in:   "Error: adapting config using caddyfile: /var/folders/x/lazycaddy-validate-123.caddy:2: unrecognized directive: bogus_directive",
+			want: []Diagnostic{
+				{Path: "/var/folders/x/lazycaddy-validate-123.caddy", Line: 2, Message: "unrecognized directive: bogus_directive", Severity: SeverityError},
+			},
+		},
+		{
+			name: "adapting wrapper with line and column",
+			in:   "Error: adapting config using caddyfile: /etc/caddy/Caddyfile:7:12: unexpected token",
+			want: []Diagnostic{
+				{Path: "/etc/caddy/Caddyfile", Line: 7, Column: 12, Message: "unexpected token", Severity: SeverityError},
+			},
+		},
+		{
+			name: "trailing at path:line form",
+			in:   "Error: adapting config using caddyfile: unexpected EOF, at /var/folders/x/lazycaddy-validate-123.caddy:3",
+			want: []Diagnostic{
+				{Path: "/var/folders/x/lazycaddy-validate-123.caddy", Line: 3, Message: "unexpected EOF", Severity: SeverityError},
+			},
+		},
+		{
+			name: "trailing at path:line with import chain suffix",
+			in:   "Error: adapting config using caddyfile: ', expecting '}', at /var/folders/x/lazycaddy-validate-123.caddy:2 import chain: ['']",
+			want: []Diagnostic{
+				{Path: "/var/folders/x/lazycaddy-validate-123.caddy", Line: 2, Message: "', expecting '}'", Severity: SeverityError},
+			},
+		},
+		{
+			name: "unpositioned matcher error keeps the wrapped message",
+			in:   "Error: adapting config using caddyfile: parsing caddyfile tokens for 'reverse_proxy': unrecognized matcher name: @phantom",
+			want: []Diagnostic{
+				{Path: "/default/Caddyfile", Message: "adapting config using caddyfile: parsing caddyfile tokens for 'reverse_proxy': unrecognized matcher name: @phantom", Severity: SeverityError},
+			},
+		},
+		{
 			name: "caddy top-level error prefix",
 			in:   "Error: adapting config using caddyfile: invalid server block",
 			want: []Diagnostic{

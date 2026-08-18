@@ -62,7 +62,7 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.logCursor = len(m.logLines) - 1
 		}
 		m.revealLogCursor()
-	case "enter":
+	case "enter", "right":
 		if m.logCursor >= 0 && m.logCursor < len(m.logLines) {
 			m.logDetailEntry = m.logLines[m.logCursor] // copy
 			m.logDetailOpen = true
@@ -101,7 +101,7 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // scroll the wrapped JSON; q/ctrl+c quits.
 func (m *Model) updateLogDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc":
+	case "esc", "left":
 		m.logDetailOpen = false
 	case "q", "ctrl+c":
 		return m.requestQuit()
