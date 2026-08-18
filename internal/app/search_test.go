@@ -228,6 +228,33 @@ func TestSearch_DistinctLinesStaySeparate(t *testing.T) {
 	}
 }
 
+// TestSearch_OrderedByDocumentAndLine verifies the tree hits are sorted by
+// document path and then line number, regardless of node-vs-content kind,
+// so a file's occurrences (comments included) read top to bottom.
+func TestSearch_OrderedByDocumentAndLine(t *testing.T) {
+	root := searchDoc("config/Caddyfile", "# note grafana\nimport sites/a.caddy\nexample.test {\n\trespond grafana-hit\n}\n",
+		searchNode(caddyfile.KindSite, "example.test", 22, 48))
+	imported := searchDoc("config/sites/a.caddy", "# import grafana note\na.example.test {\n\trespond ok\n}\n")
+	scope := SearchScope{Items: []SearchItem{
+		{Label: root.Path, Doc: root},
+		{Label: "example.test", Doc: root, Node: root.Nodes[0], HasNode: true},
+		{Label: imported.Path, Doc: imported},
+	}}
+	got := NewSearcher().Search("grafana", scope)
+	if len(got) != 3 {
+		t.Fatalf("results = %d, want 3 (comment and content in the root, comment in the import)", len(got))
+	}
+	wantLines := []int{1, 4, 1}
+	for i, w := range wantLines {
+		if got[i].Line != w {
+			t.Errorf("hit[%d].Line = %d, want %d (%s)", i, got[i].Line, w, got[i].Label)
+		}
+	}
+	if got[0].Doc.Path != "config/Caddyfile" || got[1].Doc.Path != "config/Caddyfile" || got[2].Doc.Path != "config/sites/a.caddy" {
+		t.Errorf("documents out of order: %s, %s, %s", got[0].Doc.Path, got[1].Doc.Path, got[2].Doc.Path)
+	}
+}
+
 func TestSearch_LogMatch(t *testing.T) {
 	entries := []logs.Entry{
 		{Raw: []byte(`{"level":"info","msg":"handled request"}`), Parsed: true, Level: "info", Msg: "handled request", Status: -1},

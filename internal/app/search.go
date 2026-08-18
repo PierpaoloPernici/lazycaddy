@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
@@ -84,9 +85,9 @@ type substringSearcher struct{}
 // label always embeds "path:line". Occurrences are deduplicated by
 // document and line — a node label hit and a content hit on the same line
 // collapse into one result, with the node winning so activating it keeps
-// the structural block selection. Node hits come first (in scope order),
-// then document path hits and content lines, and the log hits last. The
-// result count is capped at maxSearchResults.
+// the structural block selection. The tree hits are ordered by document
+// path and then line number, with the log hits last. The result count is
+// capped at maxSearchResults.
 func (substringSearcher) Search(query string, scope SearchScope) []SearchResult {
 	if strings.TrimSpace(query) == "" {
 		return nil
@@ -94,8 +95,8 @@ func (substringSearcher) Search(query string, scope SearchScope) []SearchResult 
 	q := strings.ToLower(query)
 	seen := map[string]bool{}
 	var out []SearchResult
-	// Node label hits first: they carry the structural node, so a node hit
-	// wins over a content hit on the same line.
+	// Node label hits carry the structural node, so a node hit wins over a
+	// content hit on the same line.
 	for _, item := range scope.Items {
 		if !item.HasNode || !strings.Contains(strings.ToLower(item.Label), q) {
 			continue
@@ -113,9 +114,6 @@ func (substringSearcher) Search(query string, scope SearchScope) []SearchResult 
 			Node:  item.Node,
 			Line:  line,
 		})
-		if len(out) >= maxSearchResults {
-			return out
-		}
 	}
 	// Document path hits and content lines, skipping lines already claimed
 	// by a node hit.
@@ -125,9 +123,6 @@ func (substringSearcher) Search(query string, scope SearchScope) []SearchResult 
 		}
 		if strings.Contains(strings.ToLower(item.Doc.Path), q) {
 			out = append(out, SearchResult{Kind: SearchDocument, Label: item.Doc.Path, Doc: item.Doc})
-			if len(out) >= maxSearchResults {
-				return out
-			}
 		}
 		lines := strings.Split(string(item.Doc.Source), "\n")
 		for i, line := range lines {
@@ -146,10 +141,19 @@ func (substringSearcher) Search(query string, scope SearchScope) []SearchResult 
 				Doc:   item.Doc,
 				Line:  ln,
 			})
-			if len(out) >= maxSearchResults {
-				return out
-			}
 		}
+	}
+	// Order the tree hits by document path and then line number, so all
+	// occurrences of a file are grouped and read top to bottom (a path-only
+	// hit sorts first within its document). The cap applies after sorting.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Doc.Path != out[j].Doc.Path {
+			return out[i].Doc.Path < out[j].Doc.Path
+		}
+		return out[i].Line < out[j].Line
+	})
+	if len(out) > maxSearchResults {
+		out = out[:maxSearchResults]
 	}
 	// Log history hits, after every tree hit.
 	for i, entry := range scope.Logs {
