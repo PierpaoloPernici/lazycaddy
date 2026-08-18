@@ -173,8 +173,10 @@ placeholders, durations, status codes, strings and heredoc boundaries) on top
 of the lexical base, so common patterns are easier to scan without weakening
 the raw-source fallback or byte-preservation guarantees. The `g` keybinding
 cycles through named matcher definitions and their references, re-anchoring the
-tree and source view on each occurrence. Richer inline validation and source
-folding remain planned for v0.4.
+tree and source view on each occurrence, and the `i` keybinding toggles advisory
+inline lint findings (document-local, non-blocking) in the source pane. Mapping
+Caddy's own `validate` diagnostics onto source lines and source folding remain
+planned for v0.4.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,
@@ -189,10 +191,10 @@ validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a compact navigation footer and exact
 source clipboard copying with OSC 52 and local fallbacks. The current roadmap
-is v0.4: advisory semantic highlighting and matcher definition↔reference
-navigation are done, with richer inline validation, source folding and a
-runtime/TLS dashboard still ahead — without weakening the raw-source fallback
-or byte-preservation guarantees.
+is v0.4: advisory semantic highlighting, matcher definition↔reference
+navigation and document-local inline lint are done, with Caddy-diagnostic
+mapping, source folding and a runtime/TLS dashboard still ahead — without
+weakening the raw-source fallback or byte-preservation guarantees.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing

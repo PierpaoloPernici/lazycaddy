@@ -828,9 +828,11 @@ diff, backup and atomic-save safeguards.
   placeholders, durations, status codes, strings and heredoc boundaries are
   rendered on top of the lexical base (PR #45). Caddy stays authoritative for
   syntax and validation.
-- [ ] Add inline validation when the parse tree can identify roles reliably
-  and wire it into the UI, keeping Caddy authoritative for syntax and
-  validation.
+- [x] Add advisory inline validation (PR #47), a document-local parse-tree
+  lint shown in the source pane via `i` (matcher referenced/defined
+  inconsistencies), distinct from and complementary to Caddy's authoritative
+  validation. The overlay is non-blocking and byte-lossless.
+- [ ] Map Caddy `validate` diagnostics to the source pane lines.
 - [x] Navigate from named matcher definitions to their references (the `g`
   keybinding, PR #46): `caddyfile.Matchers` lists every occurrence and the
   cycler re-anchors the tree and reveals each line, wrapping at the end. The
