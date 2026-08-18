@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,73 @@ func TestSearch_ImportedFileContent(t *testing.T) {
 	}
 }
 
+// TestSearch_NodeHitCarriesLine verifies node label hits now carry their
+// start line and a path:line label, like every other occurrence.
+func TestSearch_NodeHitCarriesLine(t *testing.T) {
+	doc := searchDoc("config/Caddyfile", "example.test {\n}\n",
+		searchNode(caddyfile.KindSite, "example.test", 0, 16))
+	scope := SearchScope{Items: []SearchItem{
+		{Label: "example.test", Doc: doc, Node: doc.Nodes[0], HasNode: true},
+	}}
+	got := NewSearcher().Search("example", scope)
+	if len(got) != 1 || got[0].Kind != SearchNode {
+		t.Fatalf("hit = %+v, want one SearchNode", got)
+	}
+	if got[0].Line != 1 {
+		t.Errorf("Line = %d, want 1 (the node start line)", got[0].Line)
+	}
+	if !strings.Contains(got[0].Label, "config/Caddyfile:1") {
+		t.Errorf("Label = %q, want it to embed path:line", got[0].Label)
+	}
+}
+
+// TestSearch_DedupNodeAndContentSameLine verifies a node label hit and a
+// content hit on the same line of the same document collapse into one
+// result, with the node winning so activating it keeps the structural
+// block selection (the Caddyfile:99 grafana scenario).
+func TestSearch_DedupNodeAndContentSameLine(t *testing.T) {
+	src := "http://grafana.mac {\n\trespond ok\n}\n"
+	doc := searchDoc("config/Caddyfile", src,
+		searchNode(caddyfile.KindSite, "http://grafana.mac", 0, 20))
+	scope := SearchScope{Items: []SearchItem{
+		{Label: doc.Path, Doc: doc},
+		{Label: "http://grafana.mac", Doc: doc, Node: doc.Nodes[0], HasNode: true},
+	}}
+	s := NewSearcher()
+	got := s.Search("grafana", scope)
+	if len(got) != 1 {
+		t.Fatalf("Search(grafana) = %d results, want 1 (node+content deduped)", len(got))
+	}
+	if got[0].Kind != SearchNode || got[0].Node.Name != "http://grafana.mac" {
+		t.Errorf("hit = %+v, want the node hit to win", got[0])
+	}
+	if got[0].Line != 1 {
+		t.Errorf("Line = %d, want 1", got[0].Line)
+	}
+	if !strings.Contains(got[0].Label, "config/Caddyfile:1") {
+		t.Errorf("Label = %q, want it to embed path:line", got[0].Label)
+	}
+}
+
+// TestSearch_DistinctLinesStaySeparate verifies two occurrences on
+// different lines of the same document are both kept.
+func TestSearch_DistinctLinesStaySeparate(t *testing.T) {
+	src := "http://grafana.mac {\n\trespond grafana-status\n}\n"
+	doc := searchDoc("config/Caddyfile", src,
+		searchNode(caddyfile.KindSite, "http://grafana.mac", 0, 20))
+	scope := SearchScope{Items: []SearchItem{
+		{Label: doc.Path, Doc: doc},
+		{Label: "http://grafana.mac", Doc: doc, Node: doc.Nodes[0], HasNode: true},
+	}}
+	got := NewSearcher().Search("grafana", scope)
+	if len(got) != 2 {
+		t.Fatalf("Search(grafana) = %d results, want 2 (site line 1 + content line 2)", len(got))
+	}
+	if got[0].Line != 1 || got[1].Line != 2 {
+		t.Errorf("lines = %d,%d, want 1,2", got[0].Line, got[1].Line)
+	}
+}
+
 func TestSearch_LogMatch(t *testing.T) {
 	entries := []logs.Entry{
 		{Raw: []byte(`{"level":"info","msg":"handled request"}`), Parsed: true, Level: "info", Msg: "handled request", Status: -1},
@@ -226,10 +294,14 @@ func TestSearch_CappedResults(t *testing.T) {
 func TestSearch_EveryCapBranch(t *testing.T) {
 	s := NewSearcher()
 
-	// Node-label hits: 220 matching node rows cap at maxSearchResults.
+	// Node-label hits: 220 matching node rows cap at maxSearchResults. Each
+	// row is a distinct document+line occurrence so the dedup never
+	// collapses them.
 	nodes := make([]SearchItem, 0, 220)
 	for i := 0; i < 220; i++ {
-		nodes = append(nodes, SearchItem{Label: "node hit", HasNode: true})
+		doc := searchDoc(fmt.Sprintf("path %d", i), "content")
+		nd := searchNode(caddyfile.KindDirective, fmt.Sprintf("node %d", i), 0, 1)
+		nodes = append(nodes, SearchItem{Label: "node hit", Doc: doc, Node: nd, HasNode: true})
 	}
 	if got := s.Search("node hit", SearchScope{Items: nodes}); len(got) != maxSearchResults {
 		t.Errorf("node hits = %d results, want the cap %d", len(got), maxSearchResults)

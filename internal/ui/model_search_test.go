@@ -175,15 +175,14 @@ func TestSearch_EnterNodeSelectsAndReveals(t *testing.T) {
 	for _, r := range []rune("target") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	// Results: root content lines 74 and 76 (SearchDocument) then the
-	// target.example.test node label (SearchNode). Move to the node hit.
-	if len(m.searchResults) < 3 {
-		t.Fatalf("precondition: %d results, want the node hit present", len(m.searchResults))
+	// Results are occurrence-based: the target.example.test site node and
+	// the nested respond leaf each carry their line, deduplicated against
+	// the matching content lines. The site node is the first result.
+	if len(m.searchResults) != 2 {
+		t.Fatalf("precondition: %d results, want the two node hits", len(m.searchResults))
 	}
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // second content hit
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // the SearchNode result
-	if m.searchResults[m.searchCursor].Kind != app.SearchNode {
-		t.Fatalf("cursor result kind = %v, want SearchNode", m.searchResults[m.searchCursor].Kind)
+	if m.searchResults[0].Kind != app.SearchNode || m.searchResults[0].Node.Name != "target.example.test" {
+		t.Fatalf("hit[0] = %+v, want the target site node hit", m.searchResults[0])
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -218,38 +217,36 @@ func TestSearch_EnterDocumentSelectsAndRevealsLine(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
-	for _, r := range []rune("respond target") {
+	for _, r := range []rune("padding") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	// Results: the imported-file content line hit first (the doc item
-	// precedes the node rows), then the "respond target" node label hit.
-	if len(m.searchResults) != 2 {
-		t.Fatalf("results = %d, want the content hit plus the leaf node label hit", len(m.searchResults))
+	// The padding lines match no node label, so every result is a plain
+	// content hit carrying its exact line; the first is line 4.
+	if len(m.searchResults) < 2 {
+		t.Fatalf("results = %d, want the padding content hits", len(m.searchResults))
 	}
-	if m.searchResults[0].Kind != app.SearchDocument || m.searchResults[0].Doc == nil || m.searchResults[0].Doc.Path != "config/sites/a.caddy" {
-		t.Fatalf("hit[0] = %+v, want the imported-file content hit", m.searchResults[0])
+	if m.searchResults[0].Kind != app.SearchDocument || m.searchResults[0].Doc == nil || m.searchResults[0].Doc.Path != "config/sites/a.caddy" || m.searchResults[0].Line != 4 {
+		t.Fatalf("hit[0] = %+v, want the first padding content hit on line 4", m.searchResults[0])
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	sel := m.selectedItem()
-	// The line hit lands on the structural node containing the line (the
-	// target.example.test site of the imported file), not the document row.
-	if sel == nil || !sel.hasNode || sel.node.Name != "target.example.test" || sel.doc == nil || sel.doc.Path != "config/sites/a.caddy" {
-		t.Errorf("selection = %+v, want the target.example.test node of the imported file", sel)
+	// The line sits outside every tree row (top-level padding), so the
+	// imported file's document row is selected.
+	if sel == nil || sel.hasNode || sel.doc == nil || sel.doc.Path != "config/sites/a.caddy" {
+		t.Errorf("selection = %+v, want the imported document row", sel)
 	}
-	if m.sourceRevealLine == 0 {
-		t.Error("sourceRevealLine = 0, want the hit line pending reveal")
+	if m.sourceRevealLine != 4 {
+		t.Errorf("sourceRevealLine = %d, want 4 (the first padding line)", m.sourceRevealLine)
 	}
 	// The render consumes the one-shot reveal and positions the viewport
-	// at the clamped line offset.
+	// (the centred reveal clamps to the top for a line this close to the
+	// file start, so the line is visible at the first row).
 	m.View()
 	if m.sourceRevealLine != 0 {
 		t.Errorf("sourceRevealLine = %d after render, want it consumed", m.sourceRevealLine)
 	}
-	if m.viewport.YOffset == 0 {
-		t.Errorf("viewport YOffset = 0, want the hit line revealed")
-	}
-	if !strings.Contains(stripANSI(m.viewport.View()), "respond target") {
+	if !strings.Contains(stripANSI(m.viewport.View()), "padding") {
 		t.Errorf("source pane does not show the revealed line:\n%s", m.viewport.View())
 	}
 }

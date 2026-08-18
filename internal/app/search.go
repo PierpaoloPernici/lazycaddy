@@ -79,49 +79,75 @@ func NewSearcher() Searcher { return substringSearcher{} }
 type substringSearcher struct{}
 
 // Search implements Searcher. An empty (or whitespace-only) query yields
-// no results. Results are ordered by scope.Items — for a node row the label
-// is matched, for a document row the path and then every content line — and
-// the log hits come last. The result count is capped at maxSearchResults.
+// no results. Results are occurrence-based: every node label hit carries
+// its document and start line, every content hit its exact line, and the
+// label always embeds "path:line". Occurrences are deduplicated by
+// document and line — a node label hit and a content hit on the same line
+// collapse into one result, with the node winning so activating it keeps
+// the structural block selection. Node hits come first (in scope order),
+// then document path hits and content lines, and the log hits last. The
+// result count is capped at maxSearchResults.
 func (substringSearcher) Search(query string, scope SearchScope) []SearchResult {
 	if strings.TrimSpace(query) == "" {
 		return nil
 	}
 	q := strings.ToLower(query)
+	seen := map[string]bool{}
 	var out []SearchResult
+	// Node label hits first: they carry the structural node, so a node hit
+	// wins over a content hit on the same line.
 	for _, item := range scope.Items {
-		if item.HasNode {
-			// Node label hits.
-			if strings.Contains(strings.ToLower(item.Label), q) {
-				out = append(out, SearchResult{Kind: SearchNode, Label: item.Label, Doc: item.Doc, Node: item.Node})
-				if len(out) >= maxSearchResults {
-					return out
-				}
-			}
+		if !item.HasNode || !strings.Contains(strings.ToLower(item.Label), q) {
 			continue
 		}
-		if item.Doc == nil {
+		line := item.Node.Range.StartLine
+		key := searchHitKey(item.Doc, line)
+		if seen[key] {
 			continue
 		}
-		// Document path hits.
+		seen[key] = true
+		out = append(out, SearchResult{
+			Kind:  SearchNode,
+			Label: searchLineLabel(item.Doc.Path, line, item.Label),
+			Doc:   item.Doc,
+			Node:  item.Node,
+			Line:  line,
+		})
+		if len(out) >= maxSearchResults {
+			return out
+		}
+	}
+	// Document path hits and content lines, skipping lines already claimed
+	// by a node hit.
+	for _, item := range scope.Items {
+		if item.HasNode || item.Doc == nil {
+			continue
+		}
 		if strings.Contains(strings.ToLower(item.Doc.Path), q) {
 			out = append(out, SearchResult{Kind: SearchDocument, Label: item.Doc.Path, Doc: item.Doc})
 			if len(out) >= maxSearchResults {
 				return out
 			}
 		}
-		// Document content line hits.
 		lines := strings.Split(string(item.Doc.Source), "\n")
 		for i, line := range lines {
-			if strings.Contains(strings.ToLower(line), q) {
-				out = append(out, SearchResult{
-					Kind:  SearchDocument,
-					Label: fmt.Sprintf("%s:%d  %s", item.Doc.Path, i+1, strings.TrimSpace(line)),
-					Doc:   item.Doc,
-					Line:  i + 1,
-				})
-				if len(out) >= maxSearchResults {
-					return out
-				}
+			if !strings.Contains(strings.ToLower(line), q) {
+				continue
+			}
+			ln := i + 1
+			key := searchHitKey(item.Doc, ln)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, SearchResult{
+				Kind:  SearchDocument,
+				Label: searchLineLabel(item.Doc.Path, ln, strings.TrimSpace(line)),
+				Doc:   item.Doc,
+				Line:  ln,
+			})
+			if len(out) >= maxSearchResults {
+				return out
 			}
 		}
 	}
@@ -135,6 +161,23 @@ func (substringSearcher) Search(query string, scope SearchScope) []SearchResult 
 		}
 	}
 	return out
+}
+
+// searchHitKey is the dedup identity of an occurrence: the document path
+// plus its 1-based line. Node label hits and content line hits on the same
+// line of the same document collapse into one result.
+func searchHitKey(doc *caddyfile.Document, line int) string {
+	if doc == nil {
+		return fmt.Sprintf("?:%d", line)
+	}
+	return fmt.Sprintf("%s:%d", doc.Path, line)
+}
+
+// searchLineLabel builds the occurrence label for a hit: "path:line" plus
+// the matched context (the node label or the trimmed content line), so
+// every occurrence shows its exact location at a glance.
+func searchLineLabel(path string, line int, context string) string {
+	return fmt.Sprintf("%s:%d  %s", path, line, context)
 }
 
 // maxSearchLogLabel bounds a log search label so a huge entry cannot blow

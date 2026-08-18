@@ -522,19 +522,14 @@ func TestSearch_LineHitSelectsContainingNode(t *testing.T) {
 	for _, r := range []rune("tranquillo") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	// Find the content-line hit (the snippet's respond directive is a
-	// hidden nested leaf, so its label hit is the second result).
-	lineIdx := -1
-	for i, r := range m.searchResults {
-		if r.Kind == app.SearchDocument && r.Line > 0 {
-			lineIdx = i
-		}
+	// The snippet's respond directive is a hidden nested leaf: its node
+	// label hit (line 2) is the only result, deduped with the content line
+	// of the same occurrence.
+	if len(m.searchResults) != 1 {
+		t.Fatalf("results = %+v, want the single node hit for line 2", m.searchResults)
 	}
-	if lineIdx < 0 {
-		t.Fatalf("results = %+v, want the content-line hit", m.searchResults)
-	}
-	for m.searchCursor != lineIdx {
-		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.searchResults[0].Kind != app.SearchNode || m.searchResults[0].Line != 2 {
+		t.Fatalf("hit = %+v, want the SearchNode on line 2", m.searchResults[0])
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -827,23 +822,18 @@ func TestSearch_LineHitInCollapsedImportedDoc(t *testing.T) {
 		t.Fatalf("items = %d after collapsing the imported doc, want 2", len(m.items))
 	}
 
-	// Search for a content line inside the collapsed document (line 3,
-	// inside handle /api/* which is inside top.example.test).
+	// Search for a line inside the collapsed document: the respond leaf's
+	// node label hit (line 3, inside handle /api/* inside
+	// top.example.test) is the only result, deduped with the content line.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	for _, r := range []rune("target-hit") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	lineIdx := -1
-	for i, r := range m.searchResults {
-		if r.Kind == app.SearchDocument && r.Line > 0 {
-			lineIdx = i
-		}
+	if len(m.searchResults) != 1 {
+		t.Fatalf("results = %+v, want the single node hit for line 3", m.searchResults)
 	}
-	if lineIdx < 0 {
-		t.Fatalf("results = %+v, want the imported-file content hit", m.searchResults)
-	}
-	for m.searchCursor != lineIdx {
-		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.searchResults[0].Kind != app.SearchNode || m.searchResults[0].Line != 3 {
+		t.Fatalf("hit = %+v, want the SearchNode on line 3", m.searchResults[0])
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -892,23 +882,18 @@ func TestSearch_LineHitInTopLevelLeafExpandsDocumentOnly(t *testing.T) {
 		t.Fatalf("items = %d after collapsing the root, want 1", len(m.items))
 	}
 
-	// Search for the import content line (line 1, inside the hidden
-	// top-level import leaf).
+	// Search for the import directive: its node label hit (line 1, the
+	// hidden top-level import leaf) is the only result, deduped with the
+	// content line of the same occurrence.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	for _, r := range []rune("sites/a.caddy") {
 		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	lineIdx := -1
-	for i, r := range m.searchResults {
-		if r.Kind == app.SearchDocument && r.Line > 0 {
-			lineIdx = i
-		}
+	if len(m.searchResults) != 1 {
+		t.Fatalf("results = %+v, want the single node hit for line 1", m.searchResults)
 	}
-	if lineIdx < 0 {
-		t.Fatalf("results = %+v, want the import content hit", m.searchResults)
-	}
-	for m.searchCursor != lineIdx {
-		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.searchResults[0].Kind != app.SearchNode || m.searchResults[0].Line != 1 {
+		t.Fatalf("hit = %+v, want the SearchNode on line 1", m.searchResults[0])
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
