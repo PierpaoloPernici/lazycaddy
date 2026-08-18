@@ -837,7 +837,13 @@ diff, backup and atomic-save safeguards.
   lines (gutter `E`/`W` markers and token styling, `E` outranking the
   advisory markers), matched by clean path so imports annotate their own
   pane, with the stale rule shared with the review view. Unreliable
-  coordinates never annotate the view and rendering stays byte-lossless.
+  coordinates never annotate the view and rendering stays byte-lossless. A
+  failed `v` from the main view does not force the diagnostics modal open:
+  it reveals the first authoritative error in the source pane (document
+  selected, line / pinned token shown), and the `i` review lists one row per
+  diagnostic with its relative path, `Enter` to reveal and `→` for the full
+  detail. Caddy errors reported without a position are pinned onto the token
+  they name.
 - [x] Navigate from named matcher definitions to their references (the `g`
   keybinding, PR #46): `caddyfile.Matchers` lists every occurrence and the
   cycler re-anchors the tree and reveals each line, wrapping at the end. The

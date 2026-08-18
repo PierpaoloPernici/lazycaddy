@@ -363,7 +363,7 @@ func TestModelLogView_Footer(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	m = updated.(*Model)
 	view := stripANSI(m.View())
-	for _, want := range []string{"Enter detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
+	for _, want := range []string{"Enter/→ detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
 		}
@@ -538,8 +538,8 @@ func TestModelLogDetail_ShowsFullJSON(t *testing.T) {
 	if !strings.Contains(visible, `"request"`) || !strings.Contains(visible, "/api/config") {
 		t.Errorf("detail modal missing the full JSON:\n%s", visible)
 	}
-	if !strings.Contains(visible, "Esc back") {
-		t.Errorf("footer missing the detail hint 'Esc back':\n%s", visible)
+	if !strings.Contains(visible, "Esc/← back") {
+		t.Errorf("footer missing the detail hint 'Esc/← back':\n%s", visible)
 	}
 }
 

@@ -82,6 +82,18 @@ there is no on/off toggle. Its presentation rules:
 - The review view splits content into two visually separated sections:
   `ADVISORY` (parse-tree findings) and `CADDY VALIDATION` (the authoritative
   caddy validate outcome). The two are never mixed.
+- The Caddy section lists **one row per error diagnostic** (`E error · line N
+  · path`), with the path relative to the root Caddyfile directory for
+  imports (e.g. `snippets/auth.caddy`) and the full path when the diagnostic
+  lives outside it. `Enter` selects the diagnostic's document and reveals its
+  line / pinned token; `→` opens the full diagnostic detail; `←` from the
+  detail returns to the review list.
+- A failed `v` from the main view does not force the diagnostics modal open:
+  it selects the first authoritative error's document and reveals its
+  line / pinned token in the source pane (the `E` marker and red token show
+  there), so the operator never has to hunt. The full list stays available
+  in the `i` review; the diagnostics modal remains a detail surface for the
+  review (`→`) and the delete/edit failure flows.
 - Caddy is the only authority for syntax and validation; advisory findings are
   non-blocking and never replace `v`.
 - `v` reuses the existing asynchronous validate workflow; the review restore is
@@ -90,6 +102,9 @@ there is no on/off toggle. Its presentation rules:
 - The Caddy validation section shows `not run` before `v`, then the readable
   error count and summary, and is flagged `stale` when the document source
   changes after validation.
+- The Caddy section states are still `not run` / `stale` / `clean`; when
+  errors exist they are listed as per-diagnostic rows instead of an
+  aggregate count.
 
 ## Authoritative caddy diagnostics overlay
 

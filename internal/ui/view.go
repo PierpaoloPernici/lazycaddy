@@ -549,24 +549,24 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ navigate · PgUp/PgDown scroll · Enter run · Esc close"
 	case m.showBackups:
 		if m.canRollback() {
-			keys = "↑/↓ move · Enter compare & rollback · Esc close"
+			keys = "↑/↓ move · Enter/→ compare & rollback · Esc close"
 		} else {
-			keys = "↑/↓ move · Enter compare · Esc close"
+			keys = "↑/↓ move · Enter/→ compare · Esc close"
 		}
 	case m.showDetail:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back"
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
 	case m.showDiagnostics:
-		keys = "↑/↓ navigate · Enter/+ detail · Esc close"
+		keys = "↑/↓ navigate · Enter/+ or → detail · Esc/← close"
 	case m.logDetailOpen:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc back · q quit"
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back · q quit"
 	case m.showLogs:
-		keys = "↑/↓ move · PgUp/PgDown page · Enter detail · f follow (on/off) · p pause/resume · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · p pause/resume · Esc close · q quit"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.showInlineReview:
-		keys = "↑/↓ move · Enter reveal/details · v validate · Esc close"
+		keys = "↑/↓ move · Enter reveal · → detail · v validate · Esc close"
 	case m.state != nil && m.state.Graph != nil:
 		// The normal footer is deliberately navigation-only. Operational
 		// actions remain available through their direct hotkeys and the

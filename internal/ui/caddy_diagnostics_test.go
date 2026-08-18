@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -454,14 +455,16 @@ func TestValidateFlow_PinsUnpositionedMatcherError(t *testing.T) {
 		t.Fatal("v should return a validation command")
 	}
 	m = keyPress(t, m, cmd())
-	if !m.showDiagnostics {
-		t.Fatal("failed validate must open the diagnostics modal")
+	if m.showDiagnostics {
+		t.Fatal("a failed v must not force the diagnostics modal")
 	}
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.sourceRevealLine != 2 {
+		t.Errorf("pinned error line not revealed, sourceRevealLine = %d", m.sourceRevealLine)
+	}
 	_ = m.View()
 
 	viewport := m.viewport.View()
-	if !strings.Contains(viewport, "2│E ") {
+	if !regexp.MustCompile(`2[│▎]E `).MatchString(viewport) {
 		t.Errorf("source pane missing the 'E' marker on the pinned line:\n%s", viewport)
 	}
 	if !strings.Contains(m.sourceTitle, "1 caddy error") {
@@ -469,10 +472,11 @@ func TestValidateFlow_PinsUnpositionedMatcherError(t *testing.T) {
 	}
 }
 
-// TestValidateFlowRetainsOverlayAfterModalClose verifies the end-to-end
-// workflow: a failed v validation opens the diagnostics modal, and after
-// Esc the source pane still shows the overlay (no selection change needed).
-func TestValidateFlowRetainsOverlayAfterModalClose(t *testing.T) {
+// TestValidateFlowRevealsOverlayWithoutModal verifies the end-to-end
+// workflow: a failed v validation from the main view does not force the
+// diagnostics modal open; the source pane shows the overlay and the first
+// error line is revealed.
+func TestValidateFlowRevealsOverlayWithoutModal(t *testing.T) {
 	src := "example.test {\n\tbogus_directive x\n}\n"
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": src,
@@ -489,15 +493,14 @@ func TestValidateFlowRetainsOverlayAfterModalClose(t *testing.T) {
 		t.Fatal("v should return a validation command")
 	}
 	m = keyPress(t, m, cmd())
-	if !m.showDiagnostics {
-		t.Fatal("failed validate must open the diagnostics modal")
-	}
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.showDiagnostics {
-		t.Fatal("Esc must close the diagnostics modal")
+		t.Fatal("a failed v from the main view must not force the diagnostics modal")
+	}
+	if m.sourceRevealLine != 2 {
+		t.Errorf("first error line not revealed, sourceRevealLine = %d", m.sourceRevealLine)
 	}
 	_ = m.View()
-	if !strings.Contains(m.viewport.View(), "2│E ") {
-		t.Errorf("overlay must survive the modal close:\n%s", m.viewport.View())
+	if !regexp.MustCompile(`2[│▎]E `).MatchString(m.viewport.View()) {
+		t.Errorf("source pane missing the 'E' marker:\n%s", m.viewport.View())
 	}
 }

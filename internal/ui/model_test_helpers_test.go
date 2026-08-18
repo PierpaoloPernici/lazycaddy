@@ -315,9 +315,21 @@ func newLoadedModelWithoutSearcher(t *testing.T, loader app.Loader) *Model {
 	return m
 }
 
+// resize resizes the model to the given dimensions.
 func resize(m *Model, width, height int) *Model {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	return updated.(*Model)
+}
+
+// openDiagnosticsModal opens the diagnostics modal directly with the given
+// diagnostics. A plain v from the main view no longer forces the modal open
+// (it reveals the first error instead), so list/detail key tests drive the
+// modal state directly.
+func openDiagnosticsModal(m *Model, diags []validator.Diagnostic) *Model {
+	m.diagnostics = append([]validator.Diagnostic(nil), diags...)
+	m.diagCursor = 0
+	m.showDiagnostics = true
+	return m
 }
 
 func fsReader(fs map[string]string) app.FileReader {

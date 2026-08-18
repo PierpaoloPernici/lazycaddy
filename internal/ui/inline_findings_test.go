@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,7 +9,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/PierpaoloPernici/lazycaddy/internal/app"
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
+	"github.com/PierpaoloPernici/lazycaddy/internal/config"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
@@ -350,15 +353,105 @@ func TestSetInlineCaddyOutcome(t *testing.T) {
 	}
 }
 
-func TestCaddyOutcomeSummary(t *testing.T) {
-	if got := caddyOutcomeSummary(&inlineCaddyState{errors: 1}); got != "1 error · press Enter for details" {
-		t.Errorf("1-error summary = %q", got)
+// TestInlineReview_CaddyRowsShowRelativePath verifies that a caddy
+// diagnostic row shows the diagnostic's line and its path relative to the
+// root Caddyfile directory (so imports read e.g. "snippets/auth.caddy").
+func TestInlineReview_CaddyRowsShowRelativePath(t *testing.T) {
+	fs := fsReader(map[string]string{
+		"config/Caddyfile":           "example.test {\n\timport snippets/auth.caddy\n}\n",
+		"config/snippets/auth.caddy": "reverse_proxy @phantom localhost:8080\n",
+	})
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: true}, fs)
+	m := newLoadedModel(t, loader)
+	_ = m.View()
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 1, summary: "boom",
+		details: []validator.Diagnostic{{Path: "config/snippets/auth.caddy", Line: 1, Message: "boom"}},
 	}
-	if got := caddyOutcomeSummary(&inlineCaddyState{errors: 3}); got != "3 errors · press Enter for details" {
-		t.Errorf("3-error summary = %q", got)
+	m.showInlineReview = true
+	m.inlineReviewCursor = len(m.inlineFindings)
+	block := stripANSI(m.inlineCaddyBlock(5))
+	if !strings.Contains(block, "snippets/auth.caddy") {
+		t.Errorf("caddy row should show the import path relative to the root dir, got %q", block)
 	}
-	if got := caddyOutcomeSummary(&inlineCaddyState{errors: 0}); got != "validation failed" {
-		t.Errorf("0-error summary = %q", got)
+	if !strings.Contains(block, "line 1") {
+		t.Errorf("caddy row should show the diagnostic line, got %q", block)
+	}
+}
+
+// TestCaddyDiagPathLabel verifies the relative-path rendering: imports under
+// the root directory are shown relative, the root itself as its base name,
+// and paths outside the root keep the full form.
+func TestCaddyDiagPathLabel(t *testing.T) {
+	m := matcherModel(t, "example.test {\n}\n")
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"config/snippets/auth.caddy", "snippets/auth.caddy"},
+		{"config/Caddyfile", "Caddyfile"},
+		{"/etc/other.conf", "/etc/other.conf"},
+	}
+	for _, tt := range tests {
+		if got := m.caddyDiagPathLabel(validator.Diagnostic{Path: tt.path}); got != tt.want {
+			t.Errorf("caddyDiagPathLabel(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
+// TestRevealCaddyDiagnostic_SwitchesToImportDoc verifies that revealing a
+// caddy diagnostic for an imported file selects that document and reveals
+// the error line in the source pane.
+func TestRevealCaddyDiagnostic_SwitchesToImportDoc(t *testing.T) {
+	fs := fsReader(map[string]string{
+		"config/Caddyfile":           "example.test {\n\timport snippets/auth.caddy\n}\n",
+		"config/snippets/auth.caddy": "reverse_proxy @phantom localhost:8080\n",
+	})
+	loader := app.NewLoader(config.Settings{ConfigPath: "config/Caddyfile", ReadOnly: true}, fs)
+	m := newLoadedModel(t, loader)
+	_ = m.View()
+	d := validator.Diagnostic{Path: "config/snippets/auth.caddy", Line: 1, Message: "boom", Severity: validator.SeverityError}
+	if !m.revealCaddyDiagnostic(d) {
+		t.Fatal("diagnostic should resolve to the imported document")
+	}
+	sel := m.selectedItem()
+	if sel == nil || sel.doc == nil || sel.doc.Path != "config/snippets/auth.caddy" {
+		t.Fatalf("selection = %v, want the imported document selected", sel)
+	}
+	if m.sourceRevealLine != 1 {
+		t.Errorf("sourceRevealLine = %d, want 1", m.sourceRevealLine)
+	}
+}
+
+// TestVFromReview_ReturnsToReviewWithRows verifies the end-to-end v flow
+// launched from the review: the review reopens with the caddy outcome
+// listed as per-diagnostic rows (the modal is never forced open).
+func TestVFromReview_ReturnsToReviewWithRows(t *testing.T) {
+	src := "example.test {\n\treverse_proxy @phantom localhost:8080\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 0, Message: "unrecognized matcher name: @phantom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{formatted: []byte(src), diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 100, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if !m.showInlineReview {
+		t.Fatal("i should open the review")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	m = keyPress(t, m, cmd())
+	if !m.showInlineReview {
+		t.Fatal("v from the review should return to the review")
+	}
+	if m.showDiagnostics {
+		t.Error("v from the review must not open the diagnostics modal")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "E error") || !strings.Contains(view, "line 2") {
+		t.Errorf("review should list the caddy diagnostic with its line, got:\n%s", view)
 	}
 }
 
@@ -492,8 +585,11 @@ func TestInlineReviewView_Sections(t *testing.T) {
 func TestInlineReview_CaddyResultPersistsAcrossReopen(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
 	// Simulate a failing validate outcome.
-	m.diagnostics = []validator.Diagnostic{{Message: "unrecognized matcher name: @phantom"}}
-	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "unrecognized matcher name: @phantom", source: m.sourceDoc.Source}
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 1, summary: "unrecognized matcher name: @phantom",
+		details: []validator.Diagnostic{{Path: "config/Caddyfile", Line: 2, Message: "unrecognized matcher name: @phantom"}},
+		source:  m.sourceDoc.Source,
+	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	if !m.showInlineReview {
 		t.Fatal("i should open the review")
@@ -510,15 +606,16 @@ func TestInlineReview_CaddyResultPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestInlineReview_EnterOnCaddyRowOpensDiagnostics verifies Enter on the Caddy
-// validation row switches to the existing diagnostics view.
-func TestInlineReview_EnterOnCaddyRowOpensDiagnostics(t *testing.T) {
-	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
+// TestInlineReview_EnterOnCaddyRowReveals verifies Enter on a Caddy
+// diagnostic row selects the diagnostic's document and reveals its line in
+// the source pane (closing the review), mirroring the advisory rows.
+func TestInlineReview_EnterOnCaddyRowReveals(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\treverse_proxy @phantom localhost:8080\n}\n")
 	m.showInlineReview = true
-	m.inlineReviewCursor = len(m.inlineFindings) // the Caddy row
+	m.inlineReviewCursor = len(m.inlineFindings) // the first Caddy row
 	m.inlineCaddy = &inlineCaddyState{
 		phase: "result", errors: 1, summary: "boom",
-		details: []validator.Diagnostic{{Line: 2, Message: "boom"}},
+		details: []validator.Diagnostic{{Path: "config/Caddyfile", Line: 2, Message: "boom"}},
 		source:  m.sourceDoc.Source,
 	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -526,11 +623,11 @@ func TestInlineReview_EnterOnCaddyRowOpensDiagnostics(t *testing.T) {
 	if rm.showInlineReview {
 		t.Error("Enter on the Caddy row should leave the review view")
 	}
-	if !rm.showDiagnostics {
-		t.Error("Enter on the Caddy row should open the diagnostics view")
+	if rm.showDiagnostics {
+		t.Error("Enter on the Caddy row must not open the diagnostics modal")
 	}
 	if rm.sourceRevealLine != 2 {
-		t.Errorf("Enter on the Caddy row should reveal the first error line, got %d", rm.sourceRevealLine)
+		t.Errorf("Enter on the Caddy row should reveal the error line, got %d", rm.sourceRevealLine)
 	}
 }
 
@@ -586,10 +683,16 @@ func TestInlineCaddyBlock_States(t *testing.T) {
 	if got := stripANSI(m.inlineCaddyBlock(5)); !strings.Contains(got, "clean") {
 		t.Errorf("clean caddy block = %q, want clean", got)
 	}
-	// errors result
-	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 2, summary: "x"}
-	if got := stripANSI(m.inlineCaddyBlock(5)); !strings.Contains(got, "2 errors") {
-		t.Errorf("errors caddy block = %q, want error count", got)
+	// errors result: one row per diagnostic, with its line.
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 2, summary: "x",
+		details: []validator.Diagnostic{
+			{Path: "config/Caddyfile", Line: 2, Message: "first"},
+			{Path: "config/Caddyfile", Line: 5, Message: "second"},
+		},
+	}
+	if got := stripANSI(m.inlineCaddyBlock(5)); !strings.Contains(got, "E error · line 2") || !strings.Contains(got, "E error · line 5") {
+		t.Errorf("errors caddy block = %q, want one row per diagnostic", got)
 	}
 	// stale result
 	m.inlineCaddy = &inlineCaddyState{phase: "stale", errors: 0}
@@ -610,7 +713,10 @@ func TestInlineCaddyBlock_ErrorMarkerDistinct(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
 	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
-	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "boom"}
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 1, summary: "boom",
+		details: []validator.Diagnostic{{Path: "config/Caddyfile", Line: 1, Message: "boom"}},
+	}
 	m.inlineFindings = nil
 	m.inlineReviewCursor = -1 // unselected row
 	block := m.inlineCaddyBlock(5)
@@ -622,28 +728,26 @@ func TestInlineCaddyBlock_ErrorMarkerDistinct(t *testing.T) {
 	}
 }
 
-// TestOpenCaddyDiagnostics_NoDiagnostics verifies Enter on the Caddy row with
-// no stored diagnostics shows a prompting status instead of opening a view.
-func TestOpenCaddyDiagnostics_NoDiagnostics(t *testing.T) {
+// TestInlineReview_EnterOnStateRowCloses verifies Enter on a Caddy state row
+// (not run / stale / clean, no diagnostics to reveal) simply closes the
+// review without revealing or opening a view.
+func TestInlineReview_EnterOnStateRowCloses(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
 	m.showInlineReview = true
 	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "x"}
 	m.inlineCaddy.details = nil // no retained diagnostics
+	m.inlineReviewCursor = len(m.inlineFindings)
 	m.diagnostics = nil
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	rm := updated.(*Model)
+	if rm.showInlineReview {
+		t.Error("Enter on a state row should close the review")
+	}
 	if rm.showDiagnostics {
-		t.Error("no diagnostics should not open the diagnostics view")
+		t.Error("a state row must not open the diagnostics view")
 	}
-	if !strings.Contains(rm.statusMessage, "press v to validate") {
-		t.Errorf("status = %q, want a prompt to validate", rm.statusMessage)
-	}
-
-	// openCaddyDiagnostics with an empty Caddy state shows the prompting status.
-	m.inlineCaddy = nil
-	m.openCaddyDiagnostics()
-	if !strings.Contains(m.statusMessage, "press v to validate") {
-		t.Errorf("nil-caddy status = %q, want a prompt to validate", m.statusMessage)
+	if rm.sourceRevealLine != 0 {
+		t.Errorf("a state row must not reveal a line, got %d", rm.sourceRevealLine)
 	}
 }
 
@@ -668,29 +772,45 @@ func TestInlineReviewFooter_Clean(t *testing.T) {
 	}
 }
 
-// TestInlineReview_ReturnAfterDiagnostics verifies that when the Caddy
-// diagnostics view (opened from the review) is closed, control returns to the
-// review view rather than the home view.
-func TestInlineReview_ReturnAfterDiagnostics(t *testing.T) {
-	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
-	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 1, summary: "boom", details: []validator.Diagnostic{{Line: 2, Message: "boom"}}}
+// TestInlineReview_RightOpensDetailLeftReturns verifies the →/← convention on
+// a Caddy diagnostic row: → opens the full diagnostic detail (positioned on
+// that diagnostic) and ← from the detail returns straight to the review list.
+func TestInlineReview_RightOpensDetailLeftReturns(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\treverse_proxy @phantom localhost:8080\n}\n")
+	m = resize(m, 120, 30)
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 2, summary: "boom",
+		details: []validator.Diagnostic{
+			{Path: "config/Caddyfile", Line: 2, Message: "first"},
+			{Path: "config/Caddyfile", Line: 5, Message: "second"},
+		},
+	}
 	m.showInlineReview = true
-	m.inlineReviewCursor = len(m.inlineFindings) // Caddy row
+	m.inlineReviewCursor = len(m.inlineFindings) + 1 // the second Caddy row
 
-	// Enter opens the diagnostics and marks that we should return to review.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// → opens the detail for the selected diagnostic.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = updated.(*Model)
-	if !m.showDiagnostics {
-		t.Fatal("Enter on the Caddy row should open diagnostics")
+	if !m.showDiagnostics || !m.showDetail {
+		t.Fatal("Right on a Caddy row should open the diagnostic detail")
+	}
+	if m.diagCursor != 1 {
+		t.Errorf("diagCursor = %d, want 1 (the selected diagnostic)", m.diagCursor)
 	}
 	if m.inlineReviewReturn != true {
-		t.Fatal("closing diagnostics should restore the review")
+		t.Fatal("closing the detail should restore the review")
+	}
+	if !strings.Contains(stripANSI(m.detailViewport.View()), "second") {
+		t.Errorf("detail should show the selected diagnostic, got:\n%s", stripANSI(m.detailViewport.View()))
 	}
 
-	// Closing the diagnostics (Esc) returns to the review view.
-	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	// ← from the detail returns directly to the review list.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyLeft})
 	if !m.showInlineReview {
-		t.Error("closing diagnostics should return to the review view")
+		t.Error("Left from the detail should return to the review list")
+	}
+	if m.showDiagnostics || m.showDetail {
+		t.Error("the diagnostics modal and detail should be closed")
 	}
 	if m.inlineReviewReturn {
 		t.Error("inlineReviewReturn should be cleared after restoring the review")
@@ -783,14 +903,20 @@ func TestInlineAdvisoryBlock_CursorBeyondEnd(t *testing.T) {
 
 // TestInlineCaddyBlock_NoSummary covers the Caddy error block when the outcome
 // carries no readable summary text.
-func TestInlineCaddyBlock_NoSummary(t *testing.T) {
+func TestInlineCaddyRow_ShowsMessage(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
 	m.inlineFindings = nil
 	m.showInlineReview = true
-	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 2, summary: ""}
+	m.inlineCaddy = &inlineCaddyState{
+		phase: "result", errors: 2, summary: "",
+		details: []validator.Diagnostic{{Path: "config/Caddyfile", Line: 3, Message: "boom"}},
+	}
 	block := m.inlineCaddyBlock(5)
-	if !strings.Contains(stripANSI(block), "2 errors") {
-		t.Errorf("caddy block without summary = %q, want the error count", block)
+	if !strings.Contains(stripANSI(block), "line 3") {
+		t.Errorf("caddy block without summary = %q, want the diagnostic line", block)
+	}
+	if !strings.Contains(stripANSI(block), "boom") {
+		t.Errorf("caddy block = %q, want the diagnostic message", block)
 	}
 }
 

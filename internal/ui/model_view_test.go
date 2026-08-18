@@ -723,14 +723,12 @@ func TestModelFooter_ListContext(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Enter/+ detail") {
-		t.Errorf("list footer should show 'Enter/+ detail', got:\n%s", view)
+	if !strings.Contains(view, "Enter/+ or → detail") {
+		t.Errorf("list footer should show 'Enter/+ or → detail', got:\n%s", view)
 	}
 	if strings.Contains(view, "? commands") {
 		t.Errorf("modal footer should use only its contextual keys, got:\n%s", view)
@@ -747,11 +745,9 @@ func TestModelFooter_DetailContext(t *testing.T) {
 	diags := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 1, Message: "boom", Severity: validator.SeverityError},
 	}
-	formatter := &fakeFormatter{diagnostics: diags, err: errors.New("caddy exit 1")}
-	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m := newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	m.Update(cmd())
+	m = openDiagnosticsModal(m, diags)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open detail
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "PgUp/PgDown") {

@@ -9,12 +9,22 @@ import (
 )
 
 // updateDetailKey handles keys when the diagnostics detail view is
-// open. Esc returns to the list (the modal stays open). PgUp /
-// PgDown and the arrow keys scroll the wrapped message.
+// open. Esc / ← return to the list (the modal stays open), except when the
+// detail was opened from the inline review (→): there they return straight
+// to the review list. PgUp / PgDown and the arrow keys scroll the wrapped
+// message.
 func (m *Model) updateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q":
-		m.closeDetail()
+	case "esc", "q", "left":
+		if m.inlineReviewReturn {
+			// Detail opened from the inline review: closing returns
+			// directly to the review list, skipping the intermediate
+			// diagnostics list.
+			m.showDetail = false
+			m.closeDiagnostics()
+		} else {
+			m.closeDetail()
+		}
 	case "up", "k":
 		m.detailViewport.LineUp(1)
 	case "down", "j":
