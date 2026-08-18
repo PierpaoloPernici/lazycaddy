@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
@@ -14,6 +15,11 @@ type matcherNav struct {
 	// switching documents rebuilds the list instead of indexing into a
 	// stale one.
 	docPath string
+	// source is a copy of the document source the refs list was derived
+	// from. A structurally edited save, a reload or a rollback can replace
+	// the document with new matchers while keeping the same path, so the
+	// session is also invalidated whenever the source no longer matches.
+	source []byte
 	// refs holds every named matcher occurrence (definitions first, then
 	// references) of the document, in source order.
 	refs []caddyfile.MatcherRef
@@ -25,12 +31,13 @@ type matcherNav struct {
 
 // gotoNextMatcher advances the matcher navigator to the next occurrence of
 // a named matcher in the currently selected document and reveals it in the
-// source pane. When no session is active, or the selected document changed
-// since the last press, the list is rebuilt from caddyfile.Matchers and the
-// cursor starts at the first occurrence at-or-after the current selection's
-// line. When the document has no named matchers, an informational status
-// is shown and the session stays cleared. It is read-only: no source bytes
-// change, only the selection reveal and the status message.
+// source pane. When no session is active, the selected document changed, or
+// the document's source was replaced (a save, reload or rollback), the list
+// is rebuilt from caddyfile.Matchers and the cursor starts at the first
+// occurrence at-or-after the current selection's line. When the document has
+// no named matchers, an informational status is shown and the session stays
+// cleared. It is read-only: no source bytes change, only the selection reveal
+// and the status message.
 func (m *Model) gotoNextMatcher() {
 	doc := m.sourceDoc
 	if doc == nil {
@@ -39,9 +46,13 @@ func (m *Model) gotoNextMatcher() {
 		return
 	}
 
-	// Rebuild the list when the session is stale or belongs to another
-	// document (for example after switching selection or a save).
-	stale := m.matcherNav == nil || m.matcherNav.docPath != doc.Path
+	// Rebuild the list when the session is stale, belongs to another
+	// document (after switching selection) or was derived from a different
+	// source (a save, reload or rollback can replace the document with new
+	// matchers while keeping the same path).
+	stale := m.matcherNav == nil ||
+		m.matcherNav.docPath != doc.Path ||
+		!bytes.Equal(m.matcherNav.source, doc.Source)
 	var refs []caddyfile.MatcherRef
 	if stale {
 		refs = caddyfile.Matchers(doc)
@@ -66,7 +77,12 @@ func (m *Model) gotoNextMatcher() {
 		cursor = (m.matcherNav.cursor + 1) % len(refs)
 	}
 
-	m.matcherNav = &matcherNav{docPath: doc.Path, refs: refs, cursor: cursor}
+	m.matcherNav = &matcherNav{
+		docPath: doc.Path,
+		source:  append([]byte(nil), doc.Source...),
+		refs:    refs,
+		cursor:  cursor,
+	}
 	m.revealMatcher(refs[cursor], len(refs))
 }
 

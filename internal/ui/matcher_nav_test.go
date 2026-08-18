@@ -270,3 +270,39 @@ func TestMatcherStatus_EmptyDirective(t *testing.T) {
 		t.Errorf("empty-directive status = %q, want it to name the node kind", got)
 	}
 }
+
+// TestGotoMatcher_InvalidatesOnSamePathReload verifies that a structurally
+// edited reload replacing a document (same path, different matchers) rebuilds
+// the matcher session on the next press instead of reusing the stale refs.
+func TestGotoMatcher_InvalidatesOnSamePathReload(t *testing.T) {
+	srcBefore := "example.test {\n\t@old path /old/*\n\trespond @old ok\n}\n"
+	srcAfter := "example.test {\n\t@new path /new/*\n\trespond @new ok\n}\n"
+	m := matcherModel(t, srcBefore)
+	_ = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	if m.matcherNav == nil || len(m.matcherNav.refs) == 0 {
+		t.Fatal("session not initialized on the first press")
+	}
+	if m.matcherNav.refs[0].Name != "old" {
+		t.Fatalf("initial session matcher = %q, want old", m.matcherNav.refs[0].Name)
+	}
+
+	// Simulate a reload that replaces the document with new matchers while
+	// keeping the same path. The reloaded document carries its own parsed
+	// nodes, like a real load.
+	reloaded := caddyfile.Parse([]byte(srcAfter))
+	reloaded.Path = m.matcherNav.docPath
+	m.sourceDoc = reloaded
+
+	_ = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	if m.matcherNav == nil {
+		t.Fatal("session cleared after the reload press")
+	}
+	if m.matcherNav.docPath != "config/Caddyfile" {
+		t.Errorf("session docPath = %q, want config/Caddyfile", m.matcherNav.docPath)
+	}
+	for _, ref := range m.matcherNav.refs {
+		if ref.Name != "new" {
+			t.Errorf("reloaded session still references matcher @%s, want only @new", ref.Name)
+		}
+	}
+}
