@@ -73,9 +73,12 @@ func (m *Model) markInlineCaddyStaleIfNeeded(doc *caddyfile.Document) {
 // lines, or no diagnostics for this path). Paths are matched with
 // filepath.Clean so the display path and the graph document paths agree
 // regardless of minor separator differences; a diagnostic whose path cannot
-// be matched is never overlaid on another document's lines. The overlay is
-// driven by the same outcome as the review's CADDY VALIDATION section, so
-// the two surfaces never disagree.
+// be matched is never overlaid on another document's lines. Diagnostics
+// caddy reported without any position (Line 0, e.g. "unrecognized matcher
+// name: @phantom") are pinned onto the token they name in the document
+// source as a best-effort presentation mapping; an unpinnable one is
+// simply not overlaid. The overlay is driven by the same outcome as the
+// review's CADDY VALIDATION section, so the two surfaces never disagree.
 func (m *Model) caddyDiagsForDoc(doc *caddyfile.Document) []validator.Diagnostic {
 	if doc == nil || m.inlineCaddy == nil || m.inlineCaddy.phase != "result" {
 		return nil
@@ -86,11 +89,18 @@ func (m *Model) caddyDiagsForDoc(doc *caddyfile.Document) []validator.Diagnostic
 	docPath := filepath.Clean(doc.Path)
 	var out []validator.Diagnostic
 	for _, d := range m.inlineCaddy.details {
-		if d.Line <= 0 {
+		if filepath.Clean(d.Path) != docPath {
 			continue
 		}
-		if filepath.Clean(d.Path) == docPath {
+		if d.Line > 0 {
 			out = append(out, d)
+			continue
+		}
+		if line, col := pinDiagnostic(doc.Source, d.Message); line > 0 {
+			pinned := d
+			pinned.Line = line
+			pinned.Column = col
+			out = append(out, pinned)
 		}
 	}
 	return out

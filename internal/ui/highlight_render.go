@@ -259,6 +259,70 @@ func tokenBoundaryRune(r rune) bool {
 	return !unicode.IsSpace(r) && !strings.ContainsRune("{}()#\"'=,[];", r)
 }
 
+// tokenFromMessage extracts the offending token caddy names in an
+// unpositioned error message: the text after the last ": " with surrounding
+// quotes stripped. "unrecognized matcher name: @phantom" yields
+// "@phantom"; messages without a named token ("unexpected EOF") yield ""
+// so the caller never pins on unreliable text.
+func tokenFromMessage(msg string) string {
+	i := strings.LastIndex(msg, ": ")
+	if i < 0 {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(msg[i+2:]), `"'`)
+}
+
+// pinDiagnostic locates the token named in an unpositioned caddy message
+// (see tokenFromMessage) inside src and returns the 1-based line and
+// column of its first word-boundary occurrence, or 0s when no reliable
+// hit exists. It is a best-effort presentation mapping: caddy itself did
+// not report a position, so the pinned coordinates are advisory and never
+// block or modify anything.
+func pinDiagnostic(src []byte, msg string) (line, col int) {
+	tok := tokenFromMessage(msg)
+	if tok == "" {
+		return 0, 0
+	}
+	for i, ln := range strings.Split(string(src), "\n") {
+		if c, ok := tokenColumn(ln, tok); ok {
+			return i + 1, c
+		}
+	}
+	return 0, 0
+}
+
+// tokenColumn finds tok in ln at a token boundary and returns its 1-based
+// rune column (matching caddy's char-based columns), or ok=false when the
+// token does not appear as a standalone word (so "@phantom" never matches
+// inside "http@phantom").
+func tokenColumn(ln, tok string) (int, bool) {
+	for i := 0; ; {
+		j := strings.Index(ln[i:], tok)
+		if j < 0 {
+			return 0, false
+		}
+		abs := i + j
+		end := abs + len(tok)
+		beforeOK := abs == 0 || tokenBoundaryByte(ln[abs-1])
+		afterOK := end >= len(ln) || tokenBoundaryByte(ln[end])
+		if beforeOK && afterOK {
+			return utf8.RuneCountInString(ln[:abs]) + 1, true
+		}
+		i = abs + len(tok)
+	}
+}
+
+// tokenBoundaryByte reports whether byte b is a token boundary, i.e. it
+// does NOT continue a token (whitespace or a structural character). Bytes
+// that are part of a multi-byte rune (>= 0x80) are never confirmed
+// boundaries, so boundary checks stay conservative on non-ASCII text.
+func tokenBoundaryByte(b byte) bool {
+	if b >= 0x80 {
+		return false
+	}
+	return !tokenBoundaryRune(rune(b))
+}
+
 // clampSpan converts an absolute [start, end) byte range to a line-relative
 // styledSpan, clamped to the line's extent. Coordinates that fall entirely
 // outside the line produce ok=false so multi-line tokens like heredocs and

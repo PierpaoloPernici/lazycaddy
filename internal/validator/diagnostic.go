@@ -79,6 +79,18 @@ var (
 	diagLineColRe = regexp.MustCompile(`^(.+?):(\d+):(\d+):\s*(.+)$`)
 	// diagLineRe captures "path:line: message" tokens without a column.
 	diagLineRe = regexp.MustCompile(`^(.+?):(\d+):\s*(.+)$`)
+	// diagAtRe captures the trailing position form caddy emits for EOF and
+	// unterminated-construct errors, e.g. "unexpected EOF, at /x/caddy:3"
+	// or "', expecting '}', at /x/caddy:2 import chain: ['']".
+	diagAtRe = regexp.MustCompile(`^(.+),\s*at\s+(.+?):(\d+)(?:\s+.*)?$`)
+	// adaptingPrefixRe matches caddy's adapter wrapper that prefixes the
+	// actual adapter error, e.g. "adapting config using caddyfile: ". The
+	// wrapper is message noise, not part of the file path: stripping it
+	// before the position regexes run keeps the captured path clean so the
+	// temporary-path remap in the validator matches. The fallback message
+	// keeps the wrapper, preserving the historical display for
+	// unpositioned lines.
+	adaptingPrefixRe = regexp.MustCompile(`(?i)^adapting config using \S+:\s*`)
 
 	// Level detection. Caddy emits validate output in one of three
 	// formats depending on the encoder (text, logfmt, JSON). All
@@ -151,11 +163,38 @@ func stripErrorPrefix(line string) string {
 	return errorPrefixRe.ReplaceAllString(line, "")
 }
 
+// parsePositionedLine extracts a caddy position from one output line. It
+// returns the file path, 1-based line and column (0 when caddy did not
+// report a column) and the message; ok is false when the line carries no
+// usable position and the caller falls back to the default path. The
+// caddy adapter wrapper ("adapting config using caddyfile: ") is stripped
+// before matching so the captured path is the real file path and the
+// temporary-path remap in the validator works; the trailing "at path:line"
+// form caddy uses for EOF and unterminated constructs is handled as well.
+func parsePositionedLine(line string) (path string, lineNo, col int, msg string, ok bool) {
+	rest := adaptingPrefixRe.ReplaceAllString(line, "")
+	if m := diagLineColRe.FindStringSubmatch(rest); m != nil {
+		l, _ := strconv.Atoi(m[2])
+		c, _ := strconv.Atoi(m[3])
+		return m[1], l, c, m[4], true
+	}
+	if m := diagLineRe.FindStringSubmatch(rest); m != nil {
+		l, _ := strconv.Atoi(m[2])
+		return m[1], l, 0, m[3], true
+	}
+	if m := diagAtRe.FindStringSubmatch(rest); m != nil {
+		l, _ := strconv.Atoi(m[3])
+		return m[2], l, 0, m[1], true
+	}
+	return "", 0, 0, "", false
+}
+
 // ParseDiagnostics converts the text output of `caddy validate` into
 // a slice of Diagnostic values. The parser is intentionally lenient:
-// it extracts path:line:col or path:line prefixes when present, and
-// otherwise records the full line as the message associated with
-// defaultPath.
+// it extracts path:line:col or path:line prefixes when present (also
+// inside caddy's "adapting config using ..." wrapper and its trailing
+// "at path:line" form), and otherwise records the full line as the
+// message associated with defaultPath.
 //
 // Each line is tagged with the Severity that caddy attached to it
 // (text / logfmt / JSON). The default is SeverityError for
@@ -175,24 +214,12 @@ func ParseDiagnostics(defaultPath, output string) []Diagnostic {
 		// can match "ERROR /etc/caddy/Caddyfile:47:1: msg" as a real
 		// finding instead of falling back to the unparseable branch.
 		matchLine := stripErrorPrefix(stripTextLevelPrefix(line))
-		if m := diagLineColRe.FindStringSubmatch(matchLine); m != nil {
-			l, _ := strconv.Atoi(m[2])
-			c, _ := strconv.Atoi(m[3])
+		if path, l, c, msg, ok := parsePositionedLine(matchLine); ok {
 			out = append(out, Diagnostic{
-				Path:     m[1],
+				Path:     path,
 				Line:     l,
 				Column:   c,
-				Message:  m[4],
-				Severity: severity,
-			})
-			continue
-		}
-		if m := diagLineRe.FindStringSubmatch(matchLine); m != nil {
-			l, _ := strconv.Atoi(m[2])
-			out = append(out, Diagnostic{
-				Path:     m[1],
-				Line:     l,
-				Message:  m[3],
+				Message:  msg,
 				Severity: severity,
 			})
 			continue

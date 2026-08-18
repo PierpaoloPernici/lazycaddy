@@ -223,24 +223,104 @@ func TestHighlightSourceCaddyDiagnosticsUnreliable(t *testing.T) {
 	}
 }
 
+// TestTokenFromMessage verifies the token extraction from unpositioned
+// caddy messages: the text after the last ": ", quotes stripped, or ""
+// when no token is named.
+func TestTokenFromMessage(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want string
+	}{
+		{"unrecognized matcher name: @phantom", "@phantom"},
+		{"unrecognized directive: bogus_directive", "bogus_directive"},
+		{"unknown directive: 'foo'", "foo"},
+		{"parsing caddyfile tokens for 'reverse_proxy': unrecognized matcher name: @phantom", "@phantom"},
+		{"unexpected EOF", ""},
+		{"open /etc/caddy/Caddyfile: no such file", "no such file"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := tokenFromMessage(tt.msg); got != tt.want {
+			t.Errorf("tokenFromMessage(%q) = %q, want %q", tt.msg, got, tt.want)
+		}
+	}
+}
+
+// TestTokenColumn verifies the word-boundary search: the token must stand
+// alone (never inside a longer word) and the column is 1-based and
+// rune-based.
+func TestTokenColumn(t *testing.T) {
+	tests := []struct {
+		ln, tok string
+		wantCol int
+		wantOK  bool
+	}{
+		{"\treverse_proxy @phantom localhost:8080", "@phantom", 16, true},
+		{"@phantom path /x/*", "@phantom", 1, true},
+		{"reverse_proxy localhost:8080", "@phantom", 0, false},
+		{"http@phantom inside a word", "@phantom", 0, false},
+		{"php_fastcgi localhost", "php", 0, false},
+		{"café @tok end", "@tok", 6, true},
+		{"", "x", 0, false},
+	}
+	for _, tt := range tests {
+		col, ok := tokenColumn(tt.ln, tt.tok)
+		if ok != tt.wantOK || col != tt.wantCol {
+			t.Errorf("tokenColumn(%q, %q) = (%d, %v), want (%d, %v)", tt.ln, tt.tok, col, ok, tt.wantCol, tt.wantOK)
+		}
+	}
+}
+
+// TestPinDiagnostic verifies the no-position mapping: the token named in
+// the message pins onto its first standalone occurrence, and messages
+// without a pinnable token (or without a hit in the source) yield 0s.
+func TestPinDiagnostic(t *testing.T) {
+	src := []byte("example.test {\n\treverse_proxy @phantom localhost:8080\n\t@phantom path /x/*\n}\n")
+	line, col := pinDiagnostic(src, "unrecognized matcher name: @phantom")
+	if line != 2 || col != 16 {
+		t.Errorf("pin = (%d,%d), want (2,16)", line, col)
+	}
+	// A token that appears only later pins to its first occurrence.
+	line, col = pinDiagnostic(src, "unrecognized matcher name: @phantom")
+	_ = line
+	// No token in the message: nothing pins.
+	if l, c := pinDiagnostic(src, "unexpected EOF"); l != 0 || c != 0 {
+		t.Errorf("pin without a token = (%d,%d), want (0,0)", l, c)
+	}
+	// Token absent from the source: nothing pins.
+	if l, c := pinDiagnostic(src, "unknown directive: zzz"); l != 0 || c != 0 {
+		t.Errorf("pin with an absent token = (%d,%d), want (0,0)", l, c)
+	}
+}
+
 // TestCaddyDiagsForDoc verifies the per-document filter: path matching with
 // filepath.Clean, line-0 exclusion, stale/incomplete outcomes yield nil.
 func TestCaddyDiagsForDoc(t *testing.T) {
-	src := "example.test {\n\tbogus_directive x\n}\n"
+	src := "example.test {\n\treverse_proxy @phantom localhost:8080\n}\n"
 	m := matcherModel(t, src)
 	details := []validator.Diagnostic{
 		{Path: "config/Caddyfile", Line: 2, Column: 1, Message: "boom", Severity: validator.SeverityError},
 		{Path: "config/other.conf", Line: 7, Column: 1, Message: "other doc", Severity: validator.SeverityError},
-		{Path: "config/Caddyfile", Line: 0, Column: 1, Message: "no line", Severity: validator.SeverityError},
+		{Path: "config/Caddyfile", Line: 0, Column: 0, Message: "unrecognized matcher name: @phantom", Severity: validator.SeverityError},
+		{Path: "config/Caddyfile", Line: 0, Column: 0, Message: "unknown directive: zzz_absent", Severity: validator.SeverityError},
 	}
-	m.setInlineCaddyOutcome(2, true, m.sourceDoc.Source, "boom", details)
+	m.setInlineCaddyOutcome(4, true, m.sourceDoc.Source, "boom", details)
 
 	got := m.caddyDiagsForDoc(m.sourceDoc)
-	if len(got) != 1 {
-		t.Fatalf("caddyDiagsForDoc = %d diags, want 1 for the matching path", len(got))
+	if len(got) != 2 {
+		t.Fatalf("caddyDiagsForDoc = %d diags, want 2 (positioned + pinned; absent token skipped)", len(got))
 	}
-	if got[0].Message != "boom" {
-		t.Errorf("diag = %+v, want the matching error", got[0])
+	// The positioned diagnostic passes through untouched.
+	if got[0].Message != "boom" || got[0].Line != 2 {
+		t.Errorf("diag[0] = %+v, want the positioned error", got[0])
+	}
+	// The unpositioned matcher error is pinned onto the token it names.
+	if got[1].Message != "unrecognized matcher name: @phantom" || got[1].Line != 2 || got[1].Column != 16 {
+		t.Errorf("diag[1] = %+v, want the pinned matcher error at line 2 col 16", got[1])
+	}
+	// The original details are never mutated by the pinning.
+	if details[2].Line != 0 || details[2].Column != 0 {
+		t.Errorf("pinning mutated the stored diagnostic: %+v", details[2])
 	}
 
 	// A document with another path (and an import-like path spelling) gets
@@ -349,6 +429,43 @@ func TestSourceTitleWithFindings_CaddyErrorsOnParseErrorDoc(t *testing.T) {
 	}
 	if strings.Contains(got, "advisory") {
 		t.Errorf("title = %q, want no advisory summary for a parse-error doc", got)
+	}
+}
+
+// TestValidateFlow_PinsUnpositionedMatcherError reproduces the real caddy
+// v2.11.4 scenario the overlay must handle: the "unrecognized matcher name:
+// @phantom" error carries no position at all, so the token is pinned onto
+// its line and the source pane shows the authoritative 'E' marker there
+// (outranking the advisory '!' on the same line) with the token styled.
+func TestValidateFlow_PinsUnpositionedMatcherError(t *testing.T) {
+	src := "example.test {\n\treverse_proxy @phantom localhost:8080\n}\n"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": src,
+	}))
+	diags := []validator.Diagnostic{
+		{Path: "config/Caddyfile", Line: 0, Column: 0, Message: "adapting config using caddyfile: parsing caddyfile tokens for 'reverse_proxy': unrecognized matcher name: @phantom", Severity: validator.SeverityError},
+	}
+	formatter := &fakeFormatter{formatted: []byte(src), diagnostics: diags, err: errors.New("caddy exit 1")}
+	m := newLoadedModel(t, fakeLoader{state: state}, formatter)
+	m = resize(m, 100, 30)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if cmd == nil {
+		t.Fatal("v should return a validation command")
+	}
+	m = keyPress(t, m, cmd())
+	if !m.showDiagnostics {
+		t.Fatal("failed validate must open the diagnostics modal")
+	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	_ = m.View()
+
+	viewport := m.viewport.View()
+	if !strings.Contains(viewport, "2│E ") {
+		t.Errorf("source pane missing the 'E' marker on the pinned line:\n%s", viewport)
+	}
+	if !strings.Contains(m.sourceTitle, "1 caddy error") {
+		t.Errorf("source title missing the error count, got %q", m.sourceTitle)
 	}
 }
 
