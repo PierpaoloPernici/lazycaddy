@@ -34,8 +34,8 @@ func TestCommandPalette_OpensAndFilters(t *testing.T) {
 		"SOURCE",
 		"VALIDATION",
 		"Move selection",
+		"Goto matcher (next)",
 		"Format & validate",
-		"Edit directive form",
 		"Save validated changes",
 		"Esc close",
 		"Documents",
@@ -44,6 +44,11 @@ func TestCommandPalette_OpensAndFilters(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("palette missing %q:\n%s", want, view)
 		}
+	}
+	// The command catalog still contains the form command even though it is
+	// scrolled below the palette viewport once the matcher command was added.
+	if _, ok := m.commandForKey("m"); !ok {
+		t.Error("command catalog missing the directive-form command (m)")
 	}
 
 	for _, r := range []rune("save") {

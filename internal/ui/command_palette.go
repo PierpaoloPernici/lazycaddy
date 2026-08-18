@@ -20,6 +20,7 @@ const (
 	commandToggleBranch  commandID = "toggle-branch"
 	commandExpandAll     commandID = "expand-all"
 	commandCollapseAll   commandID = "collapse-all"
+	commandMatcherNext   commandID = "matcher-next"
 	commandValidate      commandID = "validate"
 	commandDiff          commandID = "diff"
 	commandSave          commandID = "save"
@@ -71,6 +72,9 @@ func commandDefinitions() []uiCommand {
 		{ID: commandCollapseAll, Category: "Navigation", Label: "Collapse all branches", Description: "keep documents open", Keys: []string{"-"}, Enabled: func(m *Model) bool {
 			return m.state != nil && m.state.Graph != nil
 		}, Reason: func(*Model) string { return "no configuration loaded" }},
+		{ID: commandMatcherNext, Category: "Navigation", Label: "Goto matcher (next)", Description: "cycle matcher definitions & references", Keys: []string{"g"}, Enabled: func(m *Model) bool {
+			return m.sourceDoc != nil
+		}, Reason: func(*Model) string { return "no document selected" }},
 		{ID: commandSearch, Category: "Navigation", Label: "Search Caddyfile", Description: "read-only search", Keys: []string{"/", "Ctrl-F"}, Enabled: func(m *Model) bool {
 			return m.searcher != nil
 		}, Reason: func(*Model) string { return "search unavailable" }},
@@ -204,6 +208,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		m.expandAllBranches()
 	case commandCollapseAll:
 		m.collapseDescendants()
+	case commandMatcherNext:
+		m.gotoNextMatcher()
 	case commandValidate:
 		return m.startFormatAndValidate()
 	case commandDiff:

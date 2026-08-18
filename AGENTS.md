@@ -140,6 +140,12 @@ missing changelog classification.
 
 ### Pull requests
 
+- Do not create a pull request, push a PR branch to `origin`, or merge a
+  pull request without explicit authorization from the repository
+  maintainer. Prepare the branch and commits (as documented above) and stop
+  before opening or merging a PR until the maintainer asks for it. This
+  applies to direct pushes on `main` as well: do not merge or open a PR
+  until authorization is given.
 - When using a feature branch, push it to `origin` and open a pull request
   targeting `main`.
 - Write the title and description in English and follow the release-ready change contract above. The description must explain the motivation, summarize the changes, list verification commands and results, and document safety implications.
