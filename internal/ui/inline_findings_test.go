@@ -20,6 +20,14 @@ func renderWithANSIInline(src []byte, findings []caddyfile.InlineFinding) string
 	return highlightSource(src, 0, 0, findings...)
 }
 
+// renderWithANSIInlineSelected renders through highlightSource with inline
+// findings and an active selected-line range, forcing ANSI output.
+func renderWithANSIInlineSelected(src []byte, selStart, selEnd int, findings []caddyfile.InlineFinding) string {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	return highlightSource(src, selStart, selEnd, findings...)
+}
+
 func TestInlineStyleKeyFor(t *testing.T) {
 	if got := inlineStyleKeyFor(caddyfile.SeverityAdvisoryHint); got != 100 {
 		t.Errorf("hint key = %d, want 100", got)
@@ -93,6 +101,27 @@ func TestHighlightSource_GutterMarkers(t *testing.T) {
 	}
 	if strings.Contains(got, "1│!") || strings.Contains(got, "1│i") {
 		t.Errorf("clean line 1 should have no gutter marker:\n%s", got)
+	}
+}
+
+// TestHighlightSource_GutterMarker_Selected verifies the gutter marker also
+// appears on a line that is inside the active selection range (the selected
+// gutter uses a bar instead of the plain separator).
+func TestHighlightSource_GutterMarker_Selected(t *testing.T) {
+	src := []byte("example.test {\n\treverse_proxy @api localhost\n\t@unused path /x/*\n}\n")
+	findings := caddyfile.InlineProblems(caddyfile.Parse(src))
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 findings, got %d", len(findings))
+	}
+	// Select lines 2-3, both of which carry a finding.
+	got := stripANSI(renderWithANSIInlineSelected(src, 2, 3, findings))
+	assertSourceLossless(t, src, got)
+	// The selected gutter bar (▎) plus the marker must both be present.
+	if !strings.Contains(got, "2▎!") {
+		t.Errorf("selected hint line gutter missing '▎!':\n%s", got)
+	}
+	if !strings.Contains(got, "3▎i") {
+		t.Errorf("selected info line gutter missing '▎i':\n%s", got)
 	}
 }
 
@@ -417,6 +446,20 @@ func TestCommandPalette_ReviewInlineFindings(t *testing.T) {
 	if !ok || cmd != commandReviewInline {
 		t.Errorf("commandForKey(i) = %q, %v; want review-inline", cmd, ok)
 	}
+
+	// The palette entry is gated on a selected document: without one it
+	// reports the disabled reason instead of pretending it can run.
+	cmdDef, ok := commandDefinition(commandReviewInline)
+	if !ok {
+		t.Fatal("review-inline command not found in the catalog")
+	}
+	m.sourceDoc = nil
+	if cmdDef.Enabled(m) {
+		t.Errorf("review command should be disabled with no document selected")
+	}
+	if got := cmdDef.Reason(m); got != "no document selected" {
+		t.Errorf("review command Reason = %q, want 'no document selected'", got)
+	}
 }
 
 // TestInlineReviewView_Sections renders the review and checks the ADVISORY and
@@ -688,5 +731,97 @@ func TestInlineReview_ReturnDeferredWhileDiagnosticsOpen(t *testing.T) {
 	}
 	if !m.inlineReviewReturn {
 		t.Error("return flag must stay set until the diagnostics view closes")
+	}
+}
+
+// TestInlineReview_Reveal_CursorOutOfRange verifies revealInlineFinding is a
+// safe no-op when the review cursor points outside the findings list.
+func TestInlineReview_Reveal_CursorOutOfRange(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
+	m.inlineFindings = []caddyfile.InlineFinding{{StartLine: 2, Start: 16, End: 20}}
+	before := m.sourceRevealLine
+	m.inlineReviewCursor = -1
+	m.revealInlineFinding()
+	m.inlineReviewCursor = len(m.inlineFindings) // beyond the last index
+	m.revealInlineFinding()
+	if m.sourceRevealLine != before {
+		t.Errorf("sourceRevealLine changed (%d -> %d) for an out-of-range cursor", before, m.sourceRevealLine)
+	}
+}
+
+// TestInlineReviewView_Clamped verifies the review view degrades gracefully on
+// tiny widths/heights (the content width and body height are clamped to 1).
+func TestInlineReviewView_Clamped(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
+	m.syncInlineFindings(m.sourceDoc)
+	m.showInlineReview = true
+	m.inlineReviewCursor = 0
+	m.inlineCaddy = &inlineCaddyState{phase: "not run"}
+	view := m.inlineReviewView(0, 0)
+	if view == "" {
+		t.Error("review view returned empty on a zero-sized terminal")
+	}
+	// A very small height also exercises the bodyH clamp.
+	view2 := m.inlineReviewView(30, 2)
+	if view2 == "" {
+		t.Error("review view returned empty on a 2-row terminal")
+	}
+}
+
+// TestInlineAdvisoryBlock_CursorBeyondEnd exercises the clamp when the review
+// cursor exceeds the findings list length (e.g. after the tree shrank). It
+// must not panic; the block may legitimately be empty.
+func TestInlineAdvisoryBlock_CursorBeyondEnd(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
+	m.syncInlineFindings(m.sourceDoc)
+	if len(m.inlineFindings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(m.inlineFindings))
+	}
+	m.inlineReviewCursor = 10 // beyond the single finding
+	_ = m.inlineAdvisoryBlock(10) // must not panic
+}
+
+// TestInlineCaddyBlock_NoSummary covers the Caddy error block when the outcome
+// carries no readable summary text.
+func TestInlineCaddyBlock_NoSummary(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
+	m.inlineFindings = nil
+	m.showInlineReview = true
+	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 2, summary: ""}
+	block := m.inlineCaddyBlock(5)
+	if !strings.Contains(stripANSI(block), "2 errors") {
+		t.Errorf("caddy block without summary = %q, want the error count", block)
+	}
+}
+
+// TestInlineCaddyBlock_CleanAndStaleSelected covers the selected Caddy clean and
+// stale rows.
+func TestInlineCaddyBlock_CleanAndStaleSelected(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\trespond ok\n}\n")
+	m.inlineFindings = nil
+	m.showInlineReview = true
+
+	// Clean result, cursor on the (sole) Caddy row.
+	m.inlineCaddy = &inlineCaddyState{phase: "result", errors: 0, summary: ""}
+	m.inlineReviewCursor = 0
+	if got := stripANSI(m.inlineCaddyBlock(5)); !strings.Contains(got, "clean") {
+		t.Errorf("selected clean caddy block = %q, want clean", got)
+	}
+	// Stale result, cursor on the Caddy row.
+	m.inlineCaddy = &inlineCaddyState{phase: "stale", errors: 0}
+	if got := stripANSI(m.inlineCaddyBlock(5)); !strings.Contains(got, "stale") {
+		t.Errorf("selected stale caddy block = %q, want stale", got)
+	}
+}
+
+// TestInlineReviewFooter_WithInfo verifies the advisory footer counts an info
+// finding as well (covering the info branch of the counting loop).
+func TestInlineReviewFooter_WithInfo(t *testing.T) {
+	m := matcherModel(t, "example.test {\n\t@unused path /x/*\n}\n")
+	m.syncInlineFindings(m.sourceDoc) // 1 info finding
+	m.showInlineReview = true
+	footer := m.inlineReviewFooter()
+	if !strings.Contains(footer, "Advisory: 0 hint · 1 info") {
+		t.Errorf("info advisory footer = %q", footer)
 	}
 }
