@@ -363,8 +363,9 @@ func seedCollapsedState(g *caddyfile.ImportGraph, collapsed map[string]bool) {
 // document and one leaf row per top-level comment group. The branch
 // holds no parser node: comment groups are source annotations with exact
 // ranges and never affect structural navigation. Its label carries the
-// group count; each leaf identifies its line span, a preview and, when
-// available, the structural block that follows it.
+// group count; each leaf identifies its line span only — the comment
+// text itself stays in the source pane, so a long group never widens the
+// tree.
 func appendCommentItems(items *[]item, doc *caddyfile.Document, groups []caddyfile.CommentGroup, depth int, collapsed map[string]bool) {
 	if len(groups) == 0 {
 		return
@@ -413,25 +414,13 @@ func commentKey(doc *caddyfile.Document, g *caddyfile.CommentGroup) string {
 	return fmt.Sprintf("comment:%s:%d:%d", path, g.Range.Start, g.Range.End)
 }
 
-// commentLabel renders the tree label for a comment group: its line
-// span, a preview of the first comment and, when available, the
-// structural block that follows it.
+// commentLabel renders the tree label for a comment group: its exact
+// line span. The comment text stays in the source pane, so the label is
+// deliberately minimal — only the selection cursor is drawn next to it,
+// with no preview and no block hint.
 func commentLabel(g caddyfile.CommentGroup) string {
-	label := fmt.Sprintf("lines %d-%d", g.StartLine, g.EndLine)
-	if g.Preview != "" {
-		label += " · " + g.Preview
-	} else {
-		label += " · #"
-	}
-	if g.After != nil {
-		label += " → " + g.After.Name
-	}
-	return truncateToWidth(label, maxCommentLabel)
+	return fmt.Sprintf("lines %d–%d", g.StartLine, g.EndLine)
 }
-
-// maxCommentLabel bounds the tree label of a comment row so a long
-// preview never overflows the tree pane.
-const maxCommentLabel = 60
 
 // appendNodeItems appends one visible tree row per branch in nodes,
 // recursing into the visible children. A ParsedNode is a TreeRow when it

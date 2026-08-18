@@ -47,8 +47,8 @@ func TestTree_CommentBranchCollapsedByDefault(t *testing.T) {
 }
 
 // TestTree_CommentBranchExpandShowsLeaves verifies expanding the branch
-// shows one leaf per group with its line span, preview and, when
-// available, the block it documents.
+// shows one minimal leaf per group: just its line span, no preview and no
+// block hint (the comment text stays in the source pane).
 func TestTree_CommentBranchExpandShowsLeaves(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: commentState(t)})
 	m = resize(m, 120, 30)
@@ -58,9 +58,9 @@ func TestTree_CommentBranchExpandShowsLeaves(t *testing.T) {
 		"example.test",
 		"example.net",
 		"comments (3)",
-		"lines 1-2 · header one → example.test",
-		"lines 7-7 · between → example.net",
-		"lines 10-10 · footer",
+		"lines 1–2",
+		"lines 7–7",
+		"lines 10–10",
 	}
 	if got := itemLabels(m.items); got != strings.Join(want, ", ") {
 		t.Fatalf("items = %v, want %v", got, strings.Join(want, ", "))
@@ -74,8 +74,8 @@ func TestTree_CommentBranchExpandShowsLeaves(t *testing.T) {
 	}
 }
 
-// TestTree_BareCommentLeafLabel verifies a bare "#" group renders with a
-// placeholder preview instead of an empty label.
+// TestTree_BareCommentLeafLabel verifies a bare "#" group still renders
+// its line span (the placeholder preview is gone).
 func TestTree_BareCommentLeafLabel(t *testing.T) {
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": "#\nexample.test {\n}\n",
@@ -84,8 +84,8 @@ func TestTree_BareCommentLeafLabel(t *testing.T) {
 	m = resize(m, 120, 30)
 	m = expandAll(m)
 	labels := itemLabels(m.items)
-	if !strings.Contains(labels, "lines 1-1 · #") {
-		t.Errorf("labels = %v, want the bare-comment placeholder", labels)
+	if !strings.Contains(labels, "lines 1–1") {
+		t.Errorf("labels = %v, want the bare-comment line span", labels)
 	}
 }
 
@@ -150,12 +150,12 @@ func TestTree_ExpandAllWithComments(t *testing.T) {
 	m := newLoadedModel(t, fakeLoader{state: commentState(t)})
 	m = resize(m, 120, 30)
 	labels := itemLabels(m.items)
-	if strings.Contains(labels, "lines 1-2") {
+	if strings.Contains(labels, "lines 1–2") {
 		t.Fatalf("comment leaves visible before expand-all: %v", labels)
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
 	labels = itemLabels(m.items)
-	if !strings.Contains(labels, "lines 1-2 · header one → example.test") {
+	if !strings.Contains(labels, "lines 1–2") {
 		t.Errorf("comment leaves not expanded by +: %v", labels)
 	}
 }
@@ -191,7 +191,7 @@ func TestTree_CollapseAllCollapsesCommentBranch(t *testing.T) {
 	m = expandAll(m)
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("-")})
 	labels := itemLabels(m.items)
-	if strings.Contains(labels, "lines 1-2") {
+	if strings.Contains(labels, "lines 1–2") {
 		t.Errorf("comment leaves still visible after collapse-all: %v", labels)
 	}
 	if !strings.Contains(labels, "comments (3)") {
