@@ -253,10 +253,7 @@ func (m *Model) logTextPane() *selection.Pane {
 // copied diff does not depend on the hunk cursor). There is no gutter.
 func (m *Model) diffTextPane() *selection.Pane {
 	geo := m.diffPaneGeometry()
-	bodyW := geo.width
-	if bodyW < 1 {
-		bodyW = 1
-	}
+	bodyW := geo.width // the geometry clamps to at least 1 cell
 	var lines []string
 	if !m.diffHasChanges() {
 		lines = []string{"no changes — the working copy matches the source"}
@@ -473,36 +470,28 @@ func (m *Model) mousePress(x, y int) {
 
 // mouseDrag extends the active selection toward the drag point, clamped to
 // the owning pane so the selection can never cross into the tree or
-// another view.
+// another view. The pane is never textPaneNone here and the clamped
+// position always resolves for the pane's non-empty lines, so both lookups
+// are safe by construction.
 func (m *Model) mouseDrag(x, y int) {
 	if m.textSel.pane == textPaneNone {
 		return
 	}
-	geo, ok := m.geometryFor(m.textSel.pane)
-	if !ok {
-		return
-	}
-	pos, ok := m.panePositionAt(m.textSel.pane, geo, x, y, true)
-	if !ok {
-		return
-	}
+	geo, _ := m.geometryFor(m.textSel.pane)
+	pos, _ := m.panePositionAt(m.textSel.pane, geo, x, y, true)
 	m.textSel.state.SelectTo(pos)
 }
 
 // mouseRelease finalizes the selection. Some terminals omit the last drag
 // motion event, so the release point is applied when it still falls inside
-// the pane.
+// the pane (the clamped position resolves the same way as a drag).
 func (m *Model) mouseRelease(x, y int) {
 	if m.textSel.pane == textPaneNone {
 		return
 	}
-	geo, ok := m.geometryFor(m.textSel.pane)
-	if !ok {
-		return
-	}
-	if pos, ok := m.panePositionAt(m.textSel.pane, geo, x, y, true); ok {
-		m.textSel.state.SelectTo(pos)
-	}
+	geo, _ := m.geometryFor(m.textSel.pane)
+	pos, _ := m.panePositionAt(m.textSel.pane, geo, x, y, true)
+	m.textSel.state.SelectTo(pos)
 }
 
 // currentTextPane reports the text pane that owns keyboard selection in
@@ -526,10 +515,9 @@ func (m *Model) ensureTextCursor(pane textSelectionPane) {
 		return
 	}
 	p := m.textPaneFor(pane)
-	pos, ok := p.Position(0, p.GutterWidth)
-	if !ok {
-		pos = selection.Position{}
-	}
+	// Position at the first content cell is always resolvable: every text
+	// pane has at least one line and a clamped gutter.
+	pos, _ := p.Position(0, p.GutterWidth)
 	m.textSel.pane = pane
 	m.textSel.state.MoveTo(pos)
 }
@@ -542,9 +530,6 @@ func (m *Model) ensureTextCursor(pane textSelectionPane) {
 // viewport is scrolled to keep the cursor visible.
 func (m *Model) shiftTextCursor(dx, dy int) {
 	pane := m.currentTextPane()
-	if pane == textPaneNone {
-		return
-	}
 	m.ensureTextCursor(pane)
 	p := m.textPaneFor(pane)
 	cur := m.textSel.state.Cursor
