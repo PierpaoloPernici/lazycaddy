@@ -422,7 +422,7 @@ func (m *Model) inlineAdvisoryBlock(maxRows int) string {
 		f := m.inlineFindings[i]
 		label := inlineReviewLabel(f.Severity)
 		if i == m.inlineReviewCursor {
-			b.WriteString(cursorStyle.Render(" > ") + label + " · line " + strconv.Itoa(f.StartLine) + "\n")
+			b.WriteString(cursorStyle.Render("> ") + label + " · line " + strconv.Itoa(f.StartLine) + "\n")
 			b.WriteString("    " + dimStyle.Render(f.Message) + "\n")
 		} else {
 			b.WriteString("  " + label + " · line " + strconv.Itoa(f.StartLine) + "\n")
@@ -478,7 +478,7 @@ func (m *Model) inlineCaddyRow(d validator.Diagnostic, selected bool) string {
 		head += " · " + pathLabel
 	}
 	if selected {
-		return cursorStyle.Render(" > ") + head + "\n    " + dimStyle.Render(d.Message) + "\n"
+		return cursorStyle.Render("> ") + head + "\n    " + dimStyle.Render(d.Message) + "\n"
 	}
 	return "  " + head + "\n    " + dimStyle.Render(d.Message) + "\n"
 }
@@ -508,7 +508,7 @@ func (m *Model) inlineCaddyStateRow(c *inlineCaddyState, selected bool) string {
 		line = dimStyle.Render("Caddy validation: not run")
 	}
 	if selected {
-		return cursorStyle.Render(" > ") + line + "\n"
+		return cursorStyle.Render("> ") + line + "\n"
 	}
 	return "  " + line + "\n"
 }
