@@ -439,11 +439,10 @@ func (m *Model) syncSource(srcW, paneH int) {
 	// the exact hit line is always shown.
 	if key != prevSel || refresh || m.sourceRevealLine > 0 {
 		if m.sourceRevealLine > 0 {
-			offset := m.sourceRevealLine - 1 // 1-based line → 0-based offset
-			if offset < 0 {
-				offset = 0
-			}
-			m.viewport.SetYOffset(offset)
+			// Centre the single reveal line in the viewport (the natural
+			// clamp keeps it on screen near the file start or end), matching
+			// every other reveal.
+			m.viewport.SetYOffset(m.sourceRevealLine - 1 - m.viewport.Height/2)
 			m.sourceRevealLine = 0
 		} else if key.hasNode {
 			m.revealRange(key.start, key.end)
@@ -466,20 +465,24 @@ type selectionKey struct {
 	end     int
 }
 
-// revealRange scrolls the viewport just enough so that the 1-based
-// source lines [startLine, endLine] are visible: when the range starts
-// above the viewport it is brought to the top, when it ends below the
-// viewport it is brought to the bottom, and otherwise the position is
-// left unchanged.
+// revealRange scrolls the source viewport so the 1-based source lines
+// [startLine, endLine] are shown centred: a range that fits the viewport
+// is centred on its midpoint, a taller range shows its start with a
+// little context above it, and both clamp naturally to the file bounds
+// (SetYOffset clamps to the content height). It runs only when the
+// selection changes or a reveal is requested, never during a manual
+// scroll, so the operator keeps control of the viewport while browsing.
 func (m *Model) revealRange(startLine, endLine int) {
-	firstVisible := m.viewport.YOffset + 1
-	lastVisible := m.viewport.YOffset + m.viewport.Height
-	switch {
-	case startLine < firstVisible:
-		m.viewport.SetYOffset(startLine - 1)
-	case endLine > lastVisible:
-		m.viewport.SetYOffset(endLine - m.viewport.Height)
+	rangeLen := endLine - startLine + 1
+	var target int
+	if rangeLen <= m.viewport.Height {
+		// The range fits: centre its midpoint in the viewport.
+		target = startLine - 1 - (m.viewport.Height-rangeLen)/2
+	} else {
+		// Too tall to centre: show the start with a little context above.
+		target = startLine - 1 - m.viewport.Height/3
 	}
+	m.viewport.SetYOffset(target)
 }
 
 // selectedItem returns the item under the cursor, or nil.

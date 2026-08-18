@@ -394,10 +394,11 @@ func TestSearch_LeafInCollapsedDoc(t *testing.T) {
 		t.Errorf("selection = %+v, want the reverse_proxy structural row", sel)
 	}
 	// The exact source line of the leaf is revealed (header_up is line 5
-	// of the root document).
+	// of the root document); the centred reveal clamps to the top for a
+	// line this close to the file start, and the line stays visible.
 	m.View()
-	if m.viewport.YOffset != 4 {
-		t.Errorf("viewport YOffset = %d after the leaf hit, want 4 (header_up line)", m.viewport.YOffset)
+	if !strings.Contains(stripANSI(m.viewport.View()), "header_up") {
+		t.Errorf("viewport must show the revealed header_up line (YOffset=%d):\n%s", m.viewport.YOffset, m.viewport.View())
 	}
 	if !strings.Contains(stripANSI(m.viewport.View()), "header_up Host {host}") {
 		t.Errorf("source pane does not show the revealed leaf line:\n%s", m.viewport.View())
@@ -544,8 +545,8 @@ func TestSearch_LineHitSelectsContainingNode(t *testing.T) {
 		t.Errorf("selection = %+v, want the snippet row containing the line", sel)
 	}
 	m.View()
-	if m.viewport.YOffset != 1 {
-		t.Errorf("viewport YOffset = %d after the line hit, want 1 (line 2)", m.viewport.YOffset)
+	if !strings.Contains(stripANSI(m.viewport.View()), "tranquillo") {
+		t.Errorf("viewport must show the revealed tranquillo line (YOffset=%d):\n%s", m.viewport.YOffset, m.viewport.View())
 	}
 	if !strings.Contains(stripANSI(m.viewport.View()), "tranquillo") {
 		t.Errorf("source pane does not show the revealed line:\n%s", m.viewport.View())
@@ -858,10 +859,11 @@ func TestSearch_LineHitInCollapsedImportedDoc(t *testing.T) {
 	if sel.doc == nil || sel.doc.Path != "config/sites/a.caddy" {
 		t.Errorf("selection doc = %v, want the imported file", sel.doc)
 	}
-	// The exact source line (1-based 3) is revealed below the fold.
+	// The exact source line (1-based 3) is revealed; the centred reveal
+	// clamps to the top for a line this close to the file start.
 	m.View()
-	if m.viewport.YOffset != 2 {
-		t.Errorf("viewport YOffset = %d after the line hit, want 2 (line 3)", m.viewport.YOffset)
+	if !strings.Contains(stripANSI(m.viewport.View()), "target-hit") {
+		t.Errorf("viewport must show the revealed target-hit line (YOffset=%d):\n%s", m.viewport.YOffset, m.viewport.View())
 	}
 	if !strings.Contains(stripANSI(m.viewport.View()), "respond target-hit") {
 		t.Errorf("source pane does not show the revealed line:\n%s", m.viewport.View())

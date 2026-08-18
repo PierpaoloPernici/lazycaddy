@@ -1002,3 +1002,79 @@ func TestModelViewFits_ModalWithStatus(t *testing.T) {
 	m.statusMessage = "save cancelled"
 	assertFits(t, m, 80, 24)
 }
+
+// TestRevealRange_CentresBlock verifies the centred reveal: a block that
+// fits the viewport is centred on its midpoint, a taller block shows its
+// start with a little context above it, and a block near the file start
+// clamps naturally to the top.
+func TestRevealRange_CentresBlock(t *testing.T) {
+	var src strings.Builder
+	for i := 0; i < 100; i++ {
+		src.WriteString("example.test {\n\trespond ok\n}\n")
+	}
+	m := matcherModel(t, src.String())
+	m = resize(m, 120, 30)
+	_ = m.View()
+	h := m.viewport.Height
+	if h < 10 {
+		t.Fatalf("viewport height = %d, want a tall viewport", h)
+	}
+
+	// A small block (lines 50-53): centre its midpoint.
+	m.revealRange(50, 53)
+	want := 49 - (h-4)/2
+	if m.viewport.YOffset != want {
+		t.Errorf("small block offset = %d, want %d (centred midpoint)", m.viewport.YOffset, want)
+	}
+
+	// A tall block (lines 40-90): show its start with about a third of the
+	// viewport of context above.
+	m.revealRange(40, 90)
+	want = 39 - h/3
+	if m.viewport.YOffset != want {
+		t.Errorf("tall block offset = %d, want %d (start + context)", m.viewport.YOffset, want)
+	}
+
+	// Near the file start: the natural clamp keeps the offset at 0.
+	m.revealRange(1, 4)
+	if m.viewport.YOffset != 0 {
+		t.Errorf("block at the file start = %d, want 0", m.viewport.YOffset)
+	}
+
+	// Near the file end: the natural clamp pins the viewport to the
+	// bottom so the last line stays reachable without blank padding.
+	m.revealRange(290, 300)
+	if !m.viewport.AtBottom() {
+		t.Errorf("block at the file end must clamp to the bottom, YOffset=%d height=%d", m.viewport.YOffset, m.viewport.Height)
+	}
+}
+
+// TestSourceRevealLine_Centred verifies a one-shot line reveal centres the
+// line in the viewport and consumes the flag on render.
+func TestSourceRevealLine_Centred(t *testing.T) {
+	var src strings.Builder
+	for i := 0; i < 100; i++ {
+		src.WriteString("example.test {\n\trespond ok\n}\n")
+	}
+	m := matcherModel(t, src.String())
+	m = resize(m, 120, 30)
+	_ = m.View()
+	h := m.viewport.Height
+
+	m.sourceRevealLine = 150
+	_ = m.View()
+	want := 149 - h/2
+	if m.viewport.YOffset != want {
+		t.Errorf("line reveal offset = %d, want %d (centred)", m.viewport.YOffset, want)
+	}
+	if m.sourceRevealLine != 0 {
+		t.Errorf("sourceRevealLine = %d after render, want it consumed", m.sourceRevealLine)
+	}
+
+	// A line near the top clamps to 0.
+	m.sourceRevealLine = 1
+	_ = m.View()
+	if m.viewport.YOffset != 0 {
+		t.Errorf("line 1 reveal offset = %d, want 0", m.viewport.YOffset)
+	}
+}
