@@ -231,6 +231,56 @@ var (
 	// foreground so the source reads like a plain file.
 	syntaxWordStyle = lipgloss.NewStyle()
 
+	// Semantic role styles layer richer meaning on top of the lexical base
+	// where the parse tree can identify a role reliably. They are
+	// presentation-only: the classifier is advisory and never defines or
+	// rejects Caddy syntax, so unknown or plugin directives stay
+	// unclassified and keep their lexical base.
+	// syntaxSiteStyle renders a site block header address so the primary
+	// routing target stands out.
+	syntaxSiteStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(accentColor)
+	// syntaxDirectiveStyle renders a directive name (the first token of a
+	// directive line) in bold so the source reads as structure rather than a
+	// flat file.
+	syntaxDirectiveStyle = lipgloss.NewStyle().
+				Bold(true)
+	// syntaxDomainStyle renders hostnames and domain tokens in blue.
+	syntaxDomainStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("75"))
+	// syntaxPathStyle renders path tokens (starting with "/") in teal.
+	syntaxPathStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("43"))
+	// syntaxPortStyle renders ":digits" port suffixes in magenta.
+	syntaxPortStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("170"))
+	// syntaxAddressStyle renders IP and CIDR values in magenta, matching the
+	// port style since addresses and ports often appear together.
+	syntaxAddressStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("170"))
+	// syntaxMatcherDefStyle renders a matcher definition (@name directive)
+	// in bold purple so it stands out as a named declaration.
+	syntaxMatcherDefStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("141"))
+	// syntaxMatcherRefStyle renders a matcher reference (@name token) in
+	// purple, distinct from the definition by not being bold.
+	syntaxMatcherRefStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("141"))
+	// syntaxDurationStyle renders Go/Caddy duration values in cyan.
+	syntaxDurationStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("81"))
+	// syntaxStatusCodeStyle renders HTTP status codes in amber so reply
+	// statuses read as actionable values.
+	syntaxStatusCodeStyle = lipgloss.NewStyle().
+				Foreground(warningColor)
+	// syntaxHeredocMarkerStyle renders the <<MARKER opener and closing marker
+	// of a heredoc in bold amber, distinct from the heredoc body.
+	syntaxHeredocMarkerStyle = lipgloss.NewStyle().
+					Bold(true).
+					Foreground(warningColor)
+
 	// Log token styles follow the zap CapitalColorLevelEncoder palette:
 	// the token text itself carries the level/status label, so color is a
 	// consistent reinforcement rather than the only signal.

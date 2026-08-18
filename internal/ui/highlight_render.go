@@ -37,6 +37,7 @@ func highlightSource(src []byte, selStartLine, selEndLine int) string {
 		return dimStyle.Render("(empty source — raw view still available)")
 	}
 	lineSpans := caddyfile.Highlight(src)
+	roles := caddyfile.Classify(src).Spans
 	lines := strings.Split(string(src), "\n")
 	gutterW := sourceGutterWidth(len(lines))
 	var b strings.Builder
@@ -51,7 +52,7 @@ func highlightSource(src []byte, selStartLine, selEndLine int) string {
 			fmt.Fprintf(&b, "%*d│ ", gutterW-2, lineNo)
 		}
 		if i < len(lineSpans) {
-			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i]))
+			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles))
 		} else {
 			b.WriteString(ln)
 		}
@@ -62,26 +63,52 @@ func highlightSource(src []byte, selStartLine, selEndLine int) string {
 }
 
 // renderHighlightedLine styles one source line. It converts the
-// base-relative caddyfile spans into line-relative styledSpans (with the
-// same clamping as before) and delegates to renderStyledLine, so the
-// cell-accurate machinery is shared with the log renderer.
-func renderHighlightedLine(ln string, base int, spans []caddyfile.Span) string {
-	styled := make([]styledSpan, 0, len(spans))
+// base-relative lexical caddyfile spans and the document-absolute role spans
+// into line-relative styledSpans (with the same clamping as before) and
+// delegates to renderStyledLine, so the cell-accurate machinery is shared
+// with the log renderer. Semantic role spans are layered after the lexical
+// spans so a role overrides the lexical base only where the parse tree
+// identified it reliably; nested role sub-spans (ports, paths, heredoc
+// markers) override their parent role because they arrive later in source
+// order.
+func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []caddyfile.Classified) string {
+	styled := make([]styledSpan, 0, len(spans)+len(roles))
 	for _, sp := range spans {
-		s := sp.Start - base
-		e := sp.End - base
-		if s < 0 {
-			s = 0
+		clamped, ok := clampSpan(sp.Start, sp.End, base, len(ln), styleKeyFor(sp.Kind))
+		if ok {
+			styled = append(styled, clamped)
 		}
-		if e > len(ln) {
-			e = len(ln)
-		}
-		if s >= e {
+	}
+	for _, sp := range roles {
+		key := semanticRoleKeyFor(sp.Role)
+		if key == 0 {
 			continue
 		}
-		styled = append(styled, styledSpan{start: s, end: e, key: styleKeyFor(sp.Kind)})
+		clamped, ok := clampSpan(sp.Start, sp.End, base, len(ln), key)
+		if ok {
+			styled = append(styled, clamped)
+		}
 	}
 	return renderStyledLine(ln, styled, styleForKey)
+}
+
+// clampSpan converts an absolute [start, end) byte range to a line-relative
+// styledSpan, clamped to the line's extent. Coordinates that fall entirely
+// outside the line produce ok=false so multi-line tokens like heredocs and
+// quoted strings are reported only on the lines they cover.
+func clampSpan(start, end, base, lineLen int, key int) (styledSpan, bool) {
+	s := start - base
+	e := end - base
+	if s < 0 {
+		s = 0
+	}
+	if e > lineLen {
+		e = lineLen
+	}
+	if s >= e {
+		return styledSpan{}, false
+	}
+	return styledSpan{start: s, end: e, key: key}, true
 }
 
 // styledSpan is a byte range in a line with an already-resolved style key.
@@ -204,7 +231,8 @@ func styleKeyFor(k caddyfile.SpanKind) int {
 }
 
 // styleForKey returns the style for a grouping key produced by styleKeyFor.
-// The zero key renders verbatim (no ANSI codes).
+// The zero key renders verbatim (no ANSI codes). Lexical keys occupy 1-5;
+// semantic role keys occupy 6+ and are resolved to their own role styles.
 func styleForKey(key int) lipgloss.Style {
 	switch key {
 	case 1:
@@ -217,8 +245,72 @@ func styleForKey(key int) lipgloss.Style {
 		return syntaxPlaceholderStyle
 	case 5:
 		return syntaxBraceStyle
+	case 6:
+		return syntaxSiteStyle
+	case 7:
+		return syntaxDirectiveStyle
+	case 8:
+		return syntaxDomainStyle
+	case 9:
+		return syntaxPathStyle
+	case 10:
+		return syntaxPortStyle
+	case 11:
+		return syntaxAddressStyle
+	case 12:
+		return syntaxMatcherDefStyle
+	case 13:
+		return syntaxMatcherRefStyle
+	case 14:
+		return syntaxDurationStyle
+	case 15:
+		return syntaxStatusCodeStyle
+	case 16:
+		return syntaxHeredocMarkerStyle
 	default:
 		return syntaxWordStyle
+	}
+}
+
+// semanticRoleKeyFor maps an advisory semantic role to a style key.
+// Roles that mirror a lexical kind (string, heredoc, placeholder) reuse the
+// lexical keys so there is no redundant styling conflict. Tree-dependent
+// and value roles (site address, directive name, domain, path, port,
+// IP/CIDR, matchers, duration, status code, heredoc markers) map to their
+// own keys. The zero key means "no semantic style": unknown directives and
+// unclassified barewords keep their lexical base.
+func semanticRoleKeyFor(k caddyfile.Role) int {
+	switch k {
+	case caddyfile.RoleString:
+		return 2
+	case caddyfile.RoleHeredoc:
+		return 3
+	case caddyfile.RolePlaceholder:
+		return 4
+	case caddyfile.RoleSiteAddress:
+		return 6
+	case caddyfile.RoleDirectiveName:
+		return 7
+	case caddyfile.RoleDomain:
+		return 8
+	case caddyfile.RolePath:
+		return 9
+	case caddyfile.RolePort:
+		return 10
+	case caddyfile.RoleIP, caddyfile.RoleCIDR:
+		return 11
+	case caddyfile.RoleMatcherDefinition:
+		return 12
+	case caddyfile.RoleMatcherReference:
+		return 13
+	case caddyfile.RoleDuration:
+		return 14
+	case caddyfile.RoleStatusCode:
+		return 15
+	case caddyfile.RoleHeredocMarker:
+		return 16
+	default:
+		return 0
 	}
 }
 

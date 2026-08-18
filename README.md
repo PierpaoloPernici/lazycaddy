@@ -167,8 +167,13 @@ The merged v0.3 foundation also provides:
   `Ctrl-H`.
 
 The v0.3 structured-editing milestone is complete and released as v0.3.0.
-Richer inline validation, semantic highlighting and full
-folding/matcher-reference navigation are now planned for v0.4.
+The source pane now also renders advisory semantic highlighting (site
+addresses, directive names, domains, paths, ports, IP/CIDR values, matchers,
+placeholders, durations, status codes, strings and heredoc boundaries) on top
+of the lexical base, so common patterns are easier to scan without weakening
+the raw-source fallback or byte-preservation guarantees. Richer inline
+validation and full folding/matcher-reference navigation are planned for
+v0.4.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,

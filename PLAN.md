@@ -823,10 +823,14 @@ diff, backup and atomic-save safeguards.
 
 ### v0.4 — runtime and TLS dashboards
 
-- Add inline validation and richer semantic highlighting when the parse tree
-  can identify roles reliably: site addresses, domains, paths, ports, IP/CIDR
-  values, matchers, placeholders, durations, status codes, strings and
-  heredoc boundaries. Keep Caddy authoritative for syntax and validation.
+- [x] Advisory semantic highlighting when the parse tree can identify roles
+  reliably: site addresses, domains, paths, ports, IP/CIDR values, matchers,
+  placeholders, durations, status codes, strings and heredoc boundaries are
+  rendered on top of the lexical base (PR #45). Caddy stays authoritative for
+  syntax and validation.
+- [ ] Add inline validation when the parse tree can identify roles reliably
+  and wire it into the UI, keeping Caddy authoritative for syntax and
+  validation.
 - Add structural navigation features derived from the parsed source: folding
   for site blocks, snippets, named routes and nested handlers; navigation from
   named matcher definitions to references; and brace-aware indentation or
