@@ -250,9 +250,6 @@ func diagnosticTokenSpan(ln string, d validator.Diagnostic) (start, end int, ok 
 		col += size
 		runeIdx++
 	}
-	if col > len(ln) {
-		return 0, 0, false
-	}
 	tokEnd := col
 	for tokEnd < len(ln) {
 		r, size := utf8.DecodeRuneInString(ln[tokEnd:])
@@ -270,10 +267,7 @@ func diagnosticTokenSpan(ln string, d validator.Diagnostic) (start, end int, ok 
 		}
 		tokEnd = col + size
 	}
-	if tokEnd > col {
-		return col, tokEnd, true
-	}
-	return 0, 0, false
+	return col, tokEnd, true
 }
 
 // tokenBoundaryRune reports whether r continues a Caddyfile token, so a

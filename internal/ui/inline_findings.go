@@ -268,18 +268,14 @@ func (m *Model) revealCaddyDiagnostic(d validator.Diagnostic) bool {
 	if line <= 0 {
 		return false
 	}
-	// Expand the containing branch and select the row, mirroring the search
-	// activation so the cursor lands on the structural node instead of the
-	// document row and the exact source line is revealed.
+	// structuralNodeAtLine returns the deepest rendered (tree-row) node, so
+	// the row always exists in the rebuilt tree; expand the containing
+	// ancestors first so it is visible even when collapsed, then select it
+	// (the document row when the line falls outside every tree row),
+	// mirroring the search activation.
 	if n := structuralNodeAtLine(doc, line); n != nil {
 		expandNodeAncestors(doc, *n, m.collapsed)
-		if nodeIsTreeRow(n) {
-			m.rebuildTree(itemKey(doc, n))
-		} else if parent := nearestVisibleAncestor(doc, *n); parent != nil {
-			m.rebuildTree(itemKey(doc, parent))
-		} else {
-			m.rebuildTree(itemKey(doc, nil))
-		}
+		m.rebuildTree(itemKey(doc, n))
 	} else {
 		m.rebuildTree(itemKey(doc, nil))
 	}
@@ -447,12 +443,11 @@ func (m *Model) inlineCaddyBlock(maxRows int) string {
 	findings := len(m.inlineFindings)
 	var b strings.Builder
 	if c.phase == "result" && len(c.details) > 0 {
+		// The cursor is bounded by the review row count, so start never
+		// exceeds the details length; only the window end needs clamping.
 		start := m.inlineReviewCursor - findings - maxRows/2
 		if start < 0 {
 			start = 0
-		}
-		if start > len(c.details) {
-			start = len(c.details)
 		}
 		end := start + maxRows
 		if end > len(c.details) {

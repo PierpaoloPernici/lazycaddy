@@ -283,6 +283,22 @@ func TestHighlightSourceCaddyDiagnosticsColumnBeyondLine(t *testing.T) {
 	}
 }
 
+// TestHighlightSourceMultilineHeredocRoles verifies that semantic role
+// spans covering only part of the source clamp cleanly on the lines they
+// cover and are skipped (ok=false) on the lines outside, without breaking
+// losslessness.
+func TestHighlightSourceMultilineHeredocRoles(t *testing.T) {
+	src := []byte("respond <<HTML\nline one\nline two\nHTML\n")
+	got := renderWithANSI(src)
+	assertSourceLossless(t, src, got)
+	if !strings.Contains(got, sgrOf(syntaxHeredocMarkerStyle)) {
+		t.Errorf("heredoc marker must be styled:\n%s", got)
+	}
+	if !strings.Contains(got, sgrOf(syntaxStringStyle)) {
+		t.Errorf("heredoc body must be styled:\n%s", got)
+	}
+}
+
 // TestHighlightSourceCaddyDiagnosticsUnreliable verifies that diagnostics
 // that cannot be pinned (no line, line beyond the source) never annotate
 // the source view and never break losslessness.
@@ -339,6 +355,7 @@ func TestTokenColumn(t *testing.T) {
 		{"reverse_proxy localhost:8080", "@phantom", 0, false},
 		{"http@phantom inside a word", "@phantom", 0, false},
 		{"php_fastcgi localhost", "php", 0, false},
+		{"café@tok end", "@tok", 0, false}, // é is multi-byte: not a boundary
 		{"café @tok end", "@tok", 6, true},
 		{"", "x", 0, false},
 	}
