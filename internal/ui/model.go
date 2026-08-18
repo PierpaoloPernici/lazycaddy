@@ -479,6 +479,13 @@ type Model struct {
 	// reveal. It is consumed by syncSource on the next render.
 	sourceRevealLine int
 
+	// lastCaddyDiags is the authoritative caddy diagnostic overlay rendered
+	// for the current source pane content. syncSource rebuilds the content
+	// when it differs (a fresh validate outcome, or a result flagged stale
+	// after an edit), so the 'E' markers and token highlights appear or
+	// disappear without a selection change.
+	lastCaddyDiags []validator.Diagnostic
+
 	// matcherNav drives the matcher definition↔reference cycler (the g
 	// keybinding): it holds the named matcher occurrences of the document
 	// the session was built for and a cursor. A nil session (or a session

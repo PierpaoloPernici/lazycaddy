@@ -91,6 +91,25 @@ there is no on/off toggle. Its presentation rules:
   error count and summary, and is flagged `stale` when the document source
   changes after validation.
 
+## Authoritative caddy diagnostics overlay
+
+After a failed `v` validation, the error diagnostics are **mapped onto the
+source pane lines** of the document they belong to (no toggle, matching the
+advisory lint):
+
+- Error lines carry an `E` gutter marker, warning lines a `W`; the caddy
+  marker outranks the advisory `!`/`i` on the same line.
+- The offending token is styled in the caddy error style (bold red underline);
+  when caddy reports no column the whole line is marked. Unreliable
+  coordinates (no line, line beyond the source, column past the line end)
+  never annotate the view.
+- Diagnostics are matched to documents by clean path, so an import's errors
+  appear only on that import's pane.
+- The overlay shares the review's outcome: it disappears when the result is
+  flagged `stale` after an edit or reload, and both surfaces never disagree.
+- The source-title summary appends the count (for example ` · 2 caddy
+  error(s)`).
+
 ## Checklist for new views
 
 When adding a view, decide its class first, then apply:

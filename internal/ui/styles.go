@@ -296,6 +296,20 @@ var (
 	// blue-violet that does not collide with the semantic domain/path styles.
 	syntaxInlineInfoStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("68"))
+	// syntaxCaddyErrorStyle renders the token (or whole line) flagged by the
+	// authoritative caddy validate outcome. It is stronger than the advisory
+	// styles: bold red underline marks a real validation error, and the
+	// gutter carries a matching 'E' marker so the distinction never relies
+	// on colour alone.
+	syntaxCaddyErrorStyle = lipgloss.NewStyle().
+				Bold(true).
+				Underline(true).
+				Foreground(lipgloss.Color("196"))
+	// syntaxCaddyWarningStyle renders a non-blocking caddy validation
+	// warning (reserved: the diagnostics modal filters to errors today).
+	syntaxCaddyWarningStyle = lipgloss.NewStyle().
+				Underline(true).
+				Foreground(lipgloss.Color("208"))
 
 	// Log token styles follow the zap CapitalColorLevelEncoder palette:
 	// the token text itself carries the level/status label, so color is a

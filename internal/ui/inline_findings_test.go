@@ -17,7 +17,7 @@ import (
 func renderWithANSIInline(src []byte, findings []caddyfile.InlineFinding) string {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
-	return highlightSource(src, 0, 0, findings...)
+	return highlightSource(src, 0, 0, findings, nil)
 }
 
 // renderWithANSIInlineSelected renders through highlightSource with inline
@@ -25,7 +25,7 @@ func renderWithANSIInline(src []byte, findings []caddyfile.InlineFinding) string
 func renderWithANSIInlineSelected(src []byte, selStart, selEnd int, findings []caddyfile.InlineFinding) string {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
-	return highlightSource(src, selStart, selEnd, findings...)
+	return highlightSource(src, selStart, selEnd, findings, nil)
 }
 
 func TestInlineStyleKeyFor(t *testing.T) {

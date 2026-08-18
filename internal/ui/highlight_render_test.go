@@ -23,10 +23,10 @@ func renderWithANSI(src []byte) string {
 func renderWithANSISelected(src []byte, startLine, endLine int) string {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
-	return highlightSource(src, startLine, endLine)
+	return highlightSource(src, startLine, endLine, nil, nil)
 }
 
-var gutterRe = regexp.MustCompile(`^\s*\d+[│▎][!i]? `)
+var gutterRe = regexp.MustCompile(`^\s*\d+[│▎][!iEW]? `)
 
 // assertSourceLossless verifies that every source line appears in the
 // stripped rendered output exactly once, with the gutter removed: byte

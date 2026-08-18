@@ -832,7 +832,12 @@ diff, backup and atomic-save safeguards.
   lint shown in the source pane via `i` (matcher referenced/defined
   inconsistencies), distinct from and complementary to Caddy's authoritative
   validation. The overlay is non-blocking and byte-lossless.
-- [ ] Map Caddy `validate` diagnostics to the source pane lines.
+- [x] Map Caddy `validate` diagnostics to the source pane lines: error
+  diagnostics from the authoritative outcome are overlaid on their document's
+  lines (gutter `E`/`W` markers and token styling, `E` outranking the
+  advisory markers), matched by clean path so imports annotate their own
+  pane, with the stale rule shared with the review view. Unreliable
+  coordinates never annotate the view and rendering stays byte-lossless.
 - [x] Navigate from named matcher definitions to their references (the `g`
   keybinding, PR #46): `caddyfile.Matchers` lists every occurrence and the
   cycler re-anchors the tree and reveals each line, wrapping at the end. The

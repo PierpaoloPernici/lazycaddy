@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -64,6 +65,35 @@ func (m *Model) markInlineCaddyStaleIfNeeded(doc *caddyfile.Document) {
 	if !bytes.Equal(m.inlineCaddy.source, doc.Source) {
 		m.inlineCaddy.phase = "stale"
 	}
+}
+
+// caddyDiagsForDoc returns the authoritative caddy validate diagnostics that
+// belong to the given document, or nil when the outcome is unavailable
+// (never validated, flagged stale after an edit or reload, no reported
+// lines, or no diagnostics for this path). Paths are matched with
+// filepath.Clean so the display path and the graph document paths agree
+// regardless of minor separator differences; a diagnostic whose path cannot
+// be matched is never overlaid on another document's lines. The overlay is
+// driven by the same outcome as the review's CADDY VALIDATION section, so
+// the two surfaces never disagree.
+func (m *Model) caddyDiagsForDoc(doc *caddyfile.Document) []validator.Diagnostic {
+	if doc == nil || m.inlineCaddy == nil || m.inlineCaddy.phase != "result" {
+		return nil
+	}
+	if len(m.inlineCaddy.details) == 0 {
+		return nil
+	}
+	docPath := filepath.Clean(doc.Path)
+	var out []validator.Diagnostic
+	for _, d := range m.inlineCaddy.details {
+		if d.Line <= 0 {
+			continue
+		}
+		if filepath.Clean(d.Path) == docPath {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // openInlineReview opens the interactive "Review inline findings" view. It

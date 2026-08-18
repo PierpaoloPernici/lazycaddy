@@ -6,11 +6,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
+	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
 // sourceGutterWidth returns the cell width of the source line-number
@@ -31,16 +34,20 @@ func sourceGutterWidth(lineCount int) int {
 // section: its line numbers are emphasized and a subtle vertical bar is
 // drawn in the gutter for those lines. Passing 0 for both bounds renders
 // the gutter plainly. Returns the dim "(empty source ...)" message for an
-// empty src, exactly like numberedSource. Optional inline findings are
-// layered over the source (advisory, non-destructive) so suspicious
-// parse-tree patterns stand out without changing any byte.
-func highlightSource(src []byte, selStartLine, selEndLine int, findings ...caddyfile.InlineFinding) string {
+// empty src, exactly like numberedSource. Optional advisory inline findings
+// and authoritative caddy diagnostics are layered over the source
+// (non-destructive) so suspicious parse-tree patterns and real validation
+// errors stand out without changing any byte. Caddy diagnostics take
+// precedence: their lines carry an 'E' gutter marker and their tokens
+// render over advisory findings.
+func highlightSource(src []byte, selStartLine, selEndLine int, findings []caddyfile.InlineFinding, diags []validator.Diagnostic) string {
 	if len(src) == 0 {
 		return dimStyle.Render("(empty source — raw view still available)")
 	}
 	lineSpans := caddyfile.Highlight(src)
 	roles := caddyfile.Classify(src).Spans
 	inlineByLine := inlineFindingsByLine(src, findings)
+	diagsByLine := caddyDiagsByLine(diags)
 	lines := strings.Split(string(src), "\n")
 	gutterW := sourceGutterWidth(len(lines))
 	var b strings.Builder
@@ -48,6 +55,11 @@ func highlightSource(src []byte, selStartLine, selEndLine int, findings ...caddy
 	for i, ln := range lines {
 		lineNo := i + 1
 		marker := inlineGutterMarker(inlineByLine[lineNo])
+		if m := caddyGutterMarker(diagsByLine[lineNo]); m != 0 {
+			// An authoritative caddy error (or warning) outranks every
+			// advisory marker so the most actionable state reads first.
+			marker = m
+		}
 		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
 			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-2, lineNo)))
 			b.WriteString(selectedGutterBarStyle.Render("▎"))
@@ -64,7 +76,7 @@ func highlightSource(src []byte, selStartLine, selEndLine int, findings ...caddy
 			b.WriteByte(' ')
 		}
 		if i < len(lineSpans) {
-			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles, inlineByLine[lineNo]))
+			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles, inlineByLine[lineNo], diagsByLine[lineNo]))
 		} else {
 			b.WriteString(ln)
 		}
@@ -83,9 +95,11 @@ func highlightSource(src []byte, selStartLine, selEndLine int, findings ...caddy
 // identified it reliably; nested role sub-spans (ports, paths, heredoc
 // markers) override their parent role because they arrive later in source
 // order. Inline advisory findings, when supplied for this line, are layered
-// last so a suspicious token is unmistakable.
-func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []caddyfile.Classified, inline []caddyfile.InlineFinding) string {
-	styled := make([]styledSpan, 0, len(spans)+len(roles)+len(inline))
+// next so a suspicious token is unmistakable. Authoritative caddy
+// diagnostics are layered last: the offending token (or the whole line when
+// caddy reported no column) renders over everything else.
+func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []caddyfile.Classified, inline []caddyfile.InlineFinding, diags []validator.Diagnostic) string {
+	styled := make([]styledSpan, 0, len(spans)+len(roles)+len(inline)+len(diags))
 	for _, sp := range spans {
 		clamped, ok := clampSpan(sp.Start, sp.End, base, len(ln), styleKeyFor(sp.Kind))
 		if ok {
@@ -110,6 +124,17 @@ func renderHighlightedLine(ln string, base int, spans []caddyfile.Span, roles []
 		if clamped, ok := clampSpan(f.Start, f.End, base, len(ln), key); ok {
 			styled = append(styled, clamped)
 		}
+	}
+	for _, d := range diags {
+		key := diagnosticStyleKeyFor(d.Severity)
+		if key == 0 {
+			continue
+		}
+		start, end, ok := diagnosticTokenSpan(ln, d)
+		if !ok {
+			continue
+		}
+		styled = append(styled, styledSpan{start: start, end: end, key: key})
 	}
 	return renderStyledLine(ln, styled, styleForKey)
 }
@@ -145,6 +170,93 @@ func inlineGutterMarker(findings []caddyfile.InlineFinding) byte {
 		}
 	}
 	return marker
+}
+
+// caddyDiagsByLine groups authoritative caddy validate diagnostics by their
+// 1-based source line. Diagnostics without a reported line cannot be pinned
+// and are ignored so the source view is never annotated on unreliable
+// coordinates.
+func caddyDiagsByLine(diags []validator.Diagnostic) map[int][]validator.Diagnostic {
+	out := map[int][]validator.Diagnostic{}
+	for _, d := range diags {
+		if d.Line <= 0 {
+			continue
+		}
+		out[d.Line] = append(out[d.Line], d)
+	}
+	return out
+}
+
+// caddyGutterMarker returns the gutter marker byte for the caddy
+// diagnostics on one line: 'E' for an error, 'W' for a warning, or 0 when
+// only non-actionable levels are present (the advisory marker survives).
+// Like the advisory markers it never relies on colour alone.
+func caddyGutterMarker(diags []validator.Diagnostic) byte {
+	var marker byte
+	for _, d := range diags {
+		switch d.Severity {
+		case validator.SeverityError:
+			return 'E'
+		case validator.SeverityWarning:
+			marker = 'W'
+		}
+	}
+	return marker
+}
+
+// diagnosticTokenSpan converts a caddy diagnostic's 1-based column into a
+// byte span [start, end) relative to its line (ln). Column 0 (caddy did not
+// report one) marks the whole line. The span covers the token starting at
+// the column (word characters, so directive names, matchers, domains and
+// paths are highlighted whole); when the column falls past the line end no
+// span is produced and the line is never annotated on unreliable
+// coordinates. Columns are char-based, so multi-byte runes are never split.
+func diagnosticTokenSpan(ln string, d validator.Diagnostic) (start, end int, ok bool) {
+	if d.Column <= 0 {
+		return 0, len(ln), true
+	}
+	col := 0
+	runeIdx := 1
+	for runeIdx < d.Column {
+		if col >= len(ln) {
+			return 0, 0, false // column beyond the line
+		}
+		_, size := utf8.DecodeRuneInString(ln[col:])
+		col += size
+		runeIdx++
+	}
+	if col > len(ln) {
+		return 0, 0, false
+	}
+	tokEnd := col
+	for tokEnd < len(ln) {
+		r, size := utf8.DecodeRuneInString(ln[tokEnd:])
+		if !tokenBoundaryRune(r) {
+			break
+		}
+		tokEnd += size
+	}
+	if tokEnd == col {
+		// No token at the column: mark the single character (or give up
+		// when the line ends exactly at the column).
+		_, size := utf8.DecodeRuneInString(ln[col:])
+		if size == 0 {
+			return 0, 0, false
+		}
+		tokEnd = col + size
+	}
+	if tokEnd > col {
+		return col, tokEnd, true
+	}
+	return 0, 0, false
+}
+
+// tokenBoundaryRune reports whether r continues a Caddyfile token, so a
+// diagnostic column expands to the full offending token (directive names,
+// matchers, domains, paths). Structural characters and whitespace end the
+// token.
+func tokenBoundaryRune(r rune) bool {
+	return !unicode.IsSpace(r) && !strings.ContainsRune("{}()#\"'=,[];", r)
 }
 
 // clampSpan converts an absolute [start, end) byte range to a line-relative
@@ -327,8 +439,27 @@ func styleForKey(key int) lipgloss.Style {
 		return syntaxInlineHintStyle
 	case 101:
 		return syntaxInlineInfoStyle
+	case 102:
+		return syntaxCaddyErrorStyle
+	case 103:
+		return syntaxCaddyWarningStyle
 	default:
 		return syntaxWordStyle
+	}
+}
+
+// diagnosticStyleKeyFor maps a caddy validation severity to a style key in
+// the caddy space (102+), or 0 for a severity that is never annotated in
+// the source pane. The diagnostics modal filters to errors today, so
+// warnings map to their own key for completeness without being emitted.
+func diagnosticStyleKeyFor(s validator.Severity) int {
+	switch s {
+	case validator.SeverityError:
+		return 102
+	case validator.SeverityWarning:
+		return 103
+	default:
+		return 0
 	}
 }
 
