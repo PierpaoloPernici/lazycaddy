@@ -311,6 +311,31 @@ var (
 				Underline(true).
 				Foreground(lipgloss.Color("208"))
 
+	// Gutter marker badges render the advisory and caddy markers on a
+	// colored background so they read as small chips next to the line
+	// number. Every line reserves the marker cell (a plain space when the
+	// line is clean), so the source text never shifts horizontally between
+	// marked and unmarked lines. The badge background echoes the token
+	// styles: blue for advisory info, amber for advisory hint, red for
+	// caddy errors (white bold text) and orange for caddy warnings. Fixed
+	// ANSI colors are used so the badges render deterministically in tests.
+	gutterInfoBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("27")).
+				Foreground(lipgloss.Color("231")).
+				Bold(true)
+	gutterHintBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("214")).
+				Foreground(lipgloss.Color("0")).
+				Bold(true)
+	gutterErrorBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("196")).
+				Foreground(lipgloss.Color("231")).
+				Bold(true)
+	gutterWarningBadgeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("208")).
+				Foreground(lipgloss.Color("231")).
+				Bold(true)
+
 	// Log token styles follow the zap CapitalColorLevelEncoder palette:
 	// the token text itself carries the level/status label, so color is a
 	// consistent reinforcement rather than the only signal.

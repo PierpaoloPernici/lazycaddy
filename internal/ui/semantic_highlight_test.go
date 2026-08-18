@@ -124,21 +124,22 @@ func TestHighlightSourcePartialFileDegrades(t *testing.T) {
 	}
 }
 
-// TestSourceGutterWidth verifies the source gutter width: a 6-cell minimum
-// for few-digit line counts and a widening gutter once the line count needs
-// more than four digit cells, so line numbers beyond 9999 never misalign.
+// TestSourceGutterWidth verifies the source gutter width: a 7-cell minimum
+// (digits + reserved marker cell + bar + space) for few-digit line counts
+// and a widening gutter once the line count needs more than four digit
+// cells, so line numbers beyond 9999 never misalign.
 func TestSourceGutterWidth(t *testing.T) {
 	tests := []struct {
 		lineCount int
 		want      int
 	}{
-		{0, 6},
-		{1, 6},
-		{999, 6},
-		{1000, 6}, // 4 digits exactly fit the 6-cell default
-		{9999, 6},
-		{10000, 7}, // 5 digits widen the gutter
-		{100000, 8},
+		{0, 7},
+		{1, 7},
+		{999, 7},
+		{1000, 7}, // 4 digits exactly fit the 7-cell default
+		{9999, 7},
+		{10000, 8}, // 5 digits widen the gutter
+		{100000, 9},
 	}
 	for _, tt := range tests {
 		if got := sourceGutterWidth(tt.lineCount); got != tt.want {

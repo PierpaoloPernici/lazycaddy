@@ -17,14 +17,17 @@ import (
 )
 
 // sourceGutterWidth returns the cell width of the source line-number
-// gutter: at least 6 cells ("NNNN│ ") and grows with the number of digits
-// so line numbers beyond 9999 never misalign the source text. The
-// selection Pane uses the same width so coordinate mapping matches the
-// rendered gutter.
+// gutter: at least 7 cells ("NNNN│X ", where X is the always-reserved
+// marker cell) and grows with the number of digits so line numbers beyond
+// 9999 never misalign the source text. The selection Pane uses the same
+// width so coordinate mapping matches the rendered gutter. The marker cell
+// is reserved on every line — a badge when the line carries a finding or
+// diagnostic, a plain space otherwise — so the source text never shifts
+// horizontally between marked and unmarked lines.
 func sourceGutterWidth(lineCount int) int {
-	w := len(strconv.Itoa(lineCount)) + 2 // digits + "│ "
-	if w < 6 {
-		return 6
+	w := len(strconv.Itoa(lineCount)) + 3 // digits + "│" + marker + " "
+	if w < 7 {
+		return 7
 	}
 	return w
 }
@@ -60,19 +63,18 @@ func highlightSource(src []byte, selStartLine, selEndLine int, findings []caddyf
 			// advisory marker so the most actionable state reads first.
 			marker = m
 		}
+		// Every line reserves the marker cell (a badge, or a space when
+		// clean) so the source text stays horizontally aligned.
+		badge := gutterMarkerBadge(marker)
 		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
-			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-2, lineNo)))
+			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-3, lineNo)))
 			b.WriteString(selectedGutterBarStyle.Render("▎"))
-			if marker != 0 {
-				b.WriteByte(marker)
-			}
+			b.WriteString(badge)
 			b.WriteByte(' ')
 		} else {
-			fmt.Fprintf(&b, "%*d", gutterW-2, lineNo)
+			fmt.Fprintf(&b, "%*d", gutterW-3, lineNo)
 			b.WriteRune('│')
-			if marker != 0 {
-				b.WriteByte(marker)
-			}
+			b.WriteString(badge)
 			b.WriteByte(' ')
 		}
 		if i < len(lineSpans) {
@@ -202,6 +204,29 @@ func caddyGutterMarker(diags []validator.Diagnostic) byte {
 		}
 	}
 	return marker
+}
+
+// gutterMarkerBadge renders the reserved gutter marker cell for one line:
+// the marker character on a colored background badge, or a plain space when
+// the line has no marker. Every line emits exactly one cell, so the source
+// text never shifts horizontally between marked and unmarked lines and the
+// badge is always the same size. The badge never relies on colour alone
+// (the marker character is still distinct), and the background echoes the
+// token styles: blue for advisory info, amber for advisory hint, red with
+// white bold text for caddy errors, orange for caddy warnings.
+func gutterMarkerBadge(marker byte) string {
+	switch marker {
+	case 'i':
+		return gutterInfoBadgeStyle.Render("i")
+	case '!':
+		return gutterHintBadgeStyle.Render("!")
+	case 'E':
+		return gutterErrorBadgeStyle.Render("E")
+	case 'W':
+		return gutterWarningBadgeStyle.Render("W")
+	default:
+		return " "
+	}
 }
 
 // diagnosticTokenSpan converts a caddy diagnostic's 1-based column into a

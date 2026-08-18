@@ -24,6 +24,74 @@ func renderWithANSIDiags(src []byte, startLine, endLine int, findings []caddyfil
 	return highlightSource(src, startLine, endLine, findings, diags)
 }
 
+// TestGutterBadges_StyledPerMarker verifies each gutter marker renders as a
+// background badge with its own style: amber hint, blue info, red error,
+// orange warning. The marker character stays distinct (never colour alone).
+func TestGutterBadges_StyledPerMarker(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	src := []byte("example.test {\n\thint line\n\tinfo line\n\terror line\n\twarn line\n}\n")
+	findings := []caddyfile.InlineFinding{
+		{StartLine: 2, Start: 1, End: 5, Severity: caddyfile.SeverityAdvisoryHint},
+		{StartLine: 3, Start: 1, End: 5, Severity: caddyfile.SeverityAdvisoryInfo},
+	}
+	diags := []validator.Diagnostic{
+		{Line: 4, Column: 1, Message: "err", Severity: validator.SeverityError},
+		{Line: 5, Column: 1, Message: "warn", Severity: validator.SeverityWarning},
+	}
+	got := renderWithANSIDiags(src, 0, 0, findings, diags)
+	assertSourceLossless(t, src, got)
+	for _, check := range []struct {
+		style lipgloss.Style
+		mark  string
+	}{
+		{gutterHintBadgeStyle, "! "},
+		{gutterInfoBadgeStyle, "i "},
+		{gutterErrorBadgeStyle, "E "},
+		{gutterWarningBadgeStyle, "W "},
+	} {
+		if !strings.Contains(got, sgrOf(check.style)) {
+			t.Errorf("badge style missing for marker %q:\n%s", check.mark, got)
+		}
+	}
+	stripped := stripANSI(got)
+	for _, mark := range []string{"2│! ", "3│i ", "4│E ", "5│W "} {
+		if !strings.Contains(stripped, mark) {
+			t.Errorf("stripped gutter missing %q:\n%s", mark, stripped)
+		}
+	}
+}
+
+// TestGutterBadges_ConstantWidth verifies that every line reserves the
+// marker cell: clean lines render a space in it, so all lines have the same
+// gutter width and the source text never shifts horizontally between marked
+// and unmarked lines.
+func TestGutterBadges_ConstantWidth(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	src := []byte("example.test {\n\tbogus x\n\trespond ok\n}\n")
+	diags := []validator.Diagnostic{
+		{Line: 2, Column: 1, Message: "boom", Severity: validator.SeverityError},
+	}
+	got := renderWithANSIDiags(src, 0, 0, nil, diags)
+	assertSourceLossless(t, src, got)
+	// Every line renders the same 7-cell gutter (digits + bar + reserved
+	// marker cell + space), so the source text starts at the same column on
+	// marked and unmarked lines: the badge char on line 2, a space elsewhere.
+	wantLines := []string{
+		"   1│  example.test {",
+		"   2│E \tbogus x",
+		"   3│  \trespond ok",
+		"   4│  }",
+	}
+	lines := strings.Split(stripANSI(got), "\n")[:4]
+	for i, ln := range lines {
+		if ln != wantLines[i] {
+			t.Errorf("line %d = %q, want %q (constant gutter)", i+1, ln, wantLines[i])
+		}
+	}
+}
+
 // TestDiagnosticTokenSpan verifies the column→byte-span conversion: column 0
 // marks the whole line, a column expands to the full token, multi-byte
 // columns are char-accurate, and unreliable coordinates yield no span.
@@ -134,18 +202,24 @@ func TestHighlightSourceCaddyDiagnostics(t *testing.T) {
 	assertSourceLossless(t, src, got)
 
 	// Error lines carry the 'E' gutter marker, warnings the 'W' marker;
-	// clean lines (including an info-only line) carry no caddy marker.
-	if !strings.Contains(got, "2│E ") {
+	// clean lines (including an info-only line) carry no caddy marker. The
+	// markers are badges: check the stripped text for the character and the
+	// raw output for the badge background style.
+	stripped := stripANSI(got)
+	if !strings.Contains(stripped, "2│E ") {
 		t.Errorf("line 2 missing 'E' gutter marker:\n%s", got)
 	}
-	if !strings.Contains(got, "3│E ") {
+	if !strings.Contains(stripped, "3│E ") {
 		t.Errorf("line 3 missing 'E' gutter marker:\n%s", got)
 	}
-	if !strings.Contains(got, "4│W ") {
+	if !strings.Contains(stripped, "4│W ") {
 		t.Errorf("line 4 missing 'W' gutter marker:\n%s", got)
 	}
-	if strings.Contains(got, "1│E ") || strings.Contains(got, "1│W ") {
+	if strings.Contains(stripped, "1│E ") || strings.Contains(stripped, "1│W ") {
 		t.Errorf("an info-only line must not carry a caddy marker:\n%s", got)
+	}
+	if !strings.Contains(got, sgrOf(gutterErrorBadgeStyle)) || !strings.Contains(got, sgrOf(gutterWarningBadgeStyle)) {
+		t.Errorf("caddy markers must render as background badges:\n%s", got)
 	}
 
 	// The token at column 16 of line 2 (@api) is styled with the caddy
@@ -178,11 +252,15 @@ func TestHighlightSourceCaddyDiagnosticsPrecedence(t *testing.T) {
 	}
 	got := renderWithANSIDiags(src, 0, 0, findings, diags)
 	assertSourceLossless(t, src, got)
-	if !strings.Contains(got, "2│E ") {
+	stripped := stripANSI(got)
+	if !strings.Contains(stripped, "2│E ") {
 		t.Errorf("caddy error must win the gutter marker over the advisory hint:\n%s", got)
 	}
-	if strings.Contains(got, "2│! ") {
+	if strings.Contains(stripped, "2│! ") {
 		t.Errorf("advisory hint marker must not survive next to a caddy error:\n%s", got)
+	}
+	if !strings.Contains(got, sgrOf(gutterErrorBadgeStyle)) {
+		t.Errorf("the caddy error must render as a badge:\n%s", got)
 	}
 }
 
@@ -197,7 +275,7 @@ func TestHighlightSourceCaddyDiagnosticsColumnBeyondLine(t *testing.T) {
 	}
 	got := renderWithANSIDiags(src, 0, 0, nil, diags)
 	assertSourceLossless(t, src, got)
-	if !strings.Contains(got, "2│E ") {
+	if !strings.Contains(stripANSI(got), "2│E ") {
 		t.Errorf("the known line must still carry the 'E' marker:\n%s", got)
 	}
 	if strings.Contains(got, sgrOf(syntaxCaddyErrorStyle)) {
