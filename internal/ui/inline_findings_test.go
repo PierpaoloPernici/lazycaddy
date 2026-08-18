@@ -777,7 +777,7 @@ func TestInlineAdvisoryBlock_CursorBeyondEnd(t *testing.T) {
 	if len(m.inlineFindings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(m.inlineFindings))
 	}
-	m.inlineReviewCursor = 10 // beyond the single finding
+	m.inlineReviewCursor = 10     // beyond the single finding
 	_ = m.inlineAdvisoryBlock(10) // must not panic
 }
 
