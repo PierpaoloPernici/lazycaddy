@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -353,6 +354,10 @@ func (m *Model) syncSource(srcW, paneH int) {
 			title += fmt.Sprintf(" · comment (lines %d-%d)", selected.comment.StartLine, selected.comment.EndLine)
 		}
 	}
+	// Refresh the inline-findings cache when the toggle is active and the
+	// document or its source changed; a steady selection reuses the cache so
+	// rendering is not recomputed on every frame.
+	m.syncInlineFindings(doc)
 
 	// Build the selection key first: it carries the 1-based range used
 	// both for highlighting the source gutter and for revealing the node.
@@ -390,7 +395,7 @@ func (m *Model) syncSource(srcW, paneH int) {
 		if doc != nil {
 			src = doc.Source
 		}
-		m.viewport.SetContent(numberedSource(src, key.start, key.end))
+		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings...))
 		if doc != prevDoc && !refresh {
 			// New document: start at the top; revealRange then scrolls
 			// just enough for the selected node. A save refresh stays put
@@ -629,10 +634,36 @@ func wrapText(text string, width int) string {
 	return b.String()
 }
 
+// syncInlineFindings refreshes the advisory inline findings cache when the
+// toggle is active and the document (or its source) changed. When the toggle
+// is off, or no reliable document is selected, the cache is cleared so stale
+// findings never linger. The recomputation is cheap and conservative: it only
+// runs on a document or source change, never per frame.
+func (m *Model) syncInlineFindings(doc *caddyfile.Document) {
+	if !m.showInlineFindings {
+		m.inlineFindings = nil
+		m.inlineFindingsDoc = nil
+		m.inlineFindingsSource = nil
+		return
+	}
+	if doc == nil || doc.Err != nil {
+		m.inlineFindings = nil
+		m.inlineFindingsDoc = doc
+		m.inlineFindingsSource = nil
+		return
+	}
+	if m.inlineFindingsDoc == doc && bytes.Equal(m.inlineFindingsSource, doc.Source) {
+		return // steady selection, cache is valid
+	}
+	m.inlineFindings = caddyfile.InlineProblems(doc)
+	m.inlineFindingsDoc = doc
+	m.inlineFindingsSource = append([]byte(nil), doc.Source...)
+}
+
 // numberedSource renders the source pane content: line numbers, the exact
-// source bytes and syntax highlighting. It is a thin wrapper around
-// highlightSource that accepts the same selected-line range so syncSource can
-// keep the gutter highlight in sync with the tree selection.
-func numberedSource(src []byte, selStartLine, selEndLine int) string {
-	return highlightSource(src, selStartLine, selEndLine)
+// source bytes and syntax highlighting. Optional advisory inline findings
+// are layered over the source when supplied, so suspicious parse-tree
+// patterns stand out without changing any byte.
+func numberedSource(src []byte, selStartLine, selEndLine int, findings ...caddyfile.InlineFinding) string {
+	return highlightSource(src, selStartLine, selEndLine, findings...)
 }

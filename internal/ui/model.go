@@ -486,6 +486,19 @@ type Model struct {
 	// and start at-or-after the current selection.
 	matcherNav *matcherNav
 
+	// showInlineFindings toggles the advisory inline validation overlay in
+	// the source pane (the i keybinding). When active, parse-tree findings
+	// for the selected document are highlighted in place; Caddy's own
+	// validation (v) remains the authority and this never blocks a save or
+	// reload.
+	showInlineFindings bool
+	// inlineFindings caches the computed findings for the current document,
+	// keyed on the document pointer and its source so a reload or edit
+	// recomputes them while a steady selection does not.
+	inlineFindings       []caddyfile.InlineFinding
+	inlineFindingsDoc    *caddyfile.Document
+	inlineFindingsSource []byte
+
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.
 	clipboard app.Clipboard

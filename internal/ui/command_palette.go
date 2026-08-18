@@ -21,6 +21,7 @@ const (
 	commandExpandAll     commandID = "expand-all"
 	commandCollapseAll   commandID = "collapse-all"
 	commandMatcherNext   commandID = "matcher-next"
+	commandToggleInline  commandID = "toggle-inline"
 	commandValidate      commandID = "validate"
 	commandDiff          commandID = "diff"
 	commandSave          commandID = "save"
@@ -84,6 +85,9 @@ func commandDefinitions() []uiCommand {
 		{ID: commandValidate, Category: "Validation", Label: "Format & validate", Description: "Caddy binary", Keys: []string{"v"}, Enabled: func(m *Model) bool {
 			return m.formatter != nil
 		}, Reason: func(*Model) string { return "Caddy binary unavailable" }},
+		{ID: commandToggleInline, Category: "Validation", Label: "Toggle inline findings", Description: "advisory parse-tree lint in the source pane", Keys: []string{"i"}, Enabled: func(m *Model) bool {
+			return m.sourceDoc != nil
+		}, Reason: func(*Model) string { return "no document selected" }},
 		{ID: commandDiff, Category: "Validation", Label: "Show diff", Description: "working copy or disk", Keys: []string{"D"}, Enabled: func(m *Model) bool {
 			return m.state != nil && m.state.Graph != nil
 		}, Reason: func(*Model) string { return "no configuration loaded" }},
@@ -210,6 +214,8 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		m.collapseDescendants()
 	case commandMatcherNext:
 		m.gotoNextMatcher()
+	case commandToggleInline:
+		m.toggleInlineFindings()
 	case commandValidate:
 		return m.startFormatAndValidate()
 	case commandDiff:

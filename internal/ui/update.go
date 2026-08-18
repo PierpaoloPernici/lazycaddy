@@ -227,6 +227,8 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandCollapseAll)
 	case "g":
 		return m.runCommand(commandMatcherNext)
+	case "i":
+		return m.runCommand(commandToggleInline)
 	case "pgup":
 		m.viewport.PageUp()
 	case "pgdown":
