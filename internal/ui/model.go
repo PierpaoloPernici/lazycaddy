@@ -486,18 +486,28 @@ type Model struct {
 	// and start at-or-after the current selection.
 	matcherNav *matcherNav
 
-	// showInlineFindings toggles the advisory inline validation overlay in
-	// the source pane (the i keybinding). When active, parse-tree findings
-	// for the selected document are highlighted in place; Caddy's own
-	// validation (v) remains the authority and this never blocks a save or
-	// reload.
-	showInlineFindings bool
-	// inlineFindings caches the computed findings for the current document,
-	// keyed on the document pointer and its source so a reload or edit
-	// recomputes them while a steady selection does not.
+	// inlineFindings caches the advisory parse-tree findings for the current
+	// document, keyed on the document pointer and its source so a reload or
+	// edit recomputes them while a steady selection does not. They are always
+	// computed when a reliable document is selected and overlaid on the
+	// source pane; Caddy's own validation (v) stays authoritative and this
+	// never blocks a save or reload.
 	inlineFindings       []caddyfile.InlineFinding
 	inlineFindingsDoc    *caddyfile.Document
 	inlineFindingsSource []byte
+	// showInlineReview is true while the interactive "Review inline
+	// findings" view is open (the i keybinding / palette).
+	showInlineReview bool
+	// inlineReviewCursor selects the row under the cursor in the review list:
+	// advisory findings first, then the separate Caddy validation row. Enter
+	// re-anchors the tree and reveals a finding line, or opens the Caddy
+	// diagnostics for a completed validation outcome.
+	inlineReviewCursor int
+	// inlineCaddy holds the last authoritative caddy validate outcome shown in
+	// the review's separate CADDY VALIDATION section ("not run" until v is
+	// used), keeping the source it was computed against so the view marks the
+	// result stale after an edit or reload.
+	inlineCaddy *inlineCaddyState
 
 	// clipboard copies exact source bytes for the y keybinding. It is nil
 	// when the host exposes no clipboard backend.

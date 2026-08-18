@@ -47,12 +47,21 @@ func highlightSource(src []byte, selStartLine, selEndLine int, findings ...caddy
 	base := 0
 	for i, ln := range lines {
 		lineNo := i + 1
+		marker := inlineGutterMarker(inlineByLine[lineNo])
 		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
 			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-2, lineNo)))
 			b.WriteString(selectedGutterBarStyle.Render("▎"))
+			if marker != 0 {
+				b.WriteByte(marker)
+			}
 			b.WriteByte(' ')
 		} else {
-			fmt.Fprintf(&b, "%*d│ ", gutterW-2, lineNo)
+			fmt.Fprintf(&b, "%*d", gutterW-2, lineNo)
+			b.WriteRune('│')
+			if marker != 0 {
+				b.WriteByte(marker)
+			}
+			b.WriteByte(' ')
 		}
 		if i < len(lineSpans) {
 			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles, inlineByLine[lineNo]))
@@ -119,6 +128,23 @@ func inlineFindingsByLine(src []byte, findings []caddyfile.InlineFinding) map[in
 		out[line] = append(out[line], f)
 	}
 	return out
+}
+
+// inlineGutterMarker returns the gutter marker byte for the findings on one
+// line: '!' for a hint (likely problem), 'i' for an info, or 0 when the line
+// has no finding. It never relies on colour alone, so the marker is always a
+// distinct character even in monochrome terminals.
+func inlineGutterMarker(findings []caddyfile.InlineFinding) byte {
+	var marker byte
+	for _, f := range findings {
+		switch f.Severity {
+		case caddyfile.SeverityAdvisoryHint:
+			return '!'
+		case caddyfile.SeverityAdvisoryInfo:
+			marker = 'i'
+		}
+	}
+	return marker
 }
 
 // clampSpan converts an absolute [start, end) byte range to a line-relative

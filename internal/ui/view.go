@@ -108,6 +108,11 @@ func (m *Model) View() string {
 		// is open, mirroring the log view.
 		b.WriteString(m.errorHistoryView(width, paneH))
 		b.WriteString("\n")
+	} else if m.showInlineReview {
+		// The inline-review view replaces the tree/source panes while it is
+		// open; v delegates to the authoritative caddy validate workflow.
+		b.WriteString(m.inlineReviewView(width, paneH))
+		b.WriteString("\n")
 	} else {
 		treeW := width * 2 / 5
 		// Both panes carry a left and right border; subtract the full
@@ -354,10 +359,15 @@ func (m *Model) syncSource(srcW, paneH int) {
 			title += fmt.Sprintf(" · comment (lines %d-%d)", selected.comment.StartLine, selected.comment.EndLine)
 		}
 	}
-	// Refresh the inline-findings cache when the toggle is active and the
-	// document or its source changed; a steady selection reuses the cache so
-	// rendering is not recomputed on every frame.
+	// Refresh the advisory inline-findings cache whenever the line count is
+	// shown below, recomputing only on a document or source change (a steady
+	// selection reuses the cache so this is not per-frame work).
 	m.syncInlineFindings(doc)
+
+	// The finding summary lives in the pane title, not the temporary status
+	// strip: it is scoped to the selected document and survives transient
+	// status messages. On narrow terminals it degrades to a short form.
+	title = m.sourceTitleWithFindings(title, doc)
 
 	// Build the selection key first: it carries the 1-based range used
 	// both for highlighting the source gutter and for revealing the node.
@@ -542,6 +552,8 @@ func (m *Model) footer(width int) string {
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
+	case m.showInlineReview:
+		keys = "↑/↓ move · Enter reveal/details · v validate · Esc close"
 	case m.state != nil && m.state.Graph != nil:
 		// The normal footer is deliberately navigation-only. Operational
 		// actions remain available through their direct hotkeys and the
@@ -634,36 +646,32 @@ func wrapText(text string, width int) string {
 	return b.String()
 }
 
-// syncInlineFindings refreshes the advisory inline findings cache when the
-// toggle is active and the document (or its source) changed. When the toggle
-// is off, or no reliable document is selected, the cache is cleared so stale
-// findings never linger. The recomputation is cheap and conservative: it only
-// runs on a document or source change, never per frame.
-func (m *Model) syncInlineFindings(doc *caddyfile.Document) {
-	if !m.showInlineFindings {
-		m.inlineFindings = nil
-		m.inlineFindingsDoc = nil
-		m.inlineFindingsSource = nil
-		return
-	}
-	if doc == nil || doc.Err != nil {
-		m.inlineFindings = nil
-		m.inlineFindingsDoc = doc
-		m.inlineFindingsSource = nil
-		return
-	}
-	if m.inlineFindingsDoc == doc && bytes.Equal(m.inlineFindingsSource, doc.Source) {
-		return // steady selection, cache is valid
-	}
-	m.inlineFindings = caddyfile.InlineProblems(doc)
-	m.inlineFindingsDoc = doc
-	m.inlineFindingsSource = append([]byte(nil), doc.Source...)
-}
-
 // numberedSource renders the source pane content: line numbers, the exact
 // source bytes and syntax highlighting. Optional advisory inline findings
 // are layered over the source when supplied, so suspicious parse-tree
 // patterns stand out without changing any byte.
 func numberedSource(src []byte, selStartLine, selEndLine int, findings ...caddyfile.InlineFinding) string {
 	return highlightSource(src, selStartLine, selEndLine, findings...)
+}
+
+// sourceTitleWithFindings appends the advisory finding summary to the source
+// pane title, scoped to the selected document. With findings it reads
+// e.g. "; 2 findings · [i] review" (as per the review view handover); without
+// findings it reads "; advisory: clean". The summary lives in the title so
+// transient status messages never overwrite it.
+func (m *Model) sourceTitleWithFindings(base string, doc *caddyfile.Document) string {
+	if doc == nil || doc.Err != nil || !m.inlineFindingsReady(doc) {
+		return base
+	}
+	if len(m.inlineFindings) == 0 {
+		return base + " · advisory: clean"
+	}
+	return base + fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
+}
+
+// inlineFindingsReady reports whether the cached findings belong to the given
+// document (same pointer and source), so the title never shows counts for a
+// stale document.
+func (m *Model) inlineFindingsReady(doc *caddyfile.Document) bool {
+	return m.inlineFindingsDoc == doc && bytes.Equal(m.inlineFindingsSource, doc.Source)
 }

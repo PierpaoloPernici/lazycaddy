@@ -196,6 +196,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.showErrorHistory {
 		return m.updateErrorHistoryKey(msg)
 	}
+	// The inline-review view replaces the tree/source panes while it is open;
+	// v delegates to the authoritative caddy validate workflow.
+	if m.showInlineReview {
+		return m.updateInlineReviewKey(msg)
+	}
 	switch msg.String() {
 	case "shift+up":
 		m.shiftTextCursor(0, -1)
@@ -228,7 +233,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		return m.runCommand(commandMatcherNext)
 	case "i":
-		return m.runCommand(commandToggleInline)
+		return m.runCommand(commandReviewInline)
 	case "pgup":
 		m.viewport.PageUp()
 	case "pgdown":

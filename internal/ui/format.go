@@ -127,8 +127,10 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 				m.statusMessage = "✗ validation failed (working copy retained, not saved)"
 			}
 			m.recordError("format & validate", "validation failed", "fix the reported errors and re-run v")
+			m.setInlineCaddyOutcome(len(errors), true, m.state.Graph.Root.Source, firstErrMessage(errors))
 			return m, nil
 		}
+		m.setInlineCaddyOutcome(0, false, m.state.Graph.Root.Source, "")
 		m.statusMessage = "✗ validation failed (working copy not saved): " + msg.Err.Error()
 		m.recordError("format & validate", msg.Err.Error(), "fix the reported issue and re-run v")
 		return m, nil
@@ -136,6 +138,7 @@ func (m *Model) handleFormatAndValidateResult(msg formatAndValidateResultMsg) (t
 	m.diagnostics = nil
 	m.showDiagnostics = false
 	m.workingValidated = true
+	m.setInlineCaddyOutcome(0, true, m.state.Graph.Root.Source, "")
 	m.statusMessage = "✓ validated (working copy updated, not saved)"
 	return m, nil
 }
@@ -200,6 +203,15 @@ func (m *Model) diagnosticsView(width, height int) string {
 		}
 	}
 	return focusedPaneStyle.Width(paneContentW).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+}
+
+// firstErrMessage returns the message of the first diagnostic (for the
+// advisory review's Caddy summary), or "" when there is none.
+func firstErrMessage(diags []validator.Diagnostic) string {
+	if len(diags) == 0 {
+		return ""
+	}
+	return diags[0].Message
 }
 
 // diagnosticDetailView renders the full diagnostic for the entry
