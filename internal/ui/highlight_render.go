@@ -44,6 +44,16 @@ func sourceGutterWidth(lineCount int) int {
 // precedence: their lines carry an 'E' gutter marker and their tokens
 // render over advisory findings.
 func highlightSource(src []byte, selStartLine, selEndLine int, findings []caddyfile.InlineFinding, diags []validator.Diagnostic) string {
+	return renderHighlightedSource(src, selStartLine, selEndLine, findings, diags, nil)
+}
+
+// renderHighlightedSource renders src with the gutter, syntax highlighting
+// and the optional advisory/authoritative overlays, applying the given
+// folded display layout when supplied. Each collapsed fold renders as its
+// header row, one indicator row and its closing-brace row; the hidden
+// source lines are skipped without touching any byte, so the folded view
+// is a pure display transform of the same lossless rendering.
+func renderHighlightedSource(src []byte, selStartLine, selEndLine int, findings []caddyfile.InlineFinding, diags []validator.Diagnostic, layout *caddyfile.FoldLayout) string {
 	if len(src) == 0 {
 		return dimStyle.Render("(empty source — raw view still available)")
 	}
@@ -52,40 +62,77 @@ func highlightSource(src []byte, selStartLine, selEndLine int, findings []caddyf
 	inlineByLine := inlineFindingsByLine(src, findings)
 	diagsByLine := caddyDiagsByLine(diags)
 	lines := strings.Split(string(src), "\n")
+	offsets := lineOffsets(src)
 	gutterW := sourceGutterWidth(len(lines))
 	var b strings.Builder
-	base := 0
-	for i, ln := range lines {
-		lineNo := i + 1
-		marker := inlineGutterMarker(inlineByLine[lineNo])
-		if m := caddyGutterMarker(diagsByLine[lineNo]); m != 0 {
-			// An authoritative caddy error (or warning) outranks every
-			// advisory marker so the most actionable state reads first.
-			marker = m
+	rowCount := len(lines)
+	if layout != nil {
+		rowCount = len(layout.Rows)
+	}
+	for r := 0; r < rowCount; r++ {
+		if layout != nil {
+			ln := layout.Rows[r]
+			if ln == 0 {
+				// A fold indicator row: it replaces the hidden lines of
+				// the collapsed block.
+				renderFoldIndicatorRow(&b, gutterW, layout.Folds[layout.FoldAt[r]])
+				continue
+			}
+			i := ln - 1
+			b.WriteString(renderSourceLine(lines[i], i, ln, offsets[i], selStartLine, selEndLine, gutterW, inlineByLine, diagsByLine, lineSpans, roles))
+			continue
 		}
-		// Every line reserves the marker cell (a badge, or a space when
-		// clean) so the source text stays horizontally aligned.
-		badge := gutterMarkerBadge(marker)
-		if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
-			b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-3, lineNo)))
-			b.WriteString(selectedGutterBarStyle.Render("▎"))
-			b.WriteString(badge)
-			b.WriteByte(' ')
-		} else {
-			fmt.Fprintf(&b, "%*d", gutterW-3, lineNo)
-			b.WriteRune('│')
-			b.WriteString(badge)
-			b.WriteByte(' ')
-		}
-		if i < len(lineSpans) {
-			b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles, inlineByLine[lineNo], diagsByLine[lineNo]))
-		} else {
-			b.WriteString(ln)
-		}
-		b.WriteByte('\n')
-		base += len(ln) + 1
+		i := r
+		b.WriteString(renderSourceLine(lines[i], i, i+1, offsets[i], selStartLine, selEndLine, gutterW, inlineByLine, diagsByLine, lineSpans, roles))
 	}
 	return b.String()
+}
+
+// renderSourceLine renders one source line: the gutter (line number,
+// selection bar, reserved marker cell) followed by the highlighted body.
+func renderSourceLine(ln string, i, lineNo, base, selStartLine, selEndLine int, gutterW int, inlineByLine map[int][]caddyfile.InlineFinding, diagsByLine map[int][]validator.Diagnostic, lineSpans [][]caddyfile.Span, roles []caddyfile.Classified) string {
+	marker := inlineGutterMarker(inlineByLine[lineNo])
+	if m := caddyGutterMarker(diagsByLine[lineNo]); m != 0 {
+		// An authoritative caddy error (or warning) outranks every
+		// advisory marker so the most actionable state reads first.
+		marker = m
+	}
+	// Every line reserves the marker cell (a badge, or a space when
+	// clean) so the source text stays horizontally aligned.
+	badge := gutterMarkerBadge(marker)
+	var b strings.Builder
+	if selStartLine > 0 && lineNo >= selStartLine && lineNo <= selEndLine {
+		b.WriteString(selectedGutterNumberStyle.Render(fmt.Sprintf("%*d", gutterW-3, lineNo)))
+		b.WriteString(selectedGutterBarStyle.Render("▎"))
+		b.WriteString(badge)
+		b.WriteByte(' ')
+	} else {
+		fmt.Fprintf(&b, "%*d", gutterW-3, lineNo)
+		b.WriteRune('│')
+		b.WriteString(badge)
+		b.WriteByte(' ')
+	}
+	if i < len(lineSpans) {
+		b.WriteString(renderHighlightedLine(ln, base, lineSpans[i], roles, inlineByLine[lineNo], diagsByLine[lineNo]))
+	} else {
+		b.WriteString(ln)
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// renderFoldIndicatorRow renders one fold indicator row: an empty number
+// area, a continuation marker in place of the pipe, the reserved marker
+// cell (fold rows never carry findings) and the hidden-line count. It
+// occupies the same gutter width as a source line so the source text never
+// shifts horizontally between folded and unfolded rows.
+func renderFoldIndicatorRow(b *strings.Builder, gutterW int, f caddyfile.FoldRange) {
+	fmt.Fprintf(b, "%*s", gutterW-3, "")
+	b.WriteString(foldIndicatorStyle.Render("⋮"))
+	b.WriteByte(' ')
+	b.WriteByte(' ')
+	b.WriteString(foldIndicatorStyle.Render(foldIndicatorLabel(f.Hidden)))
+	b.WriteByte('\n')
 }
 
 // renderHighlightedLine styles one source line. It converts the

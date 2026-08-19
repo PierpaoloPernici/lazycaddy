@@ -14,6 +14,11 @@ type Fold struct {
 	// StartLine and EndLine are the 1-based fold boundaries (the block's
 	// line span).
 	StartLine, EndLine int
+	// CloseBraceLine is the 1-based line of the block's closing brace, or
+	// 0 for a brace-less site or an unclosed (partially parsed) block. A
+	// collapsed fold keeps this line visible so the block boundary always
+	// reads.
+	CloseBraceLine int
 	// Depth is the nesting depth: top-level blocks are 0.
 	Depth int
 	// Foldable is always true for the blocks Folds returns; leaf
@@ -35,13 +40,14 @@ func Folds(doc *Document) []Fold {
 		for _, n := range ns {
 			if isBlockNode(src, n) {
 				out = append(out, Fold{
-					Kind:      n.Kind,
-					Name:      n.Name,
-					Range:     n.Range,
-					StartLine: n.Range.StartLine,
-					EndLine:   n.Range.EndLine,
-					Depth:     depth,
-					Foldable:  true,
+					Kind:           n.Kind,
+					Name:           n.Name,
+					Range:          n.Range,
+					StartLine:      n.Range.StartLine,
+					EndLine:        n.Range.EndLine,
+					CloseBraceLine: blockCloseBraceLine(src, n),
+					Depth:          depth,
+					Foldable:       true,
 				})
 				walk(n.Children, depth+1)
 				continue
@@ -75,6 +81,150 @@ func isBlockNode(src []byte, n Node) bool {
 		}
 	}
 	return false
+}
+
+// blockCloseBraceLine returns the 1-based line of the last closing brace
+// token inside n's range, or 0 when the range has none: a brace-less site,
+// an unclosed block, or an un-lexable directive. Quoted braces are string
+// tokens, so they never count.
+func blockCloseBraceLine(src []byte, n Node) int {
+	toks, err := lex([]byte(n.Range.Text(src)))
+	if err != nil {
+		return 0
+	}
+	bounds := lineBounds(src)
+	line := 0
+	for _, t := range toks {
+		if t.Kind == tokenCloseBrace {
+			line = lineOf(bounds, n.Range.Start+t.Start) + 1
+		}
+	}
+	return line
+}
+
+// FoldRange is one collapsed fold in a folded source view: the structural
+// block replaced by a single indicator row. It is the display counterpart
+// of Fold: the UI derives it from Folds plus CloseBraceLine and hands it to
+// FoldLayoutFor, which never rewrites the source.
+type FoldRange struct {
+	// Kind and Name mirror the folded block for stable selection.
+	Kind Kind
+	Name string
+	// Range is the exact source range of the folded block.
+	Range SourceRange
+	// StartLine and EndLine are the inclusive 1-based block boundaries.
+	StartLine, EndLine int
+	// CloseBraceLine is the 1-based line of the closing brace, or 0 for
+	// a brace-less or unclosed block.
+	CloseBraceLine int
+	// Hidden is the number of source lines the indicator row replaces.
+	Hidden int
+}
+
+// FoldHidden returns the number of source lines a collapsed fold replaces
+// with its indicator row: every line strictly between the header and the
+// closing brace, or every line after the header for a brace-less or
+// unclosed block. A block with nothing hidden (a single-line block, or a
+// header immediately followed by its closing brace) is never foldable.
+func FoldHidden(f FoldRange) int {
+	if f.CloseBraceLine > f.StartLine {
+		return f.CloseBraceLine - f.StartLine - 1
+	}
+	return f.EndLine - f.StartLine
+}
+
+// FoldLayout maps the display rows of a folded source view back to the
+// source lines they show. It is the presentation contract between the
+// parser and the source pane: rendering, scroll reveal, search/diagnostic
+// jumps and mouse selection all translate through it, while the underlying
+// source stays byte-exact and lossless.
+type FoldLayout struct {
+	// Rows[i] is the 1-based source line displayed by row i, or 0 when
+	// row i is a fold indicator row.
+	Rows []int
+	// LineRow is indexed by 1-based source line; LineRow[line] is the
+	// display row of that line, or -1 when the line is hidden by a
+	// collapsed fold. LineRow[0] is always -1; entries beyond the last
+	// source line are -1 too, so out-of-range lookups never wrap.
+	LineRow []int
+	// FoldAt[i] is the index into Folds of the fold collapsed by display
+	// row i, or -1 when row i shows a source line.
+	FoldAt []int
+	// Folds lists the collapsed folds in display order (one indicator row
+	// each).
+	Folds []FoldRange
+}
+
+// FoldLayoutFor builds the folded display layout of src with the given
+// collapsed folds. Folds with nothing hidden are ignored (a single-line
+// block or a header followed immediately by its closing brace cannot be
+// collapsed usefully), so is the last fold when two active folds share a
+// header line (defensive: Folds never produces that). A collapsed fold
+// keeps its header and, when present, its closing brace line visible; the
+// indicator row replaces the lines strictly between them. Brace-less and
+// unclosed blocks replace every line after the header. For an unclosed
+// block the closest closing brace token inside its range (the deepest
+// unclosed child's brace) anchors the visible tail line, so the folded
+// view always keeps the block's last physical line readable. Partially
+// parsed files stay navigable. It returns nil when no fold hides any line.
+// The trailing empty line of a source ending in a newline is part of the
+// layout (mirroring strings.Split), so the folded and unfolded views never
+// disagree on row counts.
+func FoldLayoutFor(src []byte, folds []FoldRange) *FoldLayout {
+	lineCount := len(lineBounds(src))
+	byStart := map[int]int{}
+	norm := make([]FoldRange, 0, len(folds))
+	for _, f := range folds {
+		f.Hidden = FoldHidden(f)
+		if f.Hidden <= 0 {
+			continue
+		}
+		byStart[f.StartLine] = len(norm)
+		norm = append(norm, f)
+	}
+	if len(norm) == 0 {
+		return nil
+	}
+	rows := make([]int, 0, lineCount)
+	foldAt := make([]int, 0, lineCount)
+	displayFolds := make([]FoldRange, 0, len(norm))
+	line := 1
+	for line <= lineCount {
+		if idx, ok := byStart[line]; ok {
+			f := norm[idx]
+			// Header row, then the indicator row that replaces the hidden
+			// lines. displayFolds keeps only the folds that actually get an
+			// indicator row: an inner fold subsumed by a collapsed parent
+			// stays active underneath but never renders.
+			rows = append(rows, f.StartLine)
+			foldAt = append(foldAt, -1)
+			rows = append(rows, 0)
+			foldAt = append(foldAt, len(displayFolds))
+			displayFolds = append(displayFolds, f)
+			if f.CloseBraceLine > f.StartLine {
+				// Keep the closing brace visible; the next iteration
+				// renders it as a plain source line.
+				line = f.CloseBraceLine
+			} else {
+				// Brace-less or unclosed: the block ends here.
+				line = f.EndLine + 1
+			}
+			continue
+		}
+		rows = append(rows, line)
+		foldAt = append(foldAt, -1)
+		line++
+	}
+	lineRow := make([]int, lineCount+1)
+	for i := range lineRow {
+		lineRow[i] = -1
+	}
+	for r, ln := range rows {
+		if ln > 0 && ln <= lineCount {
+			lineRow[ln] = r
+		}
+	}
+	return &FoldLayout{Rows: rows, LineRow: lineRow, FoldAt: foldAt, Folds: displayFolds}
 }
 
 // Landmarks describes the byte and line positions a user can jump to while

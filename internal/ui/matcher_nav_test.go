@@ -162,8 +162,11 @@ func TestMatcherStatusFeedback(t *testing.T) {
 // TestCommandPalette_GotoMatcher verifies the g command is discoverable in
 // the palette and gated on a selected document.
 func TestCommandPalette_GotoMatcher(t *testing.T) {
-	m := matcherModel(t, "example.test {\n\t@api path /api/*\n}\n")
+	m := matcherModel(t, "example.test {\n\t@api path /api/***\n}\n")
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	// Scroll the palette catalog down past the source section: the
+	// navigation section sits directly below it in the catalog order.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "Goto matcher (next)") {
 		t.Errorf("palette should list the matcher command, got:\n%s", view)

@@ -336,6 +336,14 @@ var (
 				Foreground(lipgloss.Color("231")).
 				Bold(true)
 
+	// foldIndicatorStyle renders the fold indicator rows of collapsed
+	// source blocks: the continuation marker in the gutter and the hidden
+	// line count. It is deliberately dim so the actual source content
+	// stays the strongest signal, and the marker is a distinct character
+	// so the state never relies on colour alone.
+	foldIndicatorStyle = lipgloss.NewStyle().
+				Foreground(mutedColor)
+
 	// Log token styles follow the zap CapitalColorLevelEncoder palette:
 	// the token text itself carries the level/status label, so color is a
 	// consistent reinforcement rather than the only signal.

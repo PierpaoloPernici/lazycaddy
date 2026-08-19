@@ -603,6 +603,61 @@ func TestModelPageKeysScrollFullPage(t *testing.T) {
 	}
 }
 
+// TestSourcePaneKeepsAllAvailableRowsAfterTreeExpand verifies that the source
+// viewport only reserves rows for its title and separator. paneContentH
+// already accounts for the pane frame; subtracting the frame a second time
+// drops two source rows, which is especially visible after expanding a large
+// tree.
+func TestSourcePaneKeepsAllAvailableRowsAfterTreeExpand(t *testing.T) {
+	src := "example.test {\n\troute {\n\t\trespond ok\n\t}\n}\n"
+	state := stateFor(t, "config/Caddyfile", func(string) ([]byte, error) {
+		return []byte(src), nil
+	})
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // select the site
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	_ = m.View()
+
+	want := m.paneContentH(m.height) - 2 // source title + separator
+	if want < 1 {
+		want = 1
+	}
+	if m.viewport.Height != want {
+		t.Fatalf("source viewport height = %d, want %d", m.viewport.Height, want)
+	}
+}
+
+// TestExpandedTreeFitsItsPane verifies that the title row is included in the
+// tree pane height budget. Before this guard, expand-all made a large tree
+// render one row too many and the terminal scrolled the application header
+// out of view.
+func TestExpandedTreeFitsItsPane(t *testing.T) {
+	var source strings.Builder
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&source, "site-%d.example.test {\n\troute {\n\trespond ok\n}\n}\n", i)
+	}
+	state := stateFor(t, "config/Caddyfile", func(string) ([]byte, error) {
+		return []byte(source.String()), nil
+	})
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 12)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+	if len(m.items) <= m.paneContentH(m.height)-1 {
+		t.Fatalf("fixture did not overflow the tree before clipping: %d items", len(m.items))
+	}
+
+	paneH := m.paneContentH(m.height)
+	treeW := m.width * 2 / 5
+	want := paneH + paneStyle.GetVerticalFrameSize()
+	if got := lipgloss.Height(m.treePane(treeW, paneH)); got != want {
+		t.Fatalf("expanded tree pane height = %d, want %d", got, want)
+	}
+	if got := lipgloss.Height(m.View()); got > m.height {
+		t.Fatalf("expanded application view height = %d, exceeds terminal height %d", got, m.height)
+	}
+}
+
 func TestModelNoWriteOperations(t *testing.T) {
 	// The loader is the only I/O path and it only reads: feed a loader that
 	// records calls and assert the model never asks for anything but the

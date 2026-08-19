@@ -281,16 +281,27 @@ func (m *Model) treePane(width, height int) string {
 	if len(m.items) == 0 {
 		body.WriteString(dimStyle.Render("no documents loaded — raw source view is on the right"))
 	} else {
-		start := m.cursor - height/2
+		// height is the content height of the pane, and the title consumes
+		// one of those rows. Rendering height tree rows in addition to the
+		// title makes an expanded tree overflow the pane; the terminal then
+		// scrolls the top of the whole application out of view.
+		visibleRows := height - 1
+		if visibleRows < 1 {
+			visibleRows = 1
+		}
+		start := m.cursor - visibleRows/2
 		if start < 0 {
 			start = 0
 		}
-		end := start + height
+		end := start + visibleRows
 		if end > len(m.items) {
 			end = len(m.items)
 		}
 		for i := start; i < end; i++ {
-			body.WriteString(renderTreeRow(m.items[i], i == m.cursor) + "\n")
+			if i > start {
+				body.WriteByte('\n')
+			}
+			body.WriteString(renderTreeRow(m.items[i], i == m.cursor))
 		}
 	}
 	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
@@ -342,7 +353,10 @@ func (m *Model) syncSource(srcW, paneH int) {
 	if contentW < 1 {
 		contentW = 1
 	}
-	contentH := paneH - 4 // border (2) + title and blank line (2)
+	// paneContentH already removes the pane's border and padding. Only
+	// the source title and its separator consume rows inside that content
+	// area; subtracting the frame here again loses two visible source rows.
+	contentH := paneH - 2 // title (1) + blank separator (1)
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -402,14 +416,37 @@ func (m *Model) syncSource(srcW, paneH int) {
 	m.sourceRefresh = false
 	prevDoc := m.sourceDoc
 	prevSel := m.lastSel
+	prevFoldVer := m.lastFoldLayoutVersion
 	diagsChanged := !slices.Equal(m.lastCaddyDiags, diags)
-	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged
+
+	// A pending reveal (a selection change, a search hit, a diagnostic
+	// or matcher jump, a save re-anchor) auto-expands every fold that
+	// hides it before the content decision, so the rebuilt layout and
+	// content reflect the expansion and the reveal lands on visible rows.
+	// Folds that do not cover the target stay untouched, so fold state
+	// remains stable across unrelated selections.
+	if key != prevSel || refresh || m.sourceRevealLine > 0 {
+		m.expandFoldsForReveal(doc, m.sourceRevealLine, key)
+	}
+	layout := m.foldLayoutFor(doc)
+
+	// The folded view state is part of the title so a collapsed document
+	// is never mistaken for an empty one: closing folds reports how many
+	// blocks are hidden. It is computed after the reveal expansion above,
+	// so the title always matches the content about to be rendered.
+	if n := m.foldCount(doc); n > 0 {
+		title += fmt.Sprintf(" · %d fold(s)", n)
+	}
+
+	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged ||
+		m.foldVersion != prevFoldVer
 	if needsContent {
 		// The source pane is about to render different content: any text
 		// selection anchored in the previous document or node is stale.
 		if m.textSel.pane == textPaneSource {
 			m.clearTextSelection()
 		}
+		m.lastFoldLayoutVersion = m.foldVersion
 		m.sourceDoc = doc
 		m.lastSel = key
 		m.sourceTitle = title
@@ -417,7 +454,7 @@ func (m *Model) syncSource(srcW, paneH int) {
 		if doc != nil {
 			src = doc.Source
 		}
-		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings, diags))
+		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings, diags, layout))
 		m.lastCaddyDiags = diags
 		if doc != prevDoc && !refresh {
 			// New document: start at the top; revealRange then scrolls
@@ -441,8 +478,10 @@ func (m *Model) syncSource(srcW, paneH int) {
 		if m.sourceRevealLine > 0 {
 			// Centre the single reveal line in the viewport (the natural
 			// clamp keeps it on screen near the file start or end), matching
-			// every other reveal.
-			m.viewport.SetYOffset(m.sourceRevealLine - 1 - m.viewport.Height/2)
+			// every other reveal. The row conversion follows the folded
+			// layout, and the covering folds were expanded above.
+			row := m.rowForLine(m.sourceRevealLine)
+			m.viewport.SetYOffset(row - m.viewport.Height/2)
 			m.sourceRevealLine = 0
 		} else if key.hasNode {
 			m.revealRange(key.start, key.end)
@@ -469,18 +508,26 @@ type selectionKey struct {
 // [startLine, endLine] are shown centred: a range that fits the viewport
 // is centred on its midpoint, a taller range shows its start with a
 // little context above it, and both clamp naturally to the file bounds
-// (SetYOffset clamps to the content height). It runs only when the
-// selection changes or a reveal is requested, never during a manual
-// scroll, so the operator keeps control of the viewport while browsing.
+// (SetYOffset clamps to the content height). The line-to-row conversion
+// follows the folded display layout, so a selection inside a folded
+// region scrolls to the region's visible rows (the covering folds were
+// expanded by the caller). It runs only when the selection changes or a
+// reveal is requested, never during a manual scroll, so the operator
+// keeps control of the viewport while browsing.
 func (m *Model) revealRange(startLine, endLine int) {
-	rangeLen := endLine - startLine + 1
+	startRow := m.rowForLine(startLine)
+	endRow := m.rowForLine(endLine)
+	if endRow < startRow {
+		endRow = startRow
+	}
+	rangeLen := endRow - startRow + 1
 	var target int
 	if rangeLen <= m.viewport.Height {
 		// The range fits: centre its midpoint in the viewport.
-		target = startLine - 1 - (m.viewport.Height-rangeLen)/2
+		target = startRow - (m.viewport.Height-rangeLen)/2
 	} else {
 		// Too tall to centre: show the start with a little context above.
-		target = startLine - 1 - m.viewport.Height/3
+		target = startRow - m.viewport.Height/3
 	}
 	m.viewport.SetYOffset(target)
 }
@@ -663,12 +710,13 @@ func wrapText(text string, width int) string {
 }
 
 // numberedSource renders the source pane content: line numbers, the exact
-// source bytes and syntax highlighting. Optional advisory inline findings
-// and authoritative caddy diagnostics are layered over the source when
-// supplied, so suspicious parse-tree patterns and real validation errors
-// stand out without changing any byte.
-func numberedSource(src []byte, selStartLine, selEndLine int, findings []caddyfile.InlineFinding, diags []validator.Diagnostic) string {
-	return highlightSource(src, selStartLine, selEndLine, findings, diags)
+// source bytes and syntax highlighting, with the given folded display
+// layout applied (nil renders the full source). Optional advisory inline
+// findings and authoritative caddy diagnostics are layered over the source
+// when supplied, so suspicious parse-tree patterns and real validation
+// errors stand out without changing any byte.
+func numberedSource(src []byte, selStartLine, selEndLine int, findings []caddyfile.InlineFinding, diags []validator.Diagnostic, layout *caddyfile.FoldLayout) string {
+	return renderHighlightedSource(src, selStartLine, selEndLine, findings, diags, layout)
 }
 
 // sourceTitleWithFindings appends the advisory finding summary to the source

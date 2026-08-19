@@ -393,3 +393,14 @@ func TestRenderLogDetail_Empty(t *testing.T) {
 		t.Errorf("empty detail rendered %v, want nil", got)
 	}
 }
+
+// TestRenderSourceLineBeyondSpans covers the defensive fallback of
+// renderSourceLine when a row has no lexical span entry (a synthetic
+// layout row beyond the highlight table): the raw line renders verbatim.
+func TestRenderSourceLineBeyondSpans(t *testing.T) {
+	lineSpans := make([][]caddyfile.Span, 3)
+	got := renderSourceLine("raw line", 5, 6, 0, 0, 0, 7, nil, nil, lineSpans, nil)
+	if !strings.Contains(stripANSI(got), "raw line") {
+		t.Errorf("renderSourceLine beyond lineSpans must render the raw line, got:\n%s", got)
+	}
+}

@@ -333,3 +333,68 @@ func TestSelectionHighlightColor_AnsiProfile(t *testing.T) {
 		t.Error("ANSI profile should resolve a real background color")
 	}
 }
+
+// TestLastSelectableLine covers the three branches of the folded-pane
+// last-selectable-line lookup: an empty unfolded pane, a folded pane with
+// a visible tail, and a folded pane whose rows are all indicators.
+func TestLastSelectableLine(t *testing.T) {
+	m := &Model{}
+	// An empty pane has no selectable line.
+	if got := m.lastSelectableLine(&selection.Pane{}); got != -1 {
+		t.Errorf("lastSelectableLine(empty) = %d, want -1", got)
+	}
+	// A folded pane resolves the last visible source line: rows
+	// [0, -1, 1] over three lines make line 1 the tail.
+	p := &selection.Pane{Lines: []string{"a", "b", "c"}, Offsets: []int{0, 2, 4}, RowLines: []int{0, -1, 1}}
+	if got := m.lastSelectableLine(p); got != 1 {
+		t.Errorf("lastSelectableLine(folded) = %d, want 1", got)
+	}
+	// A pane whose rows are all indicators reports no selectable line.
+	all := &selection.Pane{Lines: []string{"a"}, Offsets: []int{0}, RowLines: []int{-1}}
+	if got := m.lastSelectableLine(all); got != -1 {
+		t.Errorf("lastSelectableLine(all-indicator) = %d, want -1", got)
+	}
+}
+
+// TestFoldRowAtPanePoint_OutOfBounds verifies the fold indicator lookup
+// rejects points outside the pane rectangle.
+func TestFoldRowAtPanePoint_OutOfBounds(t *testing.T) {
+	m := foldModel(t)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // site folded
+	_ = m.View()
+	geo := m.sourcePaneGeometry()
+	if got := m.foldRowAtPanePoint(geo, geo.x, geo.y-1); got != -1 {
+		t.Errorf("foldRowAtPanePoint above the pane = %d, want -1", got)
+	}
+	if got := m.foldRowAtPanePoint(geo, geo.x, geo.y+geo.height); got != -1 {
+		t.Errorf("foldRowAtPanePoint below the pane = %d, want -1", got)
+	}
+}
+
+// TestFold_ShiftDownPastLastVisibleLine verifies shift+down past the last
+// visible source line of a folded pane extends the selection to that
+// line's end instead of jumping into hidden content.
+func TestFold_ShiftDownPastLastVisibleLine(t *testing.T) {
+	m := foldModel(t)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // site folded
+	_ = m.View()
+	m.ensureTextCursor(textPaneSource)
+	// From the header, shift+down lands on the closing brace (line 6).
+	m.shiftTextCursor(0, 1)
+	if cur := m.textSel.state.Cursor; cur.Line != 6 {
+		t.Fatalf("shift+down across the fold = line %d, want 6", cur.Line)
+	}
+	// One more step reaches the trailing empty line, the last visible row.
+	m.shiftTextCursor(0, 1)
+	if cur := m.textSel.state.Cursor; cur.Line != 7 {
+		t.Fatalf("shift+down to the trailing line = line %d, want 7", cur.Line)
+	}
+	// A step past it clamps to the end of that line.
+	lines := m.sourceTextPane().Lines
+	m.shiftTextCursor(0, 1)
+	cur := m.textSel.state.Cursor
+	if cur.Line != 7 || cur.Offset != len(lines[7]) {
+		t.Errorf("shift+down past the last visible line = line %d offset %d, want 7/%d",
+			cur.Line, cur.Offset, len(lines[7]))
+	}
+}
