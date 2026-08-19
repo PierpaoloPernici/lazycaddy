@@ -751,3 +751,89 @@ func TestCellsInRangeSkipsHiddenLines(t *testing.T) {
 		t.Errorf("RangeBytes across a fold = %q, want the exact hidden bytes", bytes)
 	}
 }
+
+// TestPositionFoldedPaddingAndClamps covers the folded-pane guard paths:
+// padding rows below a folded content have no position, and a negative
+// horizontal scroll clamps to the line start exactly like the unfolded
+// pane does.
+func TestPositionFoldedPaddingAndClamps(t *testing.T) {
+	// The folded content has 4 rows but the viewport is taller: the
+	// padding rows below it must not resolve to a source position.
+	p := foldedPane(t, 5, 0)
+	if _, ok := p.Position(4, 0); ok {
+		t.Error("Position in folded padding must be absent")
+	}
+	// A negative horizontal scroll clamps back to the line start.
+	neg := foldedPane(t, 4, 0)
+	neg.Offset = -3
+	pos, ok := neg.Position(0, 0)
+	if !ok || pos != (Position{Line: 0, Offset: 0}) {
+		t.Errorf("Position with negative Offset = %+v, %v, want line 0 offset 0", pos, ok)
+	}
+}
+
+// TestPositionNearestEdgeCases covers PositionNearest guards: a gutter
+// column clamps to the first content column, a negative row clamps to the
+// top, a pane with no visible line reports no position, and a negative
+// horizontal scroll clamps to the line start.
+func TestPositionNearestEdgeCases(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	p.GutterWidth = 4
+	// A column inside the gutter snaps to the first content column.
+	pos, ok := p.PositionNearest(1, 1)
+	if !ok || pos != (Position{Line: 1, Offset: 0}) {
+		t.Errorf("PositionNearest gutter = %+v, %v, want line 1 offset 0", pos, ok)
+	}
+	// A negative row snaps to the top row.
+	pos, ok = p.PositionNearest(-2, 4)
+	if !ok || pos.Line != 0 {
+		t.Errorf("PositionNearest(-2) = %+v, %v, want line 0", pos, ok)
+	}
+	// A pane whose rows are all fold indicators has no selectable position
+	// at all: the outward scan exhausts (and skips the out-of-bounds
+	// neighbors) and reports absent.
+	only := &Pane{RowLines: []int{-1, -1}, Lines: []string{"x"}, Offsets: []int{0},
+		Height: 2, GutterWidth: 0, ContentWidth: 8}
+	if _, ok := only.PositionNearest(0, 0); ok {
+		t.Error("PositionNearest on an all-indicator pane must be absent")
+	}
+	// A negative horizontal scroll clamps to the line start.
+	neg := foldedPane(t, 4, 0)
+	neg.Offset = -5
+	pos, ok = neg.PositionNearest(2, 0)
+	if !ok || pos.Line != 1 || pos.Offset != 0 {
+		t.Errorf("PositionNearest negative Offset = %+v, %v, want line 1 offset 0", pos, ok)
+	}
+}
+
+// TestRowOfLineGuards covers the rowOfLine edge cases: negative lines and
+// hidden lines report -1, visible lines resolve to their content row.
+func TestRowOfLineGuards(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	if got := p.rowOfLine(-1); got != -1 {
+		t.Errorf("rowOfLine(-1) = %d, want -1", got)
+	}
+	if got := p.rowOfLine(2); got != -1 {
+		t.Errorf("rowOfLine(hidden line 2) = %d, want -1", got)
+	}
+	if got := p.rowOfLine(3); got != 3 {
+		t.Errorf("rowOfLine(3) = %d, want 3", got)
+	}
+}
+
+// TestCellFoldedGuards covers the folded Cell guards: out-of-range lines
+// are rejected and a position scrolled away horizontally is rejected too.
+func TestCellFoldedGuards(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	if _, _, ok := p.Cell(Position{Line: -1, Offset: 0}); ok {
+		t.Error("Cell with a negative line must be absent")
+	}
+	if _, _, ok := p.Cell(Position{Line: 9, Offset: 0}); ok {
+		t.Error("Cell with an out-of-range line must be absent")
+	}
+	scrolled := foldedPane(t, 4, 0)
+	scrolled.Offset = 10
+	if _, _, ok := scrolled.Cell(Position{Line: 0, Offset: 2}); ok {
+		t.Error("Cell on a horizontally scrolled-away position must be absent")
+	}
+}

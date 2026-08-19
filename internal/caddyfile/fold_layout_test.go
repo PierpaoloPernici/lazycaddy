@@ -265,3 +265,15 @@ func TestFoldLayoutCloseBraceDetectedInFolds(t *testing.T) {
 		t.Errorf("site CloseBraceLine = %d, want 4", site.CloseBraceLine)
 	}
 }
+
+// TestBlockCloseBraceLineLexError covers the defensive lex-error path of
+// blockCloseBraceLine: a block whose range text cannot be lexed (an
+// unterminated string inside a partially parsed document) reports no
+// closing brace instead of misreading braces from broken tokens.
+func TestBlockCloseBraceLineLexError(t *testing.T) {
+	src := []byte("example.test {\n\trespond \"abc\n}\n")
+	n := Node{Kind: KindSite, Name: "example.test", Range: SourceRange{Start: 0, End: len(src)}}
+	if got := blockCloseBraceLine(src, n); got != 0 {
+		t.Errorf("blockCloseBraceLine on an unlexable range = %d, want 0", got)
+	}
+}

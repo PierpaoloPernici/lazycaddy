@@ -485,3 +485,244 @@ func TestFold_IndicatorStyleVerbatim(t *testing.T) {
 		t.Fatalf("indicator row missing from the viewport:\n%s", rendered)
 	}
 }
+
+// foldTwoSitesSource is a Caddyfile with two independent foldable sites
+// (each with a structural child, so their tree rows are collapsible), so
+// reveal expansion can prove it touches only the covering fold.
+const foldTwoSitesSource = "a.test {\n\thandle {\n\t\trespond ok\n\t}\n}\nb.test {\n\thandle {\n\t\trespond pong\n\t}\n}\n"
+
+// TestFold_RevealExpandsOnlyCoveringFold verifies the auto-expansion path
+// of expandFoldsForReveal: a reveal targeting a hidden line opens exactly
+// the folds that cover it, while unrelated collapsed folds stay closed.
+func TestFold_RevealExpandsOnlyCoveringFold(t *testing.T) {
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": foldTwoSitesSource,
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+	m = resize(m, 120, 30)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown}) // a.test row
+	m = expandAll(m)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // collapse a.test
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})  // b.test row
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // collapse b.test
+	_ = m.View()
+	if m.foldCount(m.sourceDoc) != 2 {
+		t.Fatalf("foldCount = %d, want 2 (both sites collapsed)", m.foldCount(m.sourceDoc))
+	}
+
+	// Reveal a line inside a.test: only its fold must expand.
+	m.sourceRevealLine = 2
+	_ = m.View()
+	if m.foldCount(m.sourceDoc) != 1 {
+		t.Errorf("foldCount after reveal = %d, want 1 (only the covering fold expands)", m.foldCount(m.sourceDoc))
+	}
+	body := viewportBody(m)
+	if !strings.Contains(body, "respond ok") {
+		t.Errorf("the covering fold must be expanded by the reveal:\n%s", body)
+	}
+	// The unrelated site keeps its indicator row.
+	if !strings.Contains(body, "⋯ 3 lines") {
+		t.Errorf("the unrelated fold must stay collapsed:\n%s", body)
+	}
+}
+
+// TestFold_HelperGuards covers the defensive entry guards of the fold
+// helpers with direct in-package calls: nil documents, byte-slice identity
+// and braceless fold coverage.
+func TestFold_HelperGuards(t *testing.T) {
+	// treeKeyForFold with a nil document has no owner row.
+	if _, ok := treeKeyForFold(nil, caddyfile.Fold{}); ok {
+		t.Error("treeKeyForFold(nil) must report no owner")
+	}
+	// expandFoldsForReveal with a nil document is a no-op.
+	m := &Model{}
+	m.expandFoldsForReveal(nil, 1, selectionKey{})
+	if m.foldVersion != 0 {
+		t.Error("expandFoldsForReveal(nil) must not touch the fold version")
+	}
+	// sameSourceBytes: length, empty and backing-storage identity.
+	a := []byte("abc")
+	if !sameSourceBytes(a, a) {
+		t.Error("a slice must share its own backing storage")
+	}
+	if sameSourceBytes(a, []byte("ab")) {
+		t.Error("different lengths must differ")
+	}
+	if !sameSourceBytes(nil, nil) {
+		t.Error("two empty slices share storage trivially")
+	}
+	if sameSourceBytes(a, append([]byte{}, a...)) {
+		t.Error("distinct backing storage must differ")
+	}
+	// foldCovering for a brace-less block covers every line after the
+	// header until the block end.
+	f := caddyfile.Fold{StartLine: 1, EndLine: 4}
+	if !foldCovering(f, 3) {
+		t.Error("a braceless fold covers every line after the header")
+	}
+	if foldCovering(f, 5) {
+		t.Error("a braceless fold does not cover lines past its end")
+	}
+}
+
+// TestFold_LabelCases covers every foldLabel branch: global options,
+// snippet, named route, site with and without a name, and the default
+// directive cases.
+func TestFold_LabelCases(t *testing.T) {
+	cases := []struct {
+		f    caddyfile.Fold
+		want string
+	}{
+		{caddyfile.Fold{Kind: caddyfile.KindGlobalOptions}, "global options"},
+		{caddyfile.Fold{Kind: caddyfile.KindSnippet, Name: "s"}, "snippet (s)"},
+		{caddyfile.Fold{Kind: caddyfile.KindNamedRoute, Name: "r"}, "route &(r)"},
+		{caddyfile.Fold{Kind: caddyfile.KindSite}, "site"},
+		{caddyfile.Fold{Kind: caddyfile.KindSite, Name: "x.test"}, "site x.test"},
+		{caddyfile.Fold{Kind: caddyfile.KindDirective, Name: "handle"}, "handle"},
+		{caddyfile.Fold{Kind: caddyfile.Kind(999)}, "unknown"},
+	}
+	for _, tc := range cases {
+		if got := foldLabel(tc.f); got != tc.want {
+			t.Errorf("foldLabel(%+v) = %q, want %q", tc.f, got, tc.want)
+		}
+	}
+	if got := foldIndicatorLabel(1); got != "⋯ 1 line" {
+		t.Errorf("foldIndicatorLabel(1) = %q, want the singular form", got)
+	}
+}
+
+// TestFold_OpenFoldAtRowGuards drives every early-return guard of
+// openFoldAtRow with a real folded layout, so the click-to-expand path is
+// provably a no-op for non-indicator rows, stale layouts and already-open
+// folds.
+func TestFold_OpenFoldAtRowGuards(t *testing.T) {
+	m := foldModel(t)
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // site folded
+	_ = m.View()
+	layout := m.foldLayout
+	if layout == nil {
+		t.Fatal("the folded model must carry a layout")
+	}
+	doc := m.foldLayoutDoc
+	if doc == nil {
+		t.Fatal("the folded model must carry its document")
+	}
+	// The site fold is collapsed under its tree key.
+	var siteKey string
+	for _, f := range caddyfile.Folds(doc) {
+		if k, ok := treeKeyForFold(doc, f); ok && m.collapsed[k] {
+			siteKey = k
+			break
+		}
+	}
+	if siteKey == "" {
+		t.Fatal("site fold not collapsed after Enter")
+	}
+
+	// Every guard must be a no-op that leaves the fold collapsed; the
+	// success path is the only one that bumps the fold version.
+	guards := []func(){
+		func() { m.foldLayout = nil; m.openFoldAtRow(0) }, // no layout
+		func() { m.openFoldAtRow(-1) },                    // negative row
+		func() { m.openFoldAtRow(len(layout.Rows)) },      // past the layout
+		func() { m.openFoldAtRow(0) },                     // header row, not an indicator
+		func() { m.openFoldAtRow(2) },                     // closing-brace row, not an indicator
+		func() {
+			bad := *layout
+			bad.FoldAt = append([]int(nil), layout.FoldAt...)
+			bad.FoldAt[1] = 9 // index outside Folds
+			m.foldLayout = &bad
+			m.openFoldAtRow(1)
+		},
+		func() {
+			m.foldLayoutDoc = doc
+			m.foldLayout = layout
+			m.foldLayoutDoc = nil // no document behind the layout
+			m.openFoldAtRow(1)
+		},
+		func() {
+			m.foldLayoutDoc = doc
+			m.foldLayout = layout
+			m.collapsed = map[string]bool{} // the fold is open already
+			m.openFoldAtRow(1)
+		}, func() {
+			m.collapsed = map[string]bool{siteKey: true}
+			renamed := *layout
+			renamed.Folds = append([]caddyfile.FoldRange(nil), layout.Folds...)
+			renamed.Folds[0].Name = "nonexistent.test" // no tree row owns it
+			m.foldLayout = &renamed
+			m.openFoldAtRow(1)
+		},
+	}
+	for i, guard := range guards {
+		version := m.foldVersion
+		guard()
+		if m.foldVersion != version {
+			t.Fatalf("guard %d must not open the fold (foldVersion bumped)", i)
+		}
+	}
+	// The fold is still closed under its original key.
+	m.collapsed = map[string]bool{siteKey: true}
+	if !m.collapsed[siteKey] {
+		t.Fatal("site fold must stay collapsed after every guard")
+	}
+}
+
+// TestFold_RowForLineAndLastVisibleLine covers the folded row conversions:
+// hidden lines map to the nearest visible row above them, and the last
+// visible line of a folded layout is reported for cursor clamping.
+func TestFold_RowForLineAndLastVisibleLine(t *testing.T) {
+	m := foldModel(t)
+	_ = m.View()
+	// Without a fold layout the identity mapping applies.
+	if got := m.rowForLine(3); got != 2 {
+		t.Errorf("rowForLine(3) without folds = %d, want 2", got)
+	}
+	if got := m.lastVisibleSourceLine(); got != -1 {
+		t.Errorf("lastVisibleSourceLine without folds = %d, want -1", got)
+	}
+
+	// Fold the site: lines 2-6 are hidden, the header is row 0, the
+	// closing brace is row 2 and the trailing empty line is row 3.
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	_ = m.View()
+	if got := m.rowForLine(2); got != 0 {
+		t.Errorf("rowForLine(2) folded = %d, want 0 (closest visible above)", got)
+	}
+	if got := m.rowForLine(4); got != 0 {
+		t.Errorf("rowForLine(4) folded = %d, want 0 (closest visible above)", got)
+	}
+	if got := m.rowForLine(7); got != 2 {
+		t.Errorf("rowForLine(7) folded = %d, want 2 (closing brace)", got)
+	}
+	if got := m.lastVisibleSourceLine(); got != 7 {
+		t.Errorf("lastVisibleSourceLine folded = %d, want 7 (trailing empty line)", got)
+	}
+
+	// An all-hidden synthetic layout reports no last visible line and a
+	// hidden line with no visible row above it clamps to row 0.
+	m.foldLayout = &caddyfile.FoldLayout{LineRow: []int{-1, -1, -1, -1}}
+	if got := m.lastVisibleSourceLine(); got != -1 {
+		t.Errorf("lastVisibleSourceLine all-hidden = %d, want -1", got)
+	}
+	if got := m.rowForLine(2); got != 0 {
+		t.Errorf("rowForLine(2) all-hidden = %d, want 0 (defensive clamp)", got)
+	}
+}
+
+// TestFold_RevealRangeNonMonotonicRows covers the defensive clamp of
+// revealRange when a folded layout maps an earlier source line to a lower
+// display row than a later one (a synthetic layout; real layouts are
+// monotonic): the end row is clamped up to the start row so the range
+// never inverts.
+func TestFold_RevealRangeNonMonotonicRows(t *testing.T) {
+	m := foldModel(t)
+	m.foldLayout = &caddyfile.FoldLayout{LineRow: []int{-1, 5, 0}} // line 1 -> row 5, line 2 -> row 0
+	m.revealRange(1, 2)
+	// The clamp keeps the range sane: the end row is lifted to the start
+	// row, so the centring target (startRow - height/2) is negative and
+	// clamps to the top of the content instead of scrolling past it.
+	if m.viewport.YOffset != 0 {
+		t.Errorf("revealRange YOffset = %d, want 0 (clamped from the start row)", m.viewport.YOffset)
+	}
+}
