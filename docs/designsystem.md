@@ -125,6 +125,39 @@ advisory lint):
 - The source-title summary appends the count (for example ` · 2 caddy
   error(s)`).
 
+## Source folding
+
+Folding is a **display-only projection** of the tree expansion state: when a
+structural tree row is collapsed, the block body becomes one indicator row.
+Presentation rules:
+
+- The folded view is driven by `caddyfile.FoldLayoutFor`, never by rewriting
+the source: every byte, line number and source range stays valid for
+patching, selection and copying. Quoted braces and heredocs are string
+tokens and never create folds; comments, imports and leaf directives are
+never foldable.
+- A collapsed fold keeps the header and the closing brace visible; the
+indicator row renders `⋯ N lines` in the fold-indicator style (dim, never
+colour alone) at the exact gutter width, so source text never shifts
+horizontally between folded and unfolded rows. The indicator row carries no
+marker cell content and no source position.
+- The tree's stable item key (document path + kind + name + exact range) is
+the only source of truth for expansion, so fold state survives selection
+changes, saves, reloads and rollbacks; a fold whose range no longer exists
+simply stops matching.
+- `z` toggles the fold of the selected block; the command palette adds
+"Toggle source fold", "Open all source folds" and "Close all source folds".
+The footer shows `z fold` only when the selection is foldable.
+- A reveal (selection change, search hit, diagnostic or matcher jump, save
+re-anchor) auto-expands every fold hiding the target line; the selected
+node's own closing line is deliberately not a target, so selecting a folded
+block keeps its fold closed. The pane title appends ` · N fold(s)` while
+folds are active.
+- Selection stays byte-exact across folds: mouse selection, `Shift`+arrows
+and `y` copy the underlying source bytes (hidden lines included), the cursor
+skips hidden lines and clamps to the nearest visible one, and a click on an
+indicator row opens the fold instead of starting a selection.
+
 ## Checklist for new views
 
 When adding a view, decide its class first, then apply:

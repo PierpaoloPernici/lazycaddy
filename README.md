@@ -184,7 +184,16 @@ first authoritative error in its document instead of forcing the diagnostics
 modal open. The review lists one row per Caddy diagnostic with its line and
 relative path, `Enter` reveals it and `→` opens the full detail; list views
 (logs, diagnostics, backups) follow the same `→`/`←` master-detail
-navigation. Source folding remains planned for v0.4.
+navigation. Display-only source folding is merged too (PR #49): collapsing a
+structural tree row (`z`, or open/close all from the command palette)
+replaces the block body with a single `⋯ N lines` indicator row while the
+header and the closing brace stay visible. The folded view never rewrites
+the source — every byte, line number and range stays valid for patching,
+selection and copying — and fold state is keyed by the exact source range,
+so it survives selection changes, saves, reloads and rollbacks. A reveal
+(selection, search hit, diagnostic jump) auto-expands the fold hiding the
+target line, and mouse selection, `Shift`+arrows and `y` keep returning the
+exact source bytes across folds.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,
@@ -199,12 +208,12 @@ validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a compact navigation footer and exact
 source clipboard copying with OSC 52 and local fallbacks. The current roadmap
-is v0.4: advisory semantic highlighting, matcher definition↔reference
-navigation, document-local inline lint and Caddy-diagnostic mapping
-(source-pane overlay with gutter badges, per-diagnostic review rows and
-auto-reveal from `v`) are done, with source folding and a runtime/TLS
-dashboard still ahead — without weakening the raw-source fallback or
-byte-preservation guarantees.
+is v0.4: the parsing work — advisory semantic highlighting, matcher
+definition↔reference navigation, document-local inline lint, Caddy-diagnostic
+mapping (source-pane overlay with gutter badges, per-diagnostic review rows
+and auto-reveal from `v`) and display-only source folding — is done, with the
+runtime/TLS dashboards and log filtering still ahead, without weakening the
+raw-source fallback or byte-preservation guarantees.
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing

@@ -22,9 +22,12 @@ The UI must never reload Caddy implicitly after an edit.
 ## Current implementation status
 
 The repository has completed the configuration-engine spike, the v0.1/v0.2
-read-only-by-default TUI milestones and the v0.3 structured-editing foundation.
-The v0.3 foundation and its first UI workflows are merged into `main`; the
-remaining v0.3 work is explicitly listed in the milestone section below.
+read-only-by-default TUI milestones and the v0.3 structured-editing
+foundation (released as v0.3.0). The v0.4 parsing work — advisory semantic
+highlighting, named-matcher navigation, document-local inline lint,
+Caddy-diagnostic mapping and display-only source folding — is merged into
+`main`; the remaining v0.4 work (runtime/TLS dashboards and log filtering)
+is explicitly listed in the milestone section below.
 
 Completed:
 
@@ -46,10 +49,10 @@ Completed:
 - testable application state and a read-only Bubble Tea inspector with
   document/site navigation, raw source viewing and parse-error fallback;
 - lexical syntax highlighting in the raw source view, including comments,
-  strings, heredocs, braces and placeholders. This remains an intentionally
-  early, conservative presentation layer; semantic roles are now available
-  to structured features, while richer inline validation and highlighting
-  remain future work;
+  strings, heredocs, braces and placeholders. This started as an
+  intentionally early, conservative presentation layer; advisory semantic
+  roles and inline validation landed later in v0.4 (see the v0.4 milestone
+  section below);
 - CLI configuration loading with an explicit read-only mode and no file writes
   or Caddy daemon dependency.
 - `caddy fmt` and `caddy validate` engine (`internal/validator`):
@@ -188,8 +191,9 @@ product decisions:
 
 - derive semantic highlighting from the existing lossless lexer and parse tree;
 - use source ranges for source-view folding;
-- treat named matchers, snippets and named routes as future definition/reference
-  navigation candidates;
+- named matcher definition/reference navigation is implemented with the `g`
+  keybinding (PR #46); snippets and named routes stay navigable through the
+  structural tree;
 - expand parser and highlighting fixtures using the Tree-sitter corpus;
 - keep directive metadata advisory and separate from parser validity;
 - defer Tree-sitter integration until structured editing or incremental parsing
