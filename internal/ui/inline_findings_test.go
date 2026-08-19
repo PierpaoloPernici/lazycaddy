@@ -706,6 +706,11 @@ func TestInlineReviewFooter_NotRun(t *testing.T) {
 func TestCommandPalette_ReviewInlineFindings(t *testing.T) {
 	m := matcherModel(t, "example.test {\n\treverse_proxy @api localhost\n}\n")
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	// The palette is a scrollable catalog: scroll past the navigation and
+	// source sections to reach the validation rows.
+	for i := 0; i < 3; i++ {
+		m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	}
 	if !strings.Contains(stripANSI(m.View()), "Review inline findings") {
 		t.Errorf("palette should list 'Review inline findings':\n%s", m.View())
 	}

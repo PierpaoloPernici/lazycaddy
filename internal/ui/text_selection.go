@@ -107,7 +107,10 @@ func (m *Model) sourcePaneGeometry() textPaneGeometry {
 	if contentW < 1 {
 		contentW = 1
 	}
-	contentH := paneH - 4 // border (2) + title (1) + separator (1)
+	// paneContentH already removes the pane frame. Keep this in lockstep
+	// with syncSource: only the title and separator are outside the
+	// selectable source viewport.
+	contentH := paneH - 2 // title (1) + separator (1)
 	if contentH < 1 {
 		contentH = 1
 	}
@@ -191,7 +194,10 @@ func (m *Model) geometryFor(pane textSelectionPane) (textPaneGeometry, bool) {
 // document lines with a line-number gutter, the viewport's scroll and
 // height, and no wrapping (the source viewport truncates, it never
 // wraps). Source is the exact document bytes, so RangeBytes returns exact
-// source bytes.
+// source bytes. When source folds are active, the pane carries the folded
+// row-to-line mapping (RowLines) so every content row maps to the source
+// line it displays while Lines and Offsets stay on the full document:
+// selecting a range always returns the exact underlying source bytes.
 func (m *Model) sourceTextPane() *selection.Pane {
 	var src []byte
 	if m.sourceDoc != nil {
@@ -201,7 +207,7 @@ func (m *Model) sourceTextPane() *selection.Pane {
 	}
 	lines := strings.Split(string(src), "\n")
 	geo := m.sourcePaneGeometry()
-	return &selection.Pane{
+	p := &selection.Pane{
 		Source:       src,
 		Lines:        lines,
 		Offsets:      lineOffsets(src),
@@ -211,6 +217,20 @@ func (m *Model) sourceTextPane() *selection.Pane {
 		Scroll:       m.viewport.YOffset,
 		CellWidth:    paneCellWidth,
 	}
+	if layout := m.foldLayoutFor(m.sourceDoc); layout != nil {
+		// Convert the 1-based layout rows to 0-based Pane line indexes;
+		// fold indicator rows map to -1 (no selectable source position).
+		rowLines := make([]int, len(layout.Rows))
+		for i, ln := range layout.Rows {
+			if ln > 0 {
+				rowLines[i] = ln - 1
+			} else {
+				rowLines[i] = -1
+			}
+		}
+		p.RowLines = rowLines
+	}
+	return p
 }
 
 // logTextPane builds the selection.Pane for the log viewport: one plain
@@ -437,11 +457,19 @@ func (m *Model) panePositionAt(pane textSelectionPane, geo textPaneGeometry, x, 
 			py = geo.height - 1
 		}
 		pos, ok := p.Position(py, px)
+		if !ok && p.RowLines != nil {
+			// The drag crossed a fold indicator row (or padding below the
+			// folded content): snap to the nearest visible line so the
+			// cursor never jumps to a foreign position.
+			pos, ok = p.PositionNearest(py, px)
+		}
 		if !ok && len(p.Lines) > 0 {
 			// Padding row below the content: extend to the end of the
-			// last line so a drag past the text still selects it.
-			last := len(p.Lines) - 1
-			return selection.Position{Line: last, Offset: len(p.Lines[last])}, true
+			// last visible line so a drag past the text still selects it.
+			last := m.lastSelectableLine(p)
+			if last >= 0 {
+				return selection.Position{Line: last, Offset: len(p.Lines[last])}, true
+			}
 		}
 		return pos, ok
 	} else if px < 0 || px >= geo.width || py < 0 || py >= geo.height {
@@ -450,13 +478,41 @@ func (m *Model) panePositionAt(pane textSelectionPane, geo textPaneGeometry, x, 
 	return p.Position(py, px)
 }
 
+// lastSelectableLine returns the 0-based line index of the last selectable
+// row of pane: the last visible source line in a folded pane, or the last
+// logical line otherwise. It is used to clamp drags past the content.
+func (m *Model) lastSelectableLine(p *selection.Pane) int {
+	if p.RowLines == nil {
+		if len(p.Lines) == 0 {
+			return -1
+		}
+		return len(p.Lines) - 1
+	}
+	for abs := len(p.RowLines) - 1; abs >= 0; abs-- {
+		if line := p.RowLines[abs]; line >= 0 && line < len(p.Lines) {
+			return line
+		}
+	}
+	return -1
+}
+
 // mousePress starts a fresh selection at the press point, or clears any
-// selection when the press falls outside every text pane.
+// selection when the press falls outside every text pane. A press on a
+// source fold indicator row opens that fold instead of starting a
+// selection (the indicator is display-only: it has no source bytes to
+// select).
 func (m *Model) mousePress(x, y int) {
 	pane, geo, ok := m.textPaneAt(x, y)
 	if !ok {
 		m.clearTextSelection()
 		return
+	}
+	if pane == textPaneSource {
+		if row := m.foldRowAtPanePoint(geo, x, y); row >= 0 {
+			m.openFoldAtRow(m.viewport.YOffset + row)
+			m.clearTextSelection()
+			return
+		}
 	}
 	pos, ok := m.panePositionAt(pane, geo, x, y, false)
 	if !ok {
@@ -466,6 +522,26 @@ func (m *Model) mousePress(x, y int) {
 	m.textSel.pane = pane
 	m.textSel.state.MoveTo(pos)
 	m.textSel.state.SelectTo(pos)
+}
+
+// foldRowAtPanePoint returns the pane-relative row of the fold indicator
+// under a screen point in the source pane, or -1 when the point is not on
+// one (or the point falls outside the content rectangle). A click anywhere
+// on the indicator row — including its gutter — opens the fold.
+func (m *Model) foldRowAtPanePoint(geo textPaneGeometry, x, y int) int {
+	x, y = x-geo.x, y-geo.y
+	if y < 0 || y >= geo.height {
+		return -1
+	}
+	layout := m.foldLayout
+	if layout == nil {
+		return -1
+	}
+	row := m.viewport.YOffset + y
+	if row < 0 || row >= len(layout.Rows) || layout.Rows[row] != 0 {
+		return -1
+	}
+	return y
 }
 
 // mouseDrag extends the active selection toward the drag point, clamped to
@@ -526,8 +602,12 @@ func (m *Model) ensureTextCursor(pane textSelectionPane) {
 // line/byte delta, mirroring shift+arrow semantics: shift+up/down move
 // one logical line, shift+left/right one byte, both clamped to the pane's
 // content. Moving below the last line extends the selection to the end of
-// the last line, so the final line can always be selected. The owning
-// viewport is scrolled to keep the cursor visible.
+// the last line, so the final line can always be selected. When source
+// folds are active, movement skips hidden lines and clamps to the last
+// visible one: the cursor always stays on visible content, and a
+// selection spanning a folded region still covers the exact underlying
+// source bytes. The owning viewport is scrolled to keep the cursor
+// visible.
 func (m *Model) shiftTextCursor(dx, dy int) {
 	pane := m.currentTextPane()
 	m.ensureTextCursor(pane)
@@ -536,6 +616,26 @@ func (m *Model) shiftTextCursor(dx, dy int) {
 	line := cur.Line + dy
 	if line < 0 {
 		line = 0
+	}
+	if layout := m.foldLayout; layout != nil && dy != 0 {
+		if dy > 0 {
+			last := m.lastVisibleSourceLine()
+			if last >= 0 && line > last {
+				// Past the last visible line: extend to its end, matching
+				// the unfolded behavior below.
+				m.textSel.state.SelectTo(selection.Position{Line: last, Offset: len(p.Lines[last])})
+				m.revealTextCursor(pane, last)
+				return
+			}
+			// Skip folded lines between the cursor and the target.
+			for line+1 < len(layout.LineRow) && layout.LineRow[line+1] < 0 {
+				line++
+			}
+		} else {
+			for line > 0 && layout.LineRow[line+1] < 0 {
+				line--
+			}
+		}
 	}
 	if line >= len(p.Lines) {
 		// Below the last line: extend the selection to its end.

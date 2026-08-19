@@ -70,6 +70,7 @@ func (m *Model) toggleCursor() {
 		return
 	}
 	m.collapsed[cur.key] = !m.collapsed[cur.key]
+	m.foldVersion++
 	m.rebuildTree(cur.key)
 }
 
@@ -93,6 +94,7 @@ func (m *Model) collapseOrExpand(expand bool) {
 		}
 		m.collapsed[cur.key] = true
 	}
+	m.foldVersion++
 	m.rebuildTree(cur.key)
 }
 
@@ -164,6 +166,7 @@ func (m *Model) expandAllBranches() {
 	if !changed {
 		return // no collapsed branch: no-op
 	}
+	m.foldVersion++
 	anchor := ""
 	if sel := m.selectedItem(); sel != nil {
 		anchor = sel.key
@@ -224,6 +227,7 @@ func (m *Model) collapseDescendants() {
 	if !changed {
 		return // already collapsed below the roots: no-op
 	}
+	m.foldVersion++
 	// Re-anchor the selection: keep the row when it survives the rebuild,
 	// otherwise move to the nearest visible ancestor.
 	prev := m.selectedItem()

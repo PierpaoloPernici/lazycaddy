@@ -58,6 +58,16 @@ type Pane struct {
 	// source rune from which to derive a span. A zero value preserves the
 	// historical behavior for callers that do not provide viewport width.
 	ContentWidth int
+	// RowLines, when non-nil, maps each content row (0-based, relative to
+	// Scroll) to the logical line it renders. Rows with no source position
+	// (fold indicator rows) map to -1 and are never selectable. It lets a
+	// pane render a folded source view — where display rows are no longer
+	// line-index-sequential because hidden lines are replaced by indicator
+	// rows — while Lines, Offsets and Source stay on the full backing
+	// buffer, so RangeBytes always returns exact source bytes. Without it
+	// the pane assumes one content row per logical line (the historical
+	// contract).
+	RowLines []int
 	// CellWidth measures a rune in terminal cells. nil means one cell per
 	// rune, which is the conservative default (tabs count as one
 	// character); views with wide-character knowledge can inject a width
@@ -168,9 +178,10 @@ func (p *Pane) offsetToCell(line, offset int) int {
 // Position maps a visible cell to a source position. Rows are content rows
 // (0-based); columns count gutter cells, so the first content column is
 // GutterWidth. ok is false for gutter cells, rows outside the viewport,
-// padding rows below the last line, or a position hidden by the horizontal
-// scroll. Cells beyond the end of a line's segment clamp to that segment's
-// end, so selecting to the end of a line is exact.
+// padding rows below the last line, a position hidden by the horizontal
+// scroll, or — when RowLines is set — a row that renders no source
+// position (a fold indicator). Cells beyond the end of a line's segment
+// clamp to that segment's end, so selecting to the end of a line is exact.
 func (p *Pane) Position(row, col int) (Position, bool) {
 	if row < 0 || row >= p.Height {
 		return Position{}, false
@@ -179,6 +190,25 @@ func (p *Pane) Position(row, col int) (Position, bool) {
 		return Position{}, false
 	}
 	contentCol := col - p.GutterWidth
+	if p.RowLines != nil {
+		abs := p.Scroll + row
+		if abs < 0 || abs >= len(p.RowLines) {
+			return Position{}, false
+		}
+		line := p.RowLines[abs]
+		if line < 0 || line >= len(p.Lines) {
+			// Fold indicator row (or a stale row after a content change):
+			// no source position to select.
+			return Position{}, false
+		}
+		// Folded source panes never wrap: each visible line occupies
+		// exactly one row.
+		cellInLine := p.Offset + contentCol
+		if cellInLine < 0 {
+			cellInLine = 0
+		}
+		return Position{Line: line, Offset: p.cellToOffset(line, cellInLine)}, true
+	}
 	line := p.Scroll
 	remaining := row
 	for line < len(p.Lines) {
@@ -211,10 +241,81 @@ func (p *Pane) Position(row, col int) (Position, bool) {
 	return Position{Line: line, Offset: p.cellToOffset(line, cellInLine)}, true
 }
 
+// PositionNearest maps a viewport cell to the nearest selectable source
+// position when the exact row holds none: it scans outward from the row
+// for the closest visible line (skipping fold indicator rows) and maps the
+// column onto it. It is used to clamp mouse drags in folded panes so a
+// drag crossing an indicator row never jumps the cursor to a foreign
+// position. ok is false when the pane has no visible line at all.
+func (p *Pane) PositionNearest(row, col int) (Position, bool) {
+	if p.RowLines == nil {
+		return p.Position(row, col)
+	}
+	if col < p.GutterWidth {
+		col = p.GutterWidth
+	}
+	contentCol := col - p.GutterWidth
+	if row < 0 {
+		row = 0
+	}
+	if row >= len(p.RowLines) {
+		row = len(p.RowLines) - 1
+	}
+	for d := 0; d < len(p.RowLines); d++ {
+		for _, abs := range [2]int{row - d, row + d} {
+			if abs < 0 || abs >= len(p.RowLines) {
+				continue
+			}
+			line := p.RowLines[abs]
+			if line < 0 || line >= len(p.Lines) {
+				continue
+			}
+			cellInLine := p.Offset + contentCol
+			if cellInLine < 0 {
+				cellInLine = 0
+			}
+			return Position{Line: line, Offset: p.cellToOffset(line, cellInLine)}, true
+		}
+	}
+	return Position{}, false
+}
+
+// rowOfLine returns the absolute content row of a logical line in a
+// folded pane, or -1 when the line is hidden (or the pane has no row
+// mapping). RowLines preserves source order, so a linear scan is exact and
+// stays within the same complexity as the sequential rowsBefore walk it
+// replaces.
+func (p *Pane) rowOfLine(line int) int {
+	if p.RowLines == nil || line < 0 {
+		return -1
+	}
+	for abs, ln := range p.RowLines {
+		if ln == line {
+			return abs
+		}
+	}
+	return -1
+}
+
 // Cell returns the visible cell of a source position. ok is false when the
-// position is above the scroll line, below the viewport, or hidden by the
-// horizontal scroll.
+// position is above the scroll line, below the viewport, hidden by the
+// horizontal scroll, or — when RowLines is set — hidden by a collapsed
+// fold.
 func (p *Pane) Cell(pos Position) (row, col int, ok bool) {
+	if pos.Line < 0 || pos.Line >= len(p.Lines) {
+		return 0, 0, false
+	}
+	if p.RowLines != nil {
+		abs := p.rowOfLine(pos.Line)
+		if abs < 0 || abs < p.Scroll || abs >= p.Scroll+p.Height {
+			return 0, 0, false
+		}
+		cellInLine := p.offsetToCell(pos.Line, pos.Offset)
+		if cellInLine < p.Offset {
+			return 0, 0, false
+		}
+		return abs - p.Scroll, p.GutterWidth + (cellInLine - p.Offset), true
+	}
 	if pos.Line < p.Scroll || pos.Line >= len(p.Lines) {
 		return 0, 0, false
 	}
@@ -307,7 +408,19 @@ func (p *Pane) CellsInRange(r Range) []CellSpan {
 		if line < p.Scroll {
 			continue
 		}
-		rowStart := p.rowsBefore(line)
+		var rowStart int
+		if p.RowLines != nil {
+			abs := p.rowOfLine(line)
+			if abs < 0 {
+				// The line is hidden by a collapsed fold: it renders no
+				// cells and contributes no span (its bytes still belong to
+				// the exact source range reported by RangeBytes).
+				continue
+			}
+			rowStart = abs - p.Scroll
+		} else {
+			rowStart = p.rowsBefore(line)
+		}
 		if rowStart >= p.Height {
 			break // every following line is below the viewport too
 		}

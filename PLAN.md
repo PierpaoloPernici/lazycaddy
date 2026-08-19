@@ -848,9 +848,21 @@ diff, backup and atomic-save safeguards.
   keybinding, PR #46): `caddyfile.Matchers` lists every occurrence and the
   cycler re-anchors the tree and reveals each line, wrapping at the end. The
   session is invalidated when the selected document changes or is reloaded.
-- [ ] Add source folding for site blocks, snippets, named routes and nested
+- [x] Add source folding for site blocks, snippets, named routes and nested
   handlers, and brace-aware indentation/movement where the source ranges make
-  it safe.
+  it safe. Source folding is a display-only transform: `caddyfile.Fold` gains
+  `CloseBraceLine` (computed by the lexer, so quoted braces and heredocs never
+  fold), and `caddyfile.FoldLayoutFor` maps display rows to source lines so
+  the viewport, scroll reveal, search/diagnostic jumps and mouse selection all
+  stay byte-exact. Fold state is keyed by document path + kind + name + exact
+  source range, so it survives selection changes, saves, reloads and
+  rollbacks; a reveal (selection, search hit, diagnostic jump) auto-expands
+  the enclosing fold so the target line is always shown. The `z` keybinding
+  toggles the fold of the selected block (palette: open/close all), bracket
+  detection reuses the lexer/LandmarksOf brace path instead of counting
+  braces naively from raw text, and structural movement stays on the existing
+  reorder pipeline (the `o` picker behind `MoveAfter`): no second mutation
+  path was introduced.
 - Add read-only runtime observability and loaded-config inspection through
   separate, cancellable Admin API fetchers. Each panel must expose explicit
   `loading`, `available`, `stale` and `unavailable` states, refresh without

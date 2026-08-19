@@ -641,3 +641,113 @@ func TestCellsInRangeOutOfBounds(t *testing.T) {
 		t.Errorf("overlong zero-range CellsInRange = %+v, want none", spans)
 	}
 }
+
+// foldedPane builds a Pane over a 4-line source with a collapse on lines
+// 2-3 (0-based): display rows are [0, 1, -1(indic), 3] and the logical
+// lines stay on the full source.
+func foldedPane(t *testing.T, height, scroll int) *Pane {
+	t.Helper()
+	src := "one\ntwo\nthree\nfour\n"
+	lines, offsets := splitLines([]byte(src))
+	return &Pane{
+		Source:       []byte(src),
+		Lines:        lines,
+		Offsets:      offsets,
+		GutterWidth:  0,
+		Height:       height,
+		ContentWidth: 8,
+		Scroll:       scroll,
+		RowLines:     []int{0, 1, -1, 3},
+	}
+}
+
+func TestPositionFoldedRows(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	// Visible rows map to their source lines.
+	pos, ok := p.Position(0, 0)
+	if !ok || pos != (Position{Line: 0, Offset: 0}) {
+		t.Errorf("Position(0,0) = %+v, %v, want line 0", pos, ok)
+	}
+	pos, ok = p.Position(1, 2)
+	if !ok || pos != (Position{Line: 1, Offset: 2}) {
+		t.Errorf("Position(1,2) = %+v, %v, want line 1 offset 2", pos, ok)
+	}
+	pos, ok = p.Position(3, 0)
+	if !ok || pos != (Position{Line: 3, Offset: 0}) {
+		t.Errorf("Position(3,0) = %+v, %v, want line 3", pos, ok)
+	}
+	// The fold indicator row has no source position.
+	if _, ok := p.Position(2, 1); ok {
+		t.Error("Position on a fold indicator row must be absent")
+	}
+	// Rows beyond the content are absent too.
+	if _, ok := p.Position(4, 1); ok {
+		t.Error("Position in padding must be absent")
+	}
+}
+
+func TestPositionFoldedScroll(t *testing.T) {
+	p := foldedPane(t, 2, 2)
+	// Abs row Scroll+0 = the indicator row: absent.
+	if _, ok := p.Position(0, 0); ok {
+		t.Error("scrolled fold indicator row (abs 2) must be absent")
+	}
+	pos, ok := p.Position(1, 0)
+	if !ok || pos != (Position{Line: 3, Offset: 0}) {
+		t.Errorf("scrolled folded Position(1,0) = %+v, %v, want line 3", pos, ok)
+	}
+}
+
+func TestPositionNearestSkipsFoldRows(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	// The indicator row (2) snaps to the closest visible line (1).
+	pos, ok := p.PositionNearest(2, 1)
+	if !ok || (pos != (Position{Line: 1, Offset: 1}) && pos != (Position{Line: 3, Offset: 1})) {
+		t.Errorf("PositionNearest(2,1) = %+v, %v, want line 1 or 3", pos, ok)
+	}
+	// A row past the content clamps to the last visible line.
+	pos, ok = p.PositionNearest(9, 0)
+	if !ok || pos.Line != 3 {
+		t.Errorf("PositionNearest(9,0) = %+v, %v, want line 3", pos, ok)
+	}
+	// Without RowLines the plain Position path applies.
+	plain := testPane(t, "ab\n", 1, 0)
+	if pos, ok := plain.PositionNearest(0, 1); !ok || pos != (Position{Line: 0, Offset: 1}) {
+		t.Errorf("plain PositionNearest(0,1) = %+v, %v", pos, ok)
+	}
+}
+
+func TestCellFolded(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	row, col, ok := p.Cell(Position{Line: 1, Offset: 2})
+	if !ok || row != 1 || col != 2 {
+		t.Errorf("Cell(line 1) = %d,%d,%v, want 1,2,true", row, col, ok)
+	}
+	if _, _, ok := p.Cell(Position{Line: 2, Offset: 0}); ok {
+		t.Error("Cell on a hidden line must be absent")
+	}
+	if _, _, ok := p.Cell(Position{Line: 0, Offset: 0}); !ok {
+		t.Error("Cell on the first visible line must resolve")
+	}
+}
+
+func TestCellsInRangeSkipsHiddenLines(t *testing.T) {
+	p := foldedPane(t, 4, 0)
+	// A selection over lines 1-3 (with line 2 hidden by the fold) paints
+	// only the visible lines, but the range keeps its exact source span.
+	spans := p.CellsInRange(Range{Start: Position{Line: 1, Offset: 1}, End: Position{Line: 3, Offset: 4}})
+	var rows []int
+	for _, sp := range spans {
+		rows = append(rows, sp.Row)
+	}
+	if len(rows) != 2 || rows[0] != 1 || rows[1] != 3 {
+		t.Errorf("CellsInRange rows = %v, want [1 3] (hidden line skipped)", rows)
+	}
+	// The exact source bytes of the spanned lines are preserved verbatim,
+	// including the hidden line: copying a selection across a fold never
+	// fabricates or drops bytes.
+	bytes, ok := p.RangeBytes(Range{Start: Position{Line: 1, Offset: 0}, End: Position{Line: 2, Offset: 5}})
+	if !ok || string(bytes) != "two\nthree" {
+		t.Errorf("RangeBytes across a fold = %q, want the exact hidden bytes", bytes)
+	}
+}

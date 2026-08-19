@@ -272,6 +272,21 @@ type Model struct {
 	// suppress the reveal.
 	sourceRefresh bool
 
+	// foldVersion increments on every tree expansion-state change, so the
+	// display-only source layout follows the tree without rescanning the
+	// document on every render.
+	foldVersion       int
+	foldLayout        *caddyfile.FoldLayout
+	foldLayoutDoc     *caddyfile.Document
+	foldLayoutSource  []byte
+	foldLayoutState   string
+	foldLayoutVersion int
+	// lastFoldLayoutVersion tracks the version whose layout the last
+	// rendered content was built from, so a fold toggle that happens
+	// without any other content trigger (rare: toggles normally set
+	// sourceRefresh too) still rebuilds the pane.
+	lastFoldLayoutVersion int
+
 	// detailViewport shows the body of the diagnostic detail view.
 	// It is independent of the source viewport: the source is hidden
 	// while the diagnostics modal is open, so the two cannot collide.
