@@ -854,19 +854,23 @@ diff, backup and atomic-save safeguards.
   session is invalidated when the selected document changes or is reloaded.
 - [x] Add source folding for site blocks, snippets, named routes and nested
   handlers, and brace-aware indentation/movement where the source ranges make
-  it safe. Source folding is a display-only transform: `caddyfile.Fold` gains
-  `CloseBraceLine` (computed by the lexer, so quoted braces and heredocs never
-  fold), and `caddyfile.FoldLayoutFor` maps display rows to source lines so
-  the viewport, scroll reveal, search/diagnostic jumps and mouse selection all
-  stay byte-exact. Fold state is keyed by document path + kind + name + exact
-  source range, so it survives selection changes, saves, reloads and
-  rollbacks; a reveal (selection, search hit, diagnostic jump) auto-expands
-  the enclosing fold so the target line is always shown. The `z` keybinding
-  toggles the fold of the selected block (palette: open/close all), bracket
-  detection reuses the lexer/LandmarksOf brace path instead of counting
-  braces naively from raw text, and structural movement stays on the existing
-  reorder pipeline (the `o` picker behind `MoveAfter`): no second mutation
-  path was introduced.
+  it safe. Source folding is a display-only projection of the tree expansion
+  state: collapsing a structural tree row folds its source block. The
+  `caddyfile.Fold` range gains `CloseBraceLine` (computed by the lexer, so
+  quoted braces and heredocs never fold), and `caddyfile.FoldLayoutFor` maps
+  display rows to source lines so the viewport, scroll reveal,
+  search/diagnostic jumps and mouse selection all stay byte-exact. Fold state
+  is keyed by document path + kind + name + exact source range, so it
+  survives selection changes, saves, reloads and rollbacks; a reveal
+  (selection, search hit, diagnostic jump) auto-expands the enclosing fold so
+  the target line is always shown. Folds are toggled by the tree itself
+  (`Enter`, `+`/`-`, `←`/`→` and the palette's expand/collapse all) and by
+  clicking an indicator row in the source pane; the independent `z` commands
+  and fold palette entries were deliberately dropped so the tree and source
+  panes can never disagree. Bracket detection reuses the lexer/LandmarksOf
+  brace path instead of counting braces naively from raw text, and structural
+  movement stays on the existing reorder pipeline (the `o` picker behind
+  `MoveAfter`): no second mutation path was introduced.
 - Add read-only runtime observability and loaded-config inspection through
   separate, cancellable Admin API fetchers. Each panel must expose explicit
   `loading`, `available`, `stale` and `unavailable` states, refresh without

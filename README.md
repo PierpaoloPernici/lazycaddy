@@ -185,15 +185,17 @@ modal open. The review lists one row per Caddy diagnostic with its line and
 relative path, `Enter` reveals it and `→` opens the full detail; list views
 (logs, diagnostics, backups) follow the same `→`/`←` master-detail
 navigation. Display-only source folding is merged too (PR #49): collapsing a
-structural tree row (`z`, or open/close all from the command palette)
-replaces the block body with a single `⋯ N lines` indicator row while the
-header and the closing brace stay visible. The folded view never rewrites
-the source — every byte, line number and range stays valid for patching,
-selection and copying — and fold state is keyed by the exact source range,
-so it survives selection changes, saves, reloads and rollbacks. A reveal
-(selection, search hit, diagnostic jump) auto-expands the fold hiding the
-target line, and mouse selection, `Shift`+arrows and `y` keep returning the
-exact source bytes across folds.
+structural tree row (`Enter`, `+`/`-`, `←`/`→`, or the palette's
+expand/collapse all) replaces the block body with a single `⋯ N lines`
+indicator row while the header and the closing brace stay visible — the
+source fold is the tree expansion state itself, so the two panes never
+disagree, and clicking an indicator row reopens the fold. The folded view
+never rewrites the source — every byte, line number and range stays valid
+for patching, selection and copying — and fold state is keyed by the exact
+source range, so it survives selection changes, saves, reloads and
+rollbacks. A reveal (selection, search hit, diagnostic jump) auto-expands
+the fold hiding the target line, and mouse selection, `Shift`+arrows and `y`
+keep returning the exact source bytes across folds.
 
 The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
 also provides a searchable command palette (`?`) alongside the direct hotkeys,

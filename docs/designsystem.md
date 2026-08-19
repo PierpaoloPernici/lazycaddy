@@ -144,10 +144,11 @@ marker cell content and no source position.
 - The tree's stable item key (document path + kind + name + exact range) is
 the only source of truth for expansion, so fold state survives selection
 changes, saves, reloads and rollbacks; a fold whose range no longer exists
-simply stops matching.
-- `z` toggles the fold of the selected block; the command palette adds
-"Toggle source fold", "Open all source folds" and "Close all source folds".
-The footer shows `z fold` only when the selection is foldable.
+simply stops matching. Source folding is the tree expansion state itself:
+collapsing or expanding a structural tree row (`Enter`, `+`/`-`, `←`/`→`,
+and the palette's expand/collapse all) folds or unfolds its source block,
+and clicking an indicator row reopens the fold. There is no independent
+fold command: the tree and the source pane can never disagree.
 - A reveal (selection change, search hit, diagnostic or matcher jump, save
 re-anchor) auto-expands every fold hiding the target line; the selected
 node's own closing line is deliberately not a target, so selecting a folded
