@@ -118,7 +118,16 @@ The inspector also provides:
 
 - Caddy version, Admin API reachability and capability status in the header;
 - an opt-in, rotation-aware log view with bounded history and JSON
-  highlighting (`--log-file` or `--log-journal-unit`, `l`);
+  highlighting (`--log-file` or `--log-journal-unit`, `l`), now with
+  source-aware filtering by host/status/level/text (`F` in logs, `c` clear),
+  `f`/`p` follow/pause, and bounded `2xx`/`3xx`/`4xx`/`5xx` counts plus
+  latency summaries in the title;
+- a read-only runtime dashboard (`I`) with loaded config (`GET /config/`) and
+  live upstream health (`GET /reverse_proxy/upstreams` → `fails`/`active`)
+  alongside static `health_checks`, and a TLS dashboard (`T`) with
+  certificate metadata, storage location, renewal/OCSP states and lock/
+  permission handling — both with explicit `loading`/`available`/`stale`/
+  `unavailable` and `r` refresh without blocking the TUI;
 - `$EDITOR` editing for a selected node (`e`) or an entire document (`E`),
   including imported files, with validation, diff review and the same backup
   and atomic-save pipeline;
@@ -209,13 +218,13 @@ binary through `PATH` when they are not given explicitly, and keeps format,
 validate and reload disabled when `caddy` is unavailable. The interface also
 provides a persistent state-aware header, semantic status strip, responsive
 pane layout, adaptive theme colors, a compact navigation footer and exact
-source clipboard copying with OSC 52 and local fallbacks. The current roadmap
-is v0.4: the parsing work — advisory semantic highlighting, matcher
+source clipboard copying with OSC 52 and local fallbacks. The v0.4 milestone
+is complete and merged as PR #52: advisory semantic highlighting, matcher
 definition↔reference navigation, document-local inline lint, Caddy-diagnostic
-mapping (source-pane overlay with gutter badges, per-diagnostic review rows
-and auto-reveal from `v`) and display-only source folding — is done, with the
-runtime/TLS dashboards and log filtering still ahead, without weakening the
-raw-source fallback or byte-preservation guarantees.
+mapping, display-only source folding **plus the runtime/TLS dashboards and
+source-aware log filtering** are done — all without weakening the raw-source
+fallback or byte-preservation guarantees. The next milestone is v0.5
+(remote/operations).
 
 The application is read-only by default and never reloads Caddy implicitly.
 Unavailable capabilities disable only the affected actions, while browsing

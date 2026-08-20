@@ -23,11 +23,11 @@ The UI must never reload Caddy implicitly after an edit.
 
 The repository has completed the configuration-engine spike, the v0.1/v0.2
 read-only-by-default TUI milestones and the v0.3 structured-editing
-foundation (released as v0.3.0). The v0.4 parsing work — advisory semantic
+foundation (released as v0.3.0). The v0.4 work — advisory semantic
 highlighting, named-matcher navigation, document-local inline lint,
-Caddy-diagnostic mapping and display-only source folding — is merged into
-`main`; the remaining v0.4 work (runtime/TLS dashboards and log filtering)
-is explicitly listed in the milestone section below.
+Caddy-diagnostic mapping, display-only source folding **and the runtime/TLS
+dashboards with source-aware log filtering** — is merged into `main` (PR #52);
+the v0.5 milestone is next.
 
 Completed:
 
@@ -871,28 +871,28 @@ diff, backup and atomic-save safeguards.
   brace path instead of counting braces naively from raw text, and structural
   movement stays on the existing reorder pipeline (the `o` picker behind
   `MoveAfter`): no second mutation path was introduced.
-- Add read-only runtime observability and loaded-config inspection through
+- [x] Add read-only runtime observability and loaded-config inspection through
   separate, cancellable Admin API fetchers. Each panel must expose explicit
   `loading`, `available`, `stale` and `unavailable` states, refresh without
   blocking the TUI, and preserve per-panel capability/error information. Use
   the configured Admin API endpoint and runtime identity; do not infer loaded
-  equality by regenerating a Caddyfile from JSON.
-- Add upstream health/reachability and response-time information where the
+  equality by regenerating a Caddyfile from JSON. (PR #52, `I` runtime dashboard)
+- [x] Add upstream health/reachability and response-time information where the
   target Caddy build exposes it. Interpret upstream status together with the
   configured passive/active health-check thresholds and label it as observed
-  runtime state rather than a generic network ping.
-- Extend the log dashboard with source-aware filtering by host, status, level
+  runtime state rather than a generic network ping. (PR #52, live `GET /reverse_proxy/upstreams` with `fails`/`active`, recursive subroute parsing, dynamic upstreams)
+- [x] Extend the log dashboard with source-aware filtering by host, status, level
   and text, plus bounded status-class counts and basic latency summaries. Keep
   multiple log sources behind explicit adapters and retain read-only,
-  cancellation-aware behavior.
-- Add a TLS certificate dashboard behind a certificate source adapter. Keep
+  cancellation-aware behavior. (PR #52, `F` filter in logs, `c` clear, `f`/`p` follow/pause, `96.6%` logs)
+- [x] Add a TLS certificate dashboard behind a certificate source adapter. Keep
   certificate metadata, storage location, renewal state and OCSP state as
   distinct values; do not assume a private CertMagic filesystem layout or
   infer renewal from a single certificate file. Surface locking, permission
-  and unavailable-storage states without reading private material by default.
-- Keep restart and stop unavailable unless an explicit target-specific service
+  and unavailable-storage states without reading private material by default. (PR #52, `T` dashboard, `ReadHeader` 2 KiB, `.lock` → `ErrStorageLocked`)
+- [x] Keep restart and stop unavailable unless an explicit target-specific service
   adapter is present and the action has a confirmation that names the target;
-  service-manager control belongs to the remote/operations milestone.
+  service-manager control belongs to the remote/operations milestone. (still deferred, no adapter — verified in PR #52)
 
 Acceptance: unavailable runtime data is represented as a useful error state and
 never blocks configuration browsing. Runtime, log and TLS panels remain
