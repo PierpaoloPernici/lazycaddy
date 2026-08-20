@@ -176,10 +176,10 @@ func commandDefinitions() []uiCommand {
 		{ID: commandReload, Category: "Runtime & recovery", Label: "Reload Caddy", Description: "Admin API", Keys: []string{"r"}, Enabled: func(m *Model) bool {
 			return m.reloader != nil
 		}, Reason: func(*Model) string { return "Caddy reload unavailable" }},
-		{ID: commandRuntime, Category: "Runtime & recovery", Label: "Runtime dashboard", Description: "Admin API + upstreams", Keys: []string{"R"}, Enabled: func(*Model) bool {
+		{ID: commandRuntime, Category: "Runtime & recovery", Label: "Runtime dashboard", Description: "Admin API + upstreams", Keys: []string{"I"}, Enabled: func(*Model) bool {
 			return true
 		}, Reason: func(*Model) string { return "" }},
-		{ID: commandTLS, Category: "Runtime & recovery", Label: "TLS dashboard", Description: "certificates", Keys: []string{"t", "T"}, Enabled: func(*Model) bool {
+		{ID: commandTLS, Category: "Runtime & recovery", Label: "TLS dashboard", Description: "certificates", Keys: []string{"T"}, Enabled: func(*Model) bool {
 			return true
 		}, Reason: func(*Model) string { return "" }},
 		{ID: commandLogs, Category: "Runtime & recovery", Label: "Open logs", Description: "journal / file", Keys: []string{"l"}, Enabled: func(m *Model) bool {

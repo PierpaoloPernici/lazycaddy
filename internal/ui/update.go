@@ -289,9 +289,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandCopy)
 	case "/", "ctrl+f":
 		return m.runCommand(commandSearch)
-	case "t", "T":
+	case "T":
 		return m.runCommand(commandTLS)
-	case "R":
+	case "I":
 		return m.runCommand(commandRuntime)
 	case "ctrl+h":
 		return m.runCommand(commandHelp)
