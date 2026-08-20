@@ -14,24 +14,28 @@ import (
 
 func (m *Model) tlsFetchCmd() tea.Cmd {
 	fetcher := m.tlsFetcher
+	gen := m.tlsGen
 	if fetcher == nil {
 		return func() tea.Msg {
-			return tlsFetchResultMsg{Err: fmt.Errorf("TLS source not configured (use --tls-storage-dir)")}
+			return tlsFetchResultMsg{Err: fmt.Errorf("TLS source not configured (use --tls-storage-dir)"), Gen: gen}
 		}
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		certs, err := fetcher.FetchCertificates(ctx)
-		return tlsFetchResultMsg{Certs: certs, Err: err}
+		return tlsFetchResultMsg{Certs: certs, Err: err, Gen: gen}
 	}
 }
 
 func (m *Model) handleTLSFetchResult(msg tlsFetchResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Gen != m.tlsGen {
+		return m, nil
+	}
 	m.tlsLoading = false
 	m.tlsAt = time.Now()
 	if msg.Err != nil {
-		if m.tlsState == tls.FetchAvailable {
+		if m.tlsHasFetched {
 			m.tlsState = tls.FetchStale
 		} else {
 			m.tlsState = tls.FetchUnavailable
@@ -42,6 +46,7 @@ func (m *Model) handleTLSFetchResult(msg tlsFetchResultMsg) (tea.Model, tea.Cmd)
 		m.tlsState = tls.FetchAvailable
 		m.tlsCerts = msg.Certs
 		m.tlsErr = nil
+		m.tlsHasFetched = true
 	}
 	m.syncTLSViewport(m.width, m.paneHeight())
 	return m, nil
@@ -51,10 +56,15 @@ func (m *Model) toggleTLSDashboard() (tea.Model, tea.Cmd) {
 	if m.showTLS {
 		m.showTLS = false
 		m.clearTextSelection()
+		m.tlsGen++
 		return m, nil
 	}
 	m.clearTextSelection()
 	m.showTLS = true
+	if m.showRuntime {
+		m.runtimeConfigGen++
+		m.runtimeUpstreamGen++
+	}
 	m.showRuntime = false
 	m.showLogs = false
 	m.tlsCursor = 0
@@ -64,6 +74,7 @@ func (m *Model) toggleTLSDashboard() (tea.Model, tea.Cmd) {
 		m.tlsErr = fmt.Errorf("TLS storage not configured")
 		return m, nil
 	}
+	m.tlsGen++
 	m.tlsState = tls.FetchLoading
 	m.tlsLoading = true
 	return m, m.tlsFetchCmd()
@@ -73,6 +84,7 @@ func (m *Model) refreshTLSDashboard() (tea.Model, tea.Cmd) {
 	if !m.showTLS || m.tlsFetcher == nil {
 		return m, nil
 	}
+	m.tlsGen++
 	m.tlsState = tls.FetchLoading
 	m.tlsLoading = true
 	return m, m.tlsFetchCmd()
@@ -80,11 +92,10 @@ func (m *Model) refreshTLSDashboard() (tea.Model, tea.Cmd) {
 
 func (m *Model) updateTLSKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "?":
-		return m.startCommandPalette()
 	case "esc", "q":
 		m.showTLS = false
 		m.clearTextSelection()
+		m.tlsGen++
 		return m, nil
 	case "ctrl+c":
 		return m.requestQuit()

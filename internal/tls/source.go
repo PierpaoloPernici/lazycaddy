@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,6 +139,7 @@ func (s *FileSource) ListCertificates(ctx context.Context) ([]Certificate, error
 		return nil, err
 	}
 	var out []Certificate
+	foundLock := false
 	err := filepath.WalkDir(s.Dir, func(path string, d os.DirEntry, err error) error {
 		select {
 		case <-ctx.Done():
@@ -145,30 +147,67 @@ func (s *FileSource) ListCertificates(ctx context.Context) ([]Certificate, error
 		default:
 		}
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
-			// Surface a lock marker without reading private material.
 			if d.Name() == ".lock" || strings.HasSuffix(d.Name(), ".lock") {
-				// Record a synthetic locked entry? For now just note
-				// that storage is locked; the caller can surface it.
-				// We do not abort the walk.
+				foundLock = true
 			}
 			return nil
 		}
+		if d.Name() == ".lock" || strings.HasSuffix(d.Name(), ".lock") {
+			foundLock = true
+			return nil
+		}
+		lowerName := strings.ToLower(d.Name())
+		if strings.HasSuffix(lowerName, ".key") {
+			return nil
+		}
 		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".crt" && ext != ".pem" && ext != ".cer" {
+		if ext != ".crt" && ext != ".cer" && ext != ".pem" {
+			return nil
+		}
+		if ext == ".pem" {
+			// Avoid loading an entire private key into memory: peek at
+			// the first 2 KiB and skip if it looks like a private key.
+			// Valid certificates named private.example.com.crt are not
+			// affected because they are .crt, not .pem, and the check is
+			// extension-specific.
+			bHead, err := s.ReadFile(path)
+			if err != nil {
+				if os.IsPermission(err) {
+					out = append(out, Certificate{StoragePath: path, RenewalState: "unknown", OCSPState: "unknown"})
+				}
+				return nil
+			}
+			if len(bHead) > 2048 {
+				bHead = bHead[:2048]
+			}
+			if strings.Contains(string(bHead), "PRIVATE KEY") {
+				return nil
+			}
+			cert := parseCertificate(path, bHead)
+			if foundLock {
+				cert.Locked = true
+			}
+			jsonPath := strings.TrimSuffix(path, ext) + ".json"
+			if jb, err := s.ReadFile(jsonPath); err == nil {
+				enrichFromSidecar(&cert, jb, jsonPath)
+			}
+			out = append(out, cert)
 			return nil
 		}
 		b, err := s.ReadFile(path)
 		if err != nil {
 			if os.IsPermission(err) {
 				out = append(out, Certificate{StoragePath: path, RenewalState: "unknown", OCSPState: "unknown"})
-				return nil
 			}
 			return nil
 		}
 		cert := parseCertificate(path, b)
+		if foundLock {
+			cert.Locked = true
+		}
 		// Try to enrich from sidecar JSON (same base name, .json).
 		jsonPath := strings.TrimSuffix(path, ext) + ".json"
 		if jb, err := s.ReadFile(jsonPath); err == nil {
@@ -178,7 +217,21 @@ func (s *FileSource) ListCertificates(ctx context.Context) ([]Certificate, error
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		if foundLock {
+			return out, fmt.Errorf("%w: %v", ErrStorageLocked, err)
+		}
 		return out, err
+	}
+	if foundLock && len(out) == 0 {
+		return nil, ErrStorageLocked
+	}
+	if foundLock {
+		for i := range out {
+			out[i].Locked = true
+		}
 	}
 	return out, nil
 }

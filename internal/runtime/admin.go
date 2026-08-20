@@ -22,6 +22,10 @@ var (
 	// ErrAdminTimeout is returned when an Admin API request exceeds the
 	// client timeout or the caller's context deadline.
 	ErrAdminTimeout = errors.New("admin API timeout")
+	// ErrAdminNotFound is returned when the Admin API responds with 404:
+	// the endpoint is not exposed by this Caddy build and the caller
+	// should fall back to the static view.
+	ErrAdminNotFound = errors.New("admin API not found")
 	// ErrAdminRejected is returned when the Admin API responds with a
 	// non-2xx status: Caddy refused the posted configuration or the
 	// request was otherwise invalid.
@@ -103,6 +107,34 @@ func (c *AdminClient) Config(ctx context.Context) ([]byte, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, mapAdminErr(err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%w: %s", ErrAdminRejected, adminErrorBody(resp.StatusCode, body))
+	}
+	return body, nil
+}
+
+// Upstreams GETs /reverse_proxy/upstreams (live upstream health) and
+// returns the response body. When the Caddy build does not expose that
+// endpoint (404) it returns ErrAdminNotFound so the caller can fall
+// back to the static view; other non-2xx responses remain
+// ErrAdminRejected. Errors otherwise map exactly like Config.
+func (c *AdminClient) Upstreams(ctx context.Context) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/reverse_proxy/upstreams", nil)
+	if err != nil {
+		return nil, mapAdminErr(err)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, mapAdminErr(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, mapAdminErr(err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", ErrAdminNotFound, adminErrorBody(resp.StatusCode, body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%w: %s", ErrAdminRejected, adminErrorBody(resp.StatusCode, body))

@@ -160,9 +160,11 @@ type editorErrorMsg struct {
 
 // configFetchResultMsg is delivered after a cancellable loaded-config
 // fetch completes. Err is nil on success; Data holds the raw JSON.
+// Gen is the generation token that lets stale results be ignored.
 type configFetchResultMsg struct {
 	Data []byte
 	Err  error
+	Gen  int
 }
 
 // upstreamFetchResultMsg is delivered after a cancellable upstream fetch
@@ -170,12 +172,14 @@ type configFetchResultMsg struct {
 type upstreamFetchResultMsg struct {
 	Upstreams []runtime.Upstream
 	Err       error
+	Gen       int
 }
 
 // tlsFetchResultMsg is delivered after a cancellable TLS fetch completes.
 type tlsFetchResultMsg struct {
 	Certs []tls.Certificate
 	Err   error
+	Gen   int
 }
 
 // deleteValidatedMsg is delivered after the delete candidate (the document
@@ -662,29 +666,35 @@ type Model struct {
 
 	// Runtime dashboard state: each panel tracks its own fetch lifecycle
 	// so a failure in one never blocks the others.
-	showRuntime            bool
-	runtimeViewport        viewport.Model
-	runtimeCursor          int
-	runtimeConfigState     runtime.FetchState
-	runtimeConfigData      []byte
-	runtimeConfigErr       error
-	runtimeConfigAt        time.Time
-	runtimeConfigLoading   bool
-	runtimeUpstreamState   runtime.FetchState
-	runtimeUpstreams       []runtime.Upstream
-	runtimeUpstreamErr     error
-	runtimeUpstreamAt      time.Time
-	runtimeUpstreamLoading bool
+	showRuntime               bool
+	runtimeViewport           viewport.Model
+	runtimeCursor             int
+	runtimeConfigState        runtime.FetchState
+	runtimeConfigData         []byte
+	runtimeConfigErr          error
+	runtimeConfigAt           time.Time
+	runtimeConfigLoading      bool
+	runtimeConfigGen          int
+	runtimeConfigHasFetched   bool
+	runtimeUpstreamState      runtime.FetchState
+	runtimeUpstreams          []runtime.Upstream
+	runtimeUpstreamErr        error
+	runtimeUpstreamAt         time.Time
+	runtimeUpstreamLoading    bool
+	runtimeUpstreamGen        int
+	runtimeUpstreamHasFetched bool
 
 	// TLS dashboard state.
-	showTLS     bool
-	tlsViewport viewport.Model
-	tlsCursor   int
-	tlsState    tls.FetcherState
-	tlsCerts    []tls.Certificate
-	tlsErr      error
-	tlsAt       time.Time
-	tlsLoading  bool
+	showTLS       bool
+	tlsViewport   viewport.Model
+	tlsCursor     int
+	tlsState      tls.FetcherState
+	tlsCerts      []tls.Certificate
+	tlsErr        error
+	tlsAt         time.Time
+	tlsLoading    bool
+	tlsGen        int
+	tlsHasFetched bool
 }
 
 // pendingRollback holds the state of a backup selected for rollback:

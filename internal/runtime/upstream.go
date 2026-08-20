@@ -23,6 +23,19 @@ type Upstream struct {
 	// Caddyfile used no explicit health_check block and the defaults
 	// apply.
 	HealthCheck *HealthCheck
+	// Live holds the current runtime health when the Admin API exposes
+	// it (GET /reverse_proxy/upstreams). Nil when the endpoint is not
+	// available or the Caddy build does not expose it.
+	Live *UpstreamLive
+}
+
+// UpstreamLive is the live runtime state for one upstream as exposed
+// by the Admin API. All fields are observed, not inferred.
+type UpstreamLive struct {
+	Healthy   *bool `json:"healthy"`
+	Fails     *int  `json:"fails"`
+	Active    *int  `json:"active"`
+	Available *bool `json:"available"`
 }
 
 // HealthCheck mirrors the configured health_check block for a
@@ -43,11 +56,13 @@ type HealthCheck struct {
 
 // ParseUpstreams extracts reverse_proxy upstreams from a loaded Caddy
 // JSON config (the body returned by GET /config/). It walks
-// apps.http.servers.*.routes[].handle[] and collects every handler
-// whose handler == "reverse_proxy" or "reverse_proxy/..." and returns
-// its upstreams slice. The function is tolerant: missing apps, servers
-// or routes yield an empty slice, never an error, unless the JSON
-// itself is malformed.
+// apps.http.servers.*.routes recursively (including subroutes) and
+// collects every handler whose handler == "reverse_proxy" or
+// "reverse_proxy/..." and returns its upstreams slice. The function is
+// tolerant: missing apps, servers or routes yield an empty slice, never
+// an error, unless the JSON itself is malformed. Dynamic upstreams
+// (those without a dial, e.g. from an SRV or A/AAAA lookup) are skipped
+// in the static list and surface only through the live endpoint.
 func ParseUpstreams(cfg []byte) ([]Upstream, error) {
 	if len(cfg) == 0 {
 		return nil, nil
@@ -82,54 +97,142 @@ func ParseUpstreams(cfg []byte) ([]Upstream, error) {
 		if err := json.Unmarshal(srvRaw, &srv); err != nil {
 			continue
 		}
-		for ri, routeRaw := range srv.Routes {
-			var route struct {
-				Handle []json.RawMessage `json:"handle"`
+		collectUpstreams(serverName, srv.Routes, 0, &upstreams)
+	}
+	return upstreams, nil
+}
+
+func collectUpstreams(serverName string, routes []json.RawMessage, depth int, out *[]Upstream) {
+	for ri, routeRaw := range routes {
+		var route struct {
+			Handle []json.RawMessage `json:"handle"`
+			Group  string            `json:"group"`
+		}
+		if err := json.Unmarshal(routeRaw, &route); err != nil {
+			continue
+		}
+		for _, hRaw := range route.Handle {
+			var h struct {
+				Handler     string            `json:"handler"`
+				Upstreams   []upstreamEntry   `json:"upstreams"`
+				HealthCheck json.RawMessage   `json:"health_checks"`
+				Routes      []json.RawMessage `json:"routes"`
 			}
-			if err := json.Unmarshal(routeRaw, &route); err != nil {
+			if err := json.Unmarshal(hRaw, &h); err != nil {
 				continue
 			}
-			for _, hRaw := range route.Handle {
-				var h struct {
-					Handler     string          `json:"handler"`
-					Upstreams   []upstreamEntry `json:"upstreams"`
-					HealthCheck json.RawMessage `json:"health_checks"`
-				}
-				if err := json.Unmarshal(hRaw, &h); err != nil {
+			// Recurse into subroutes (e.g. subroute handler) before handling
+			// the current handler's own upstreams.
+			if len(h.Routes) > 0 {
+				collectUpstreams(serverName, h.Routes, depth+1, out)
+			}
+			if h.Handler != "reverse_proxy" && h.Handler != "reverse_proxy/1" {
+				if len(h.Handler) < 13 || h.Handler[:13] != "reverse_proxy" {
 					continue
 				}
-				if h.Handler != "reverse_proxy" && h.Handler != "reverse_proxy/1" {
-					// Caddy's adapted JSON sometimes prefixes the handler
-					// with the module path; be permissive.
-					if len(h.Handler) < 13 || h.Handler[:13] != "reverse_proxy" {
-						continue
-					}
+			}
+			var hc *HealthCheck
+			if len(h.HealthCheck) > 0 && string(h.HealthCheck) != "null" {
+				var tmp HealthCheck
+				if err := json.Unmarshal(h.HealthCheck, &tmp); err == nil {
+					tmp.Raw = h.HealthCheck
+					hc = &tmp
+				} else {
+					hc = &HealthCheck{Raw: h.HealthCheck}
 				}
-				var hc *HealthCheck
-				if len(h.HealthCheck) > 0 && string(h.HealthCheck) != "null" {
-					var tmp HealthCheck
-					if err := json.Unmarshal(h.HealthCheck, &tmp); err == nil {
-						tmp.Raw = h.HealthCheck
-						hc = &tmp
-					} else {
-						hc = &HealthCheck{Raw: h.HealthCheck}
-					}
+			}
+			for _, u := range h.Upstreams {
+				if u.Dial == "" {
+					continue
 				}
-				for _, u := range h.Upstreams {
-					if u.Dial == "" {
-						continue
-					}
-					upstreams = append(upstreams, Upstream{
-						Address:     u.Dial,
-						Server:      serverName,
-						RouteIndex:  ri,
-						HealthCheck: hc,
-					})
+				*out = append(*out, Upstream{
+					Address:     u.Dial,
+					Server:      serverName,
+					RouteIndex:  ri,
+					HealthCheck: hc,
+				})
+			}
+		}
+	}
+}
+
+// EnrichUpstreamsWithLive merges the live endpoint payload (from GET
+// /reverse_proxy/upstreams) into the static list. The live payload is
+// expected to be a JSON object or array that contains address-keyed
+// entries with healthy/fails/active/available fields. When the payload
+// cannot be understood it is ignored and the static list is returned
+// unchanged so the dashboard stays available.
+func EnrichUpstreamsWithLive(static []Upstream, liveBody []byte) []Upstream {
+	if len(liveBody) == 0 {
+		return static
+	}
+	liveMap := make(map[string]UpstreamLive)
+	var arr []map[string]any
+	if err := json.Unmarshal(liveBody, &arr); err == nil {
+		for _, m := range arr {
+			if addr, ok := m["address"].(string); ok && addr != "" {
+				liveMap[addr] = liveFromMap(m)
+			} else if addr, ok := m["dial"].(string); ok && addr != "" {
+				liveMap[addr] = liveFromMap(m)
+			}
+		}
+	} else {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(liveBody, &obj); err == nil {
+			for _, v := range obj {
+				var m map[string]any
+				if err := json.Unmarshal(v, &m); err != nil {
+					continue
+				}
+				if addr, ok := m["address"].(string); ok && addr != "" {
+					liveMap[addr] = liveFromMap(m)
 				}
 			}
 		}
 	}
-	return upstreams, nil
+	if len(liveMap) == 0 {
+		return static
+	}
+	out := make([]Upstream, len(static))
+	copy(out, static)
+	seen := make(map[string]bool, len(static))
+	for _, u := range static {
+		seen[u.Address] = true
+	}
+	for i, u := range out {
+		if live, ok := liveMap[u.Address]; ok {
+			out[i].Live = &live
+		}
+	}
+	for addr, live := range liveMap {
+		if !seen[addr] {
+			out = append(out, Upstream{Address: addr, Server: "dynamic", RouteIndex: -1, Live: &live})
+		}
+	}
+	return out
+}
+
+func liveFromMap(m map[string]any) UpstreamLive {
+	var l UpstreamLive
+	if v, ok := m["healthy"].(bool); ok {
+		l.Healthy = &v
+	}
+	if v, ok := m["fails"].(float64); ok {
+		n := int(v)
+		l.Fails = &n
+	}
+	if v, ok := m["active"].(float64); ok {
+		n := int(v)
+		l.Active = &n
+	}
+	if v, ok := m["available"].(bool); ok {
+		l.Available = &v
+	}
+	if v, ok := m["num_requests"].(float64); ok && l.Active == nil {
+		n := int(v)
+		l.Active = &n
+	}
+	return l
 }
 
 type upstreamEntry struct {

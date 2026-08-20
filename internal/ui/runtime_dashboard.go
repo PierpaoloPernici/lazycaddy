@@ -18,39 +18,44 @@ import (
 // a dashboard close can cancel the request without blocking the TUI.
 func (m *Model) runtimeConfigFetchCmd() tea.Cmd {
 	fetcher := m.configFetcher
+	gen := m.runtimeConfigGen
 	if fetcher == nil {
 		return func() tea.Msg {
-			return configFetchResultMsg{Err: fmt.Errorf("config fetcher unavailable")}
+			return configFetchResultMsg{Err: fmt.Errorf("config fetcher unavailable"), Gen: gen}
 		}
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		data, err := fetcher.FetchConfig(ctx)
-		return configFetchResultMsg{Data: data, Err: err}
+		return configFetchResultMsg{Data: data, Err: err, Gen: gen}
 	}
 }
 
 func (m *Model) runtimeUpstreamFetchCmd() tea.Cmd {
 	fetcher := m.upstreamFetcher
+	gen := m.runtimeUpstreamGen
 	if fetcher == nil {
 		return func() tea.Msg {
-			return upstreamFetchResultMsg{Err: fmt.Errorf("upstream fetcher unavailable")}
+			return upstreamFetchResultMsg{Err: fmt.Errorf("upstream fetcher unavailable"), Gen: gen}
 		}
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		ups, err := fetcher.FetchUpstreams(ctx)
-		return upstreamFetchResultMsg{Upstreams: ups, Err: err}
+		return upstreamFetchResultMsg{Upstreams: ups, Err: err, Gen: gen}
 	}
 }
 
 func (m *Model) handleConfigFetchResult(msg configFetchResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Gen != m.runtimeConfigGen {
+		return m, nil
+	}
 	m.runtimeConfigLoading = false
 	m.runtimeConfigAt = time.Now()
 	if msg.Err != nil {
-		if m.runtimeConfigState == runtime.FetchAvailable {
+		if m.runtimeConfigHasFetched {
 			m.runtimeConfigState = runtime.FetchStale
 		} else {
 			m.runtimeConfigState = runtime.FetchUnavailable
@@ -61,16 +66,20 @@ func (m *Model) handleConfigFetchResult(msg configFetchResultMsg) (tea.Model, te
 		m.runtimeConfigState = runtime.FetchAvailable
 		m.runtimeConfigData = msg.Data
 		m.runtimeConfigErr = nil
+		m.runtimeConfigHasFetched = true
 	}
 	m.syncRuntimeViewport(m.width, m.paneHeight())
 	return m, nil
 }
 
 func (m *Model) handleUpstreamFetchResult(msg upstreamFetchResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Gen != m.runtimeUpstreamGen {
+		return m, nil
+	}
 	m.runtimeUpstreamLoading = false
 	m.runtimeUpstreamAt = time.Now()
 	if msg.Err != nil {
-		if m.runtimeUpstreamState == runtime.FetchAvailable {
+		if m.runtimeUpstreamHasFetched {
 			m.runtimeUpstreamState = runtime.FetchStale
 		} else {
 			m.runtimeUpstreamState = runtime.FetchUnavailable
@@ -81,6 +90,7 @@ func (m *Model) handleUpstreamFetchResult(msg upstreamFetchResultMsg) (tea.Model
 		m.runtimeUpstreamState = runtime.FetchAvailable
 		m.runtimeUpstreams = msg.Upstreams
 		m.runtimeUpstreamErr = nil
+		m.runtimeUpstreamHasFetched = true
 	}
 	m.syncRuntimeViewport(m.width, m.paneHeight())
 	return m, nil
@@ -95,10 +105,15 @@ func (m *Model) toggleRuntimeDashboard() (tea.Model, tea.Cmd) {
 	if m.showRuntime {
 		m.showRuntime = false
 		m.clearTextSelection()
+		m.runtimeConfigGen++
+		m.runtimeUpstreamGen++
 		return m, nil
 	}
 	m.clearTextSelection()
 	m.showRuntime = true
+	if m.showTLS {
+		m.tlsGen++
+	}
 	m.showTLS = false
 	m.showLogs = false
 	m.runtimeCursor = 0
@@ -106,6 +121,7 @@ func (m *Model) toggleRuntimeDashboard() (tea.Model, tea.Cmd) {
 
 	var cmds []tea.Cmd
 	if m.configFetcher != nil {
+		m.runtimeConfigGen++
 		m.runtimeConfigState = runtime.FetchLoading
 		m.runtimeConfigLoading = true
 		cmds = append(cmds, m.runtimeConfigFetchCmd())
@@ -114,6 +130,7 @@ func (m *Model) toggleRuntimeDashboard() (tea.Model, tea.Cmd) {
 		m.runtimeConfigErr = fmt.Errorf("Admin API not configured")
 	}
 	if m.upstreamFetcher != nil {
+		m.runtimeUpstreamGen++
 		m.runtimeUpstreamState = runtime.FetchLoading
 		m.runtimeUpstreamLoading = true
 		cmds = append(cmds, m.runtimeUpstreamFetchCmd())
@@ -131,6 +148,8 @@ func (m *Model) refreshRuntimeDashboard() (tea.Model, tea.Cmd) {
 	if !m.showRuntime {
 		return m, nil
 	}
+	m.runtimeConfigGen++
+	m.runtimeUpstreamGen++
 	m.runtimeConfigState = runtime.FetchLoading
 	m.runtimeConfigLoading = true
 	m.runtimeUpstreamState = runtime.FetchLoading
@@ -140,11 +159,11 @@ func (m *Model) refreshRuntimeDashboard() (tea.Model, tea.Cmd) {
 
 func (m *Model) updateRuntimeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "?":
-		return m.startCommandPalette()
 	case "esc", "q":
 		m.showRuntime = false
 		m.clearTextSelection()
+		m.runtimeConfigGen++
+		m.runtimeUpstreamGen++
 		return m, nil
 	case "ctrl+c":
 		return m.requestQuit()
@@ -188,8 +207,13 @@ func (m *Model) revealRuntimeCursor() {
 }
 
 func (m *Model) runtimeLineCount() int {
-	// Approximation: count lines in the rendered viewport content.
-	return strings.Count(m.runtimeViewport.View(), "\n") + 1
+	// Count the selectable upstream rows, not the visible viewport
+	// lines. The viewport View() only returns the visible slice, so
+	// counting it would make deep lists unreachable.
+	if len(m.runtimeUpstreams) == 0 {
+		return 1
+	}
+	return len(m.runtimeUpstreams)
 }
 
 func (m *Model) runtimeView(width, height int) string {
@@ -322,6 +346,10 @@ func (m *Model) syncRuntimeViewport(width, height int) {
 				}
 				b.WriteString(line)
 				b.WriteString("\n")
+				if u.Live != nil {
+					b.WriteString(dimStyle.Render("  live: " + liveSummary(u.Live)))
+					b.WriteString("\n")
+				}
 				if u.HealthCheck != nil {
 					b.WriteString(dimStyle.Render("  health: " + healthCheckSummary(u.HealthCheck)))
 					b.WriteString("\n")
@@ -330,7 +358,7 @@ func (m *Model) syncRuntimeViewport(width, height int) {
 					b.WriteString("\n")
 				}
 			}
-			b.WriteString(dimStyle.Render("upstream health is observed config state, not a network probe"))
+			b.WriteString(dimStyle.Render("upstream health is observed runtime state (fails/active/healthy), not a generic ping"))
 		}
 	case runtime.FetchStale:
 		b.WriteString(errorStyle.Render("stale — " + m.runtimeUpstreamErr.Error()))
@@ -406,4 +434,35 @@ func healthCheckSummary(hc *runtime.HealthCheck) string {
 		return "custom (see raw JSON)"
 	}
 	return strings.Join(parts, "+") + " health checks"
+}
+
+func liveSummary(l *runtime.UpstreamLive) string {
+	if l == nil {
+		return "—"
+	}
+	parts := []string{}
+	if l.Healthy != nil {
+		if *l.Healthy {
+			parts = append(parts, "healthy")
+		} else {
+			parts = append(parts, "unhealthy")
+		}
+	}
+	if l.Fails != nil {
+		parts = append(parts, fmt.Sprintf("fails=%d", *l.Fails))
+	}
+	if l.Active != nil {
+		parts = append(parts, fmt.Sprintf("active=%d", *l.Active))
+	}
+	if l.Available != nil {
+		if *l.Available {
+			parts = append(parts, "available")
+		} else {
+			parts = append(parts, "unavailable")
+		}
+	}
+	if len(parts) == 0 {
+		return "live"
+	}
+	return strings.Join(parts, " ")
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -126,7 +127,11 @@ func NewAdminUpstreamFetcher(client *AdminClient) *AdminUpstreamFetcher {
 	return &AdminUpstreamFetcher{client: client}
 }
 
-// FetchUpstreams implements UpstreamFetcher.
+// FetchUpstreams implements UpstreamFetcher. It first parses the
+// static upstreams from GET /config/ and then, when the Admin API
+// exposes it, enriches them with live health (fails, active, healthy,
+// available) from GET /reverse_proxy/upstreams. A missing live
+// endpoint is not a failure: the static view stays available.
 func (f *AdminUpstreamFetcher) FetchUpstreams(ctx context.Context) ([]Upstream, error) {
 	if f.client == nil {
 		return nil, ErrAdminUnreachable
@@ -135,5 +140,16 @@ func (f *AdminUpstreamFetcher) FetchUpstreams(ctx context.Context) ([]Upstream, 
 	if err != nil {
 		return nil, err
 	}
-	return ParseUpstreams(cfg)
+	static, err := ParseUpstreams(cfg)
+	if err != nil {
+		return nil, err
+	}
+	live, err := f.client.Upstreams(ctx)
+	if err != nil {
+		if errors.Is(err, ErrAdminNotFound) {
+			return static, nil
+		}
+		return nil, err
+	}
+	return EnrichUpstreamsWithLive(static, live), nil
 }
