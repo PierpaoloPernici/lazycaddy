@@ -115,7 +115,20 @@ missing changelog classification.
 - The pull request body must include motivation, user-visible impact, safety
   implications, verification commands/results and any release-note or
   migration detail needed by a maintainer. If the change is intentionally
-  internal, say why it should be excluded from release notes.
+  internal, say why it should be excluded from release notes. Use this
+  template (as in PR #49 and #52):
+
+  ```markdown
+  ## Motivation
+  ## User-visible impact
+  ## Safety
+  ## Verification
+  ## Release note
+  ```
+  Missing sections or a short body like "Implements the handover..."
+  will fail review even if `make check` is green — the body is part of
+  the release-ready contract and is validated by the `enhancement`/`bug`
+  label check.
 - If a pull request's scope or user impact changes during review, update its
   title, labels and description before merge. The same rule applies to direct
   commits on `main`; direct push permission does not relax release hygiene.
