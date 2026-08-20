@@ -41,18 +41,23 @@ type Entry struct {
 	// source. It is nil when none of the curated fields were present and
 	// is left untouched by ParseEntry and the file Tailer.
 	Metadata map[string]string
+	// Duration is the request handling time in seconds for access logs;
+	// -1 when absent so a zero-duration is distinguishable from "no
+	// duration".
+	Duration float64
 }
 
 // jsonEntry is the tolerant decode target for one log line. Pointer fields
 // distinguish an absent key from an explicit zero value; everything else is
 // ignored.
 type jsonEntry struct {
-	TS      json.RawMessage `json:"ts"`
-	Level   string          `json:"level"`
-	Logger  string          `json:"logger"`
-	Msg     string          `json:"msg"`
-	Status  *int            `json:"status"`
-	Request jsonRequest     `json:"request"`
+	TS       json.RawMessage `json:"ts"`
+	Level    string          `json:"level"`
+	Logger   string          `json:"logger"`
+	Msg      string          `json:"msg"`
+	Status   *int            `json:"status"`
+	Duration *float64        `json:"duration"`
+	Request  jsonRequest     `json:"request"`
 }
 
 type jsonRequest struct {
@@ -92,9 +97,13 @@ func ParseEntry(line []byte) (Entry, error) {
 		URI:       je.Request.URI,
 		Host:      je.Request.Host,
 		Timestamp: parseTS(je.TS),
+		Duration:  -1,
 	}
 	if je.Status != nil {
 		e.Status = *je.Status
+	}
+	if je.Duration != nil {
+		e.Duration = *je.Duration
 	}
 	return e, nil
 }
