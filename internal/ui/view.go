@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -390,11 +391,10 @@ func (m *Model) sourcePane(srcW, paneH int) string {
 	if contentW < 1 {
 		contentW = 1
 	}
-	// Keep the title on one row at narrow widths (e.g. 80 columns) so
-	// the two-pane height stays bounded. The stored m.sourceTitle stays
-	// full for tests and logic; only the rendered view is truncated.
-	title := truncateToWidth(m.sourceTitle, contentW)
-	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(title) + "\n" + content)
+	// New header: two visual groups, left (identity) neutral, right
+	// (state/actions) with differentiated colors, kept on one row.
+	title := m.renderSourceHeader(contentW)
+	return paneStyle.Width(srcW).Height(paneH).Render(title + "\n" + content)
 }
 
 // syncSource keeps the source viewport sized to the pane and refreshes
@@ -796,6 +796,8 @@ func numberedSource(src []byte, selStartLine, selEndLine int, findings []caddyfi
 // outcome has errors on this document, the error count is appended as well
 // (e.g. "; 2 caddy error(s)"). The summary lives in the title so transient
 // status messages never overwrite it.
+// Kept for tests that assert the old title contract; the rendered header
+// now uses renderSourceHeader for the new 2-group visual hierarchy.
 func (m *Model) sourceTitleWithFindings(base string, doc *caddyfile.Document) string {
 	if doc == nil || doc.Err != nil || !m.inlineFindingsReady(doc) {
 		if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
@@ -806,12 +808,113 @@ func (m *Model) sourceTitleWithFindings(base string, doc *caddyfile.Document) st
 	if len(m.inlineFindings) == 0 {
 		base += " · advisory: clean"
 	} else {
-		base += fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
+		if len(m.inlineFindings) == 1 {
+			base += " · 1 finding · [i] review"
+		} else {
+			base += fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
+		}
 	}
 	if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
-		base += fmt.Sprintf(" · %d caddy error(s)", n)
+		if n == 1 {
+			base += " · 1 caddy error"
+		} else {
+			base += fmt.Sprintf(" · %d caddy errors", n)
+		}
 	}
 	return base
+}
+
+// renderSourceHeader builds the new 2-group header for the source pane:
+// left (identity)  Caddyfile › site  (dim, neutral) and right
+// (state/actions)  72-74 · ⚠ 1 · [i] review  (range muted, finding count
+// warning, review accent). It is kept on one row and truncated to
+// contentW so the two-pane layout stays bounded.
+func (m *Model) renderSourceHeader(contentW int) string {
+	selected := m.selectedItem()
+	var doc *caddyfile.Document
+	if selected != nil && selected.doc != nil {
+		doc = selected.doc
+	} else if m.sourceDoc != nil {
+		doc = m.sourceDoc
+	}
+	// Left: breadcrumb  Caddyfile › site
+	left := ""
+	if doc != nil {
+		left = filepath.Base(doc.Path)
+		if selected != nil && selected.hasNode {
+			left += " › " + selected.node.Name
+			if selected.node.Args != "" {
+				// Keep the breadcrumb short: only the site address, not full args
+				if selected.node.Kind == caddyfile.KindSite {
+					left = filepath.Base(doc.Path) + " › " + selected.node.Name
+				}
+			}
+		} else if selected != nil && selected.comment != nil {
+			left += " › comments"
+		}
+	} else {
+		left = "Caddyfile"
+	}
+	// Right: range · finding · review · caddy error · fold
+	var rightParts []string
+	if selected != nil && (selected.hasNode || selected.comment != nil) {
+		var s, e int
+		if selected.hasNode {
+			s = selected.node.Range.StartLine
+			e = selected.node.Range.EndLine
+		} else {
+			s = selected.comment.StartLine
+			e = selected.comment.EndLine
+		}
+		if s > 0 && e > 0 {
+			if s == e {
+				rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("%d", s)))
+			} else {
+				rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("%d-%d", s, e)))
+			}
+		}
+	}
+	if doc != nil && m.inlineFindingsReady(doc) && len(m.inlineFindings) > 0 {
+		n := len(m.inlineFindings)
+		label := fmt.Sprintf("⚠ %d", n)
+		// Finding count in warning (yellow/orange), not in the generic dim
+		rightParts = append(rightParts, lipgloss.NewStyle().Foreground(warningColor).Render(label))
+		rightParts = append(rightParts, lipgloss.NewStyle().Foreground(accentColor).Render("[i] review"))
+	}
+	if doc != nil {
+		if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
+			label := fmt.Sprintf("E %d", n)
+			rightParts = append(rightParts, lipgloss.NewStyle().Foreground(errorColor).Render(label))
+		}
+	}
+	if doc != nil {
+		if n := m.foldCount(doc); n >= 2 {
+			rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("▸%d", n)))
+		}
+	}
+	leftStyled := dimStyle.Render(left)
+	rightStyled := strings.Join(rightParts, dimStyle.Render(" · "))
+	// If the right part is empty, just show the left
+	if len(rightParts) == 0 {
+		return truncateToWidth(leftStyled, contentW)
+	}
+	// Truncate left to make room for the right, keeping the right fully visible
+	rightW := lipgloss.Width(rightStyled)
+	leftW := lipgloss.Width(leftStyled)
+	if leftW+3+rightW > contentW {
+		avail := contentW - 3 - rightW
+		if avail < 4 {
+			avail = 4
+		}
+		leftStyled = truncateToWidth(leftStyled, avail)
+		leftW = lipgloss.Width(leftStyled)
+	}
+	pad := contentW - leftW - rightW
+	if pad < 3 {
+		pad = 3
+	}
+	// Use the dim separator " · " already between parts, but between left and right use padding
+	return leftStyled + strings.Repeat(" ", pad) + rightStyled
 }
 
 // inlineFindingsReady reports whether the cached findings belong to the given
