@@ -159,6 +159,14 @@ func (m *Model) refreshRuntimeDashboard() (tea.Model, tea.Cmd) {
 
 func (m *Model) updateRuntimeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "I":
+		m.showRuntime = false
+		m.clearTextSelection()
+		m.runtimeConfigGen++
+		m.runtimeUpstreamGen++
+		return m, nil
+	case "T":
+		return m.toggleTLSDashboard()
 	case "esc", "q":
 		m.showRuntime = false
 		m.clearTextSelection()
