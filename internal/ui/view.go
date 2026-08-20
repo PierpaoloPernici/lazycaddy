@@ -386,7 +386,15 @@ func (m *Model) sourcePane(srcW, paneH int) string {
 	if spans, ok := m.selectionSpans(textPaneSource); ok {
 		content = renderSelectionOverlay(content, m.viewport.Width, m.viewport.Height, spans)
 	}
-	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(m.sourceTitle) + "\n" + content)
+	contentW := srcW - 4
+	if contentW < 1 {
+		contentW = 1
+	}
+	// Keep the title on one row at narrow widths (e.g. 80 columns) so
+	// the two-pane height stays bounded. The stored m.sourceTitle stays
+	// full for tests and logic; only the rendered view is truncated.
+	title := truncateToWidth(m.sourceTitle, contentW)
+	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(title) + "\n" + content)
 }
 
 // syncSource keeps the source viewport sized to the pane and refreshes
