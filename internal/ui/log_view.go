@@ -20,6 +20,8 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
+	case "?":
+		return m.startCommandPalette()
 	case "y":
 		return m.startCopy()
 	case "F":
@@ -115,6 +117,8 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // scroll the wrapped JSON; q/ctrl+c quits.
 func (m *Model) updateLogDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		return m.startCommandPalette()
 	case "esc", "left":
 		m.logDetailOpen = false
 	case "q", "ctrl+c":

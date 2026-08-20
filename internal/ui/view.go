@@ -678,7 +678,7 @@ func (m *Model) footer(width int) string {
 	case m.showTLS:
 		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close"
 	case m.showLogs:
-		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · F filter · c clear filter · p pause/resume · Esc close"
+		keys = "↑/↓ move · PgUp/PgDown · Enter detail · Esc close · ? commands"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:

@@ -140,6 +140,8 @@ func (m *Model) refreshRuntimeDashboard() (tea.Model, tea.Cmd) {
 
 func (m *Model) updateRuntimeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		return m.startCommandPalette()
 	case "esc", "q":
 		m.showRuntime = false
 		m.clearTextSelection()

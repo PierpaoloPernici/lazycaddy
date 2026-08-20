@@ -80,6 +80,8 @@ func (m *Model) refreshTLSDashboard() (tea.Model, tea.Cmd) {
 
 func (m *Model) updateTLSKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		return m.startCommandPalette()
 	case "esc", "q":
 		m.showTLS = false
 		m.clearTextSelection()
