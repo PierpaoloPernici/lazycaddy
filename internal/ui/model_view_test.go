@@ -467,6 +467,25 @@ func TestModelLayoutFitsWindowWidth(t *testing.T) {
 	}
 }
 
+func TestSourceRebuildsAfterInitialWindowSize(t *testing.T) {
+	longLine := "\trespond " + strings.Repeat("x", 100) + " END_MARKER"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n" + longLine + "\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+
+	// The first render uses View's 80-column fallback before the terminal
+	// sends its real size, so the marker is outside the initial source width.
+	if strings.Contains(stripANSI(m.View()), "END_MARKER") {
+		t.Fatal("initial fallback render unexpectedly showed the full source line")
+	}
+
+	m = resize(m, 240, 24)
+	if !strings.Contains(stripANSI(m.View()), "END_MARKER") {
+		t.Fatal("source stayed truncated after the real window size arrived")
+	}
+}
+
 func TestModelManualScrollNotOverriddenByReveal(t *testing.T) {
 	var src strings.Builder
 	src.WriteString("example.test {\n\trespond ok\n}\n")

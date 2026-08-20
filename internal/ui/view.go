@@ -411,6 +411,11 @@ func (m *Model) syncSource(srcW, paneH int) {
 	if contentH < 1 {
 		contentH = 1
 	}
+	// View can render once with the 80-column fallback before Bubble Tea
+	// delivers the real WindowSizeMsg. The source content is truncated to
+	// contentW when it is built, so a later width change must rebuild it or
+	// the initially truncated lines remain cached until the next selection.
+	widthChanged := m.viewport.Width != contentW
 	m.viewport.Width = contentW
 	m.viewport.Height = contentH
 
@@ -489,12 +494,15 @@ func (m *Model) syncSource(srcW, paneH int) {
 		title += fmt.Sprintf(" · %d fold(s)", n)
 	}
 
-	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged ||
+	contentChanged := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged ||
 		m.foldVersion != prevFoldVer
+	needsContent := widthChanged || contentChanged
 	if needsContent {
 		// The source pane is about to render different content: any text
 		// selection anchored in the previous document or node is stale.
-		if m.textSel.pane == textPaneSource {
+		// A width-only rebuild preserves the same source bytes and must keep
+		// the user's text selection anchored across a terminal resize.
+		if contentChanged && m.textSel.pane == textPaneSource {
 			m.clearTextSelection()
 		}
 		m.lastFoldLayoutVersion = m.foldVersion
