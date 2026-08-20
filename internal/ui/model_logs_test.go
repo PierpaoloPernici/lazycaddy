@@ -365,7 +365,7 @@ func TestModelLogView_Footer(t *testing.T) {
 	// Use a wider terminal so the extended footer (including filter hints) fits.
 	m = resize(m, 180, 30)
 	view := stripANSI(m.View())
-	for _, want := range []string{"Enter/→ detail", "f follow", "F filter", "c clear", "p pause/resume", "Esc close", "q quit"} {
+	for _, want := range []string{"Enter/→ detail", "f follow", "F filter", "c clear", "p pause/resume", "Esc close"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
 		}

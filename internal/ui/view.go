@@ -618,15 +618,15 @@ func (m *Model) footer(width int) string {
 	case m.showDiagnostics:
 		keys = "↑/↓ navigate · Enter/+ or → detail · Esc/← close"
 	case m.logDetailOpen:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back · q quit"
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
 	case m.showLogFilter:
 		keys = "type filter · Enter apply · Esc cancel · Ctrl-U clear"
 	case m.showRuntime:
-		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close"
 	case m.showTLS:
-		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close"
 	case m.showLogs:
-		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · F filter · c clear filter · p pause/resume · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · F filter · c clear filter · p pause/resume · Esc close"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:
