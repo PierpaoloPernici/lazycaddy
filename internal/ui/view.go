@@ -877,9 +877,8 @@ func (m *Model) renderSourceHeader(contentW int) string {
 	if doc != nil && m.inlineFindingsReady(doc) && len(m.inlineFindings) > 0 {
 		n := len(m.inlineFindings)
 		label := fmt.Sprintf("⚠ %d", n)
-		// Finding count in warning (yellow/orange), not in the generic dim
-		rightParts = append(rightParts, lipgloss.NewStyle().Foreground(warningColor).Render(label))
-		rightParts = append(rightParts, lipgloss.NewStyle().Foreground(accentColor).Render("[i] review"))
+		rightParts = append(rightParts, lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render(label))
+		rightParts = append(rightParts, keyHintStyle.Render("[i] review"))
 	}
 	if doc != nil {
 		if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
