@@ -824,11 +824,11 @@ func TestModelReload_HeaderBadgeStale(t *testing.T) {
 	}
 }
 
-// TestModelReload_HeaderBadgeUnknown verifies that the initial loaded
-// state is shown as UNKNOWN when reloading is possible, and stays hidden
+// TestModelReload_HeaderBadgeNotVerified verifies that the initial loaded
+// state is shown as NOT VERIFIED when reloading is possible, and stays hidden
 // in read-only sessions without a reloader (where the state has no
 // meaning).
-func TestModelReload_HeaderBadgeUnknown(t *testing.T) {
+func TestModelReload_HeaderBadgeNotVerified(t *testing.T) {
 	src := "example.test {\n}\n"
 	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
 		"config/Caddyfile": src,
@@ -837,14 +837,26 @@ func TestModelReload_HeaderBadgeUnknown(t *testing.T) {
 	reloader := &fakeReloader{}
 	m := newLoadedModel(t, fakeLoader{state: state}, formatter, reloader)
 	m = resize(m, 120, 30)
-	if !strings.Contains(m.View(), "UNKNOWN") {
-		t.Errorf("View missing UNKNOWN badge in the initial state:\n%s", m.View())
+	if !strings.Contains(m.View(), "NOT VERIFIED") {
+		t.Errorf("View missing NOT VERIFIED badge in the initial state:\n%s", m.View())
+	}
+	// The longer NOT VERIFIED badge must still fit at 80 and even 40 columns.
+	for _, w := range []int{80, 40} {
+		m2 := resize(m, w, 24)
+		view := m2.View()
+		if !strings.Contains(view, "NOT VERIFIED") {
+			t.Errorf("width %d: NOT VERIFIED badge missing, view:\n%s", w, view)
+		}
+		lines := strings.Split(strings.TrimRight(stripANSI(view), "\n"), "\n")
+		if len(lines) != 24 {
+			t.Errorf("width %d: view height %d != 24", w, len(lines))
+		}
 	}
 	// Without a reloader the badge must not appear at all.
 	m = newLoadedModel(t, fakeLoader{state: state})
 	m = resize(m, 120, 30)
-	if strings.Contains(m.View(), "UNKNOWN") {
-		t.Errorf("View shows UNKNOWN badge without a reloader:\n%s", m.View())
+	if strings.Contains(m.View(), "NOT VERIFIED") {
+		t.Errorf("View shows NOT VERIFIED badge without a reloader:\n%s", m.View())
 	}
 }
 

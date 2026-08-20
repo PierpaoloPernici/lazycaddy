@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -218,7 +219,7 @@ func (m *Model) header(width int) string {
 	// The loaded-state badge sits between the PARSE ERROR marker and the
 	// read/write badge. Explicit text labels carry the state, never color
 	// alone, matching the RO convention. The initial state is shown
-	// as UNKNOWN (nothing proven yet) only when reloading is possible, so
+	// as NOT VERIFIED (nothing proven yet) only when reloading is possible, so
 	// a read-only session without a caddy binary stays quiet.
 	if m.reloading {
 		right = reloadingBadge.Render(" RELOADING ") + right
@@ -229,7 +230,7 @@ func (m *Model) header(width int) string {
 	} else if m.loaded == loadedUnreachable {
 		right = unreachableBadge.Render(" UNREACHABLE ") + right
 	} else if m.reloader != nil {
-		right = unknownBadge.Render(" UNKNOWN ") + right
+		right = unknownBadge.Render(" NOT VERIFIED ") + right
 	}
 	// The unsaved badge is the leftmost marker: it is the most immediate
 	// state and is an explicit text badge, never color alone.
@@ -390,11 +391,10 @@ func (m *Model) sourcePane(srcW, paneH int) string {
 	if contentW < 1 {
 		contentW = 1
 	}
-	// Keep the title on one row at narrow widths (e.g. 80 columns) so
-	// the two-pane height stays bounded. The stored m.sourceTitle stays
-	// full for tests and logic; only the rendered view is truncated.
-	title := truncateToWidth(m.sourceTitle, contentW)
-	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(title) + "\n" + content)
+	// New header: two visual groups, left (identity) neutral, right
+	// (state/actions) with differentiated colors, kept on one row.
+	title := m.renderSourceHeader(contentW)
+	return paneStyle.Width(srcW).Height(paneH).Render(title + "\n" + content)
 }
 
 // syncSource keeps the source viewport sized to the pane and refreshes
@@ -411,6 +411,11 @@ func (m *Model) syncSource(srcW, paneH int) {
 	if contentH < 1 {
 		contentH = 1
 	}
+	// View can render once with the 80-column fallback before Bubble Tea
+	// delivers the real WindowSizeMsg. The source content is truncated to
+	// contentW when it is built, so a later width change must rebuild it or
+	// the initially truncated lines remain cached until the next selection.
+	widthChanged := m.viewport.Width != contentW
 	m.viewport.Width = contentW
 	m.viewport.Height = contentH
 
@@ -489,12 +494,15 @@ func (m *Model) syncSource(srcW, paneH int) {
 		title += fmt.Sprintf(" · %d fold(s)", n)
 	}
 
-	needsContent := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged ||
+	contentChanged := refresh || doc != m.sourceDoc || key != m.lastSel || diagsChanged ||
 		m.foldVersion != prevFoldVer
+	needsContent := widthChanged || contentChanged
 	if needsContent {
 		// The source pane is about to render different content: any text
 		// selection anchored in the previous document or node is stale.
-		if m.textSel.pane == textPaneSource {
+		// A width-only rebuild preserves the same source bytes and must keep
+		// the user's text selection anchored across a terminal resize.
+		if contentChanged && m.textSel.pane == textPaneSource {
 			m.clearTextSelection()
 		}
 		m.lastFoldLayoutVersion = m.foldVersion
@@ -796,6 +804,8 @@ func numberedSource(src []byte, selStartLine, selEndLine int, findings []caddyfi
 // outcome has errors on this document, the error count is appended as well
 // (e.g. "; 2 caddy error(s)"). The summary lives in the title so transient
 // status messages never overwrite it.
+// Kept for tests that assert the old title contract; the rendered header
+// now uses renderSourceHeader for the new 2-group visual hierarchy.
 func (m *Model) sourceTitleWithFindings(base string, doc *caddyfile.Document) string {
 	if doc == nil || doc.Err != nil || !m.inlineFindingsReady(doc) {
 		if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
@@ -806,12 +816,112 @@ func (m *Model) sourceTitleWithFindings(base string, doc *caddyfile.Document) st
 	if len(m.inlineFindings) == 0 {
 		base += " · advisory: clean"
 	} else {
-		base += fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
+		if len(m.inlineFindings) == 1 {
+			base += " · 1 finding · [i] review"
+		} else {
+			base += fmt.Sprintf(" · %d findings · [i] review", len(m.inlineFindings))
+		}
 	}
 	if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
-		base += fmt.Sprintf(" · %d caddy error(s)", n)
+		if n == 1 {
+			base += " · 1 caddy error"
+		} else {
+			base += fmt.Sprintf(" · %d caddy errors", n)
+		}
 	}
 	return base
+}
+
+// renderSourceHeader builds the new 2-group header for the source pane:
+// left (identity)  Caddyfile › site  (dim, neutral) and right
+// (state/actions)  72-74 · ⚠ 1 · [i] review  (range muted, finding count
+// warning, review accent). It is kept on one row and truncated to
+// contentW so the two-pane layout stays bounded.
+func (m *Model) renderSourceHeader(contentW int) string {
+	selected := m.selectedItem()
+	var doc *caddyfile.Document
+	if selected != nil && selected.doc != nil {
+		doc = selected.doc
+	} else if m.sourceDoc != nil {
+		doc = m.sourceDoc
+	}
+	// Left: breadcrumb  Caddyfile › site
+	left := ""
+	if doc != nil {
+		left = filepath.Base(doc.Path)
+		if selected != nil && selected.hasNode {
+			left += " › " + selected.node.Name
+			if selected.node.Args != "" {
+				// Keep the breadcrumb short: only the site address, not full args
+				if selected.node.Kind == caddyfile.KindSite {
+					left = filepath.Base(doc.Path) + " › " + selected.node.Name
+				}
+			}
+		} else if selected != nil && selected.comment != nil {
+			left += " › comments"
+		}
+	} else {
+		left = "Caddyfile"
+	}
+	// Right: range · finding · review · caddy error · fold
+	var rightParts []string
+	if selected != nil && (selected.hasNode || selected.comment != nil) {
+		var s, e int
+		if selected.hasNode {
+			s = selected.node.Range.StartLine
+			e = selected.node.Range.EndLine
+		} else {
+			s = selected.comment.StartLine
+			e = selected.comment.EndLine
+		}
+		if s > 0 && e > 0 {
+			if s == e {
+				rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("%d", s)))
+			} else {
+				rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("%d-%d", s, e)))
+			}
+		}
+	}
+	if doc != nil && m.inlineFindingsReady(doc) && len(m.inlineFindings) > 0 {
+		n := len(m.inlineFindings)
+		label := fmt.Sprintf("⚠ %d", n)
+		rightParts = append(rightParts, lipgloss.NewStyle().Foreground(warningColor).Bold(true).Render(label))
+		rightParts = append(rightParts, keyHintStyle.Render("[i] review"))
+	}
+	if doc != nil {
+		if n := len(m.caddyDiagsForDoc(doc)); n > 0 {
+			label := fmt.Sprintf("E %d", n)
+			rightParts = append(rightParts, lipgloss.NewStyle().Foreground(errorColor).Render(label))
+		}
+	}
+	if doc != nil {
+		if n := m.foldCount(doc); n >= 2 {
+			rightParts = append(rightParts, dimStyle.Render(fmt.Sprintf("▸%d", n)))
+		}
+	}
+	leftStyled := dimStyle.Render(left)
+	rightStyled := strings.Join(rightParts, dimStyle.Render(" · "))
+	// If the right part is empty, just show the left
+	if len(rightParts) == 0 {
+		return truncateToWidth(leftStyled, contentW)
+	}
+	// Truncate left to make room for the right, keeping the right fully visible
+	rightW := lipgloss.Width(rightStyled)
+	leftW := lipgloss.Width(leftStyled)
+	if leftW+3+rightW > contentW {
+		avail := contentW - 3 - rightW
+		if avail < 4 {
+			avail = 4
+		}
+		leftStyled = truncateToWidth(leftStyled, avail)
+		leftW = lipgloss.Width(leftStyled)
+	}
+	pad := contentW - leftW - rightW
+	if pad < 3 {
+		pad = 3
+	}
+	// Use the dim separator " · " already between parts, but between left and right use padding
+	return leftStyled + strings.Repeat(" ", pad) + rightStyled
 }
 
 // inlineFindingsReady reports whether the cached findings belong to the given

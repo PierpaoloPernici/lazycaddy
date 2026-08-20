@@ -147,16 +147,16 @@ func TestModelNavigation(t *testing.T) {
 	if m.cursor != 2 {
 		t.Errorf("cursor = %d, want 2 after two moves", m.cursor)
 	}
-	// The selected site is reflected in the source pane header.
-	if !strings.Contains(m.View(), "b.example.test (lines 4-6)") {
-		t.Errorf("source pane header missing b.example.test selection")
+	// The selected site is reflected in the source pane header (new 2-group hierarchy).
+	if !strings.Contains(m.View(), "b.example.test") || !strings.Contains(m.View(), "4-6") {
+		t.Errorf("source pane header missing b.example.test selection, got:\n%s", m.View())
 	}
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
 	if m.cursor != 1 {
 		t.Errorf("cursor = %d, want 1 after up", m.cursor)
 	}
-	if !strings.Contains(m.View(), "a.example.test (lines 1-3)") {
-		t.Errorf("source pane header missing a.example.test selection")
+	if !strings.Contains(m.View(), "a.example.test") || !strings.Contains(m.View(), "1-3") {
+		t.Errorf("source pane header missing a.example.test selection, got:\n%s", m.View())
 	}
 	// Moving past the ends clamps.
 	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
@@ -464,6 +464,25 @@ func TestModelLayoutFitsWindowWidth(t *testing.T) {
 	// the tree pane's border (i.e. the two panes fit side by side).
 	if !strings.Contains(view, "╮") || !strings.Contains(view, "╯") {
 		t.Errorf("missing pane borders in the rendered view")
+	}
+}
+
+func TestSourceRebuildsAfterInitialWindowSize(t *testing.T) {
+	longLine := "\trespond " + strings.Repeat("x", 100) + " END_MARKER"
+	state := stateFor(t, "config/Caddyfile", fsReader(map[string]string{
+		"config/Caddyfile": "example.test {\n" + longLine + "\n}\n",
+	}))
+	m := newLoadedModel(t, fakeLoader{state: state})
+
+	// The first render uses View's 80-column fallback before the terminal
+	// sends its real size, so the marker is outside the initial source width.
+	if strings.Contains(stripANSI(m.View()), "END_MARKER") {
+		t.Fatal("initial fallback render unexpectedly showed the full source line")
+	}
+
+	m = resize(m, 240, 24)
+	if !strings.Contains(stripANSI(m.View()), "END_MARKER") {
+		t.Fatal("source stayed truncated after the real window size arrived")
 	}
 }
 

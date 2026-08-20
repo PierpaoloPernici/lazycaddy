@@ -39,7 +39,7 @@ func TestCommandPalette_OpensAndFilters(t *testing.T) {
 		"Save validated changes",
 		"Esc close",
 		"Documents",
-		"Source · config/Caddyfile",
+		"Caddyfile",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("palette missing %q:\n%s", want, view)
