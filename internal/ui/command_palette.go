@@ -27,6 +27,8 @@ const (
 	commandSave          commandID = "save"
 	commandReload        commandID = "reload"
 	commandLogs          commandID = "logs"
+	commandRuntime       commandID = "runtime-dashboard"
+	commandTLS           commandID = "tls-dashboard"
 	commandEdit          commandID = "edit"
 	commandFullEdit      commandID = "full-edit"
 	commandAdd           commandID = "add-structured"
@@ -174,6 +176,12 @@ func commandDefinitions() []uiCommand {
 		{ID: commandReload, Category: "Runtime & recovery", Label: "Reload Caddy", Description: "Admin API", Keys: []string{"r"}, Enabled: func(m *Model) bool {
 			return m.reloader != nil
 		}, Reason: func(*Model) string { return "Caddy reload unavailable" }},
+		{ID: commandRuntime, Category: "Runtime & recovery", Label: "Runtime dashboard", Description: "Admin API + upstreams", Keys: []string{"R"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
+		{ID: commandTLS, Category: "Runtime & recovery", Label: "TLS dashboard", Description: "certificates", Keys: []string{"t", "T"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
 		{ID: commandLogs, Category: "Runtime & recovery", Label: "Open logs", Description: "journal / file", Keys: []string{"l"}, Enabled: func(m *Model) bool {
 			return m.logSource != nil
 		}, Reason: func(*Model) string { return "no log source configured" }},
@@ -226,6 +234,10 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startReload()
 	case commandLogs:
 		return m.toggleLogView()
+	case commandRuntime:
+		return m.toggleRuntimeDashboard()
+	case commandTLS:
+		return m.toggleTLSDashboard()
 	case commandEdit:
 		return m.startEditor()
 	case commandFullEdit:

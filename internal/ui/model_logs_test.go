@@ -362,8 +362,10 @@ func TestModelLogView_Footer(t *testing.T) {
 	// While the log view is open the footer shows the log-view key hints.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	m = updated.(*Model)
+	// Use a wider terminal so the extended footer (including filter hints) fits.
+	m = resize(m, 180, 30)
 	view := stripANSI(m.View())
-	for _, want := range []string{"Enter/→ detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
+	for _, want := range []string{"Enter/→ detail", "f follow", "F filter", "c clear", "p pause/resume", "Esc close", "q quit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
 		}

@@ -58,7 +58,7 @@ func TestAdminUpstreamFetcher_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := NewAdminUpstreamFetcher(NewAdminClient(srv.URL, time.Second))
- ups, err := f.FetchUpstreams(context.Background())
+	ups, err := f.FetchUpstreams(context.Background())
 	if err != nil {
 		t.Fatalf("FetchUpstreams: %v", err)
 	}

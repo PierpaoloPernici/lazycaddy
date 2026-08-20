@@ -82,6 +82,12 @@ func (m *Model) View() string {
 			b.WriteString(m.diagnosticsView(width, paneH))
 		}
 		b.WriteString("\n")
+	} else if m.showRuntime {
+		b.WriteString(m.runtimeView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showTLS {
+		b.WriteString(m.tlsView(width, paneH))
+		b.WriteString("\n")
 	} else if m.showLogs {
 		// The log view is a full screen, not a modal: it replaces the
 		// tree/source panes but stays below the modal layering above.
@@ -140,6 +146,9 @@ func (m *Model) View() string {
 	}
 	if m.searchActive {
 		return m.searchOverlay(view, width, height)
+	}
+	if m.showLogFilter {
+		return m.logFilterOverlay(view, width, height)
 	}
 	if m.showStructuredAdd {
 		return m.structuredAddOverlay(view, width, height)
@@ -609,8 +618,14 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ navigate · Enter/+ or → detail · Esc/← close"
 	case m.logDetailOpen:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back · q quit"
+	case m.showLogFilter:
+		keys = "type filter · Enter apply · Esc cancel · Ctrl-U clear"
+	case m.showRuntime:
+		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close · q quit"
+	case m.showTLS:
+		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close · q quit"
 	case m.showLogs:
-		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · p pause/resume · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · F filter · c clear filter · p pause/resume · Esc close · q quit"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:
