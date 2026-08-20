@@ -287,9 +287,13 @@ func (m *Model) treePane(width, height int) string {
 	if m.err != nil {
 		title = "Documents (unavailable)"
 	}
+	contentW := width - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
 	var body strings.Builder
 	if len(m.items) == 0 {
-		body.WriteString(dimStyle.Render("no documents loaded — raw source view is on the right"))
+		body.WriteString(truncateToWidth(dimStyle.Render("no documents loaded — raw source view is on the right"), contentW))
 	} else {
 		// height is the content height of the pane, and the title consumes
 		// one of those rows. Rendering height tree rows in addition to the
@@ -311,10 +315,11 @@ func (m *Model) treePane(width, height int) string {
 			if i > start {
 				body.WriteByte('\n')
 			}
-			body.WriteString(renderTreeRow(m.items[i], i == m.cursor))
+			row := renderTreeRowTruncated(m.items[i], i == m.cursor, contentW)
+			body.WriteString(row)
 		}
 	}
-	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(truncateToWidth(title, contentW)) + "\n" + body.String())
 }
 
 // renderTreeRow renders one visible tree row: a fixed selector gutter first,
@@ -340,6 +345,33 @@ func renderTreeRow(it item, selected bool) string {
 		return selectedTreeRowStyle.Render(row)
 	}
 	return row
+}
+
+// renderTreeRowTruncated is the width-aware variant used by the pane
+// renderer: the plain row is truncated to maxW cells before any style is
+// applied so a long label never wraps and breaks the two-pane layout at
+// narrow widths (e.g. 80 columns). maxW is the pane content width
+// (pane width minus border and padding).
+func renderTreeRowTruncated(it item, selected bool, maxW int) string {
+	sel := "  "
+	if selected {
+		sel = "› "
+	}
+	exp := "  "
+	if it.hasChildren {
+		exp = "+ "
+		if !it.collapsed {
+			exp = "- "
+		}
+	} else if it.hasNode {
+		exp = "· "
+	}
+	plain := fmt.Sprintf("%s%s%s%s", sel, strings.Repeat("  ", it.depth), exp, it.label)
+	plain = truncateToWidth(plain, maxW)
+	if selected {
+		return selectedTreeRowStyle.Render(plain)
+	}
+	return plain
 }
 
 // sourcePane renders the raw, unmodified source of the selected
