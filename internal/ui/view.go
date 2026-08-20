@@ -89,15 +89,16 @@ func (m *Model) View() string {
 		b.WriteString(m.tlsView(width, paneH))
 		b.WriteString("\n")
 	} else if m.showLogs {
-		// The log view is a full screen, not a modal: it replaces the
-		// tree/source panes but stays below the modal layering above.
-		b.WriteString(m.logView(width, paneH))
-		b.WriteString("\n")
+		// The log view is a full screen. When the detail is open it
+		// replaces the list in-place (single pane) so the header and
+		// footer stay visible — rendering both sequentially doubled the
+		// height and pushed the header off-screen.
 		if m.logDetailOpen {
-			// The detail modal layers over the log view.
 			b.WriteString(m.logDetailView(width, paneH))
-			b.WriteString("\n")
+		} else {
+			b.WriteString(m.logView(width, paneH))
 		}
+		b.WriteString("\n")
 	} else if m.searchActive {
 		// Search is composited as a modal over the normal panes below, just
 		// like the command palette. Keep the underlying application chrome
