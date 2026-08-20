@@ -27,6 +27,10 @@ const (
 	textPaneLogs
 	// textPaneDiff is the diff modal body.
 	textPaneDiff
+	// textPaneRuntime is the full-screen runtime dashboard.
+	textPaneRuntime
+	// textPaneTLS is the full-screen TLS dashboard.
+	textPaneTLS
 )
 
 // textSelect is the model-side pane-aware text selection: the owning pane
@@ -186,6 +190,10 @@ func (m *Model) geometryFor(pane textSelectionPane) (textPaneGeometry, bool) {
 		return m.logPaneGeometry(), true
 	case textPaneDiff:
 		return m.diffPaneGeometry(), true
+	case textPaneRuntime:
+		return m.runtimePaneGeometry(), true
+	case textPaneTLS:
+		return m.tlsPaneGeometry(), true
 	}
 	return textPaneGeometry{}, false
 }
@@ -296,6 +304,100 @@ func (m *Model) diffTextPane() *selection.Pane {
 	}
 }
 
+// runtimePaneGeometry returns the screen rectangle of the runtime
+// dashboard viewport. The formulas mirror runtimeView/syncRuntimeViewport.
+func (m *Model) runtimePaneGeometry() textPaneGeometry {
+	width, height := m.width, m.height
+	if width == 0 {
+		width = 80
+	}
+	if height == 0 {
+		height = 24
+	}
+	paneH := m.paneContentH(height)
+	contentW := width - 6
+	if contentW < 1 {
+		contentW = 1
+	}
+	contentH := paneH - 4
+	if contentH < 1 {
+		contentH = 1
+	}
+	return textPaneGeometry{
+		x:      2,
+		y:      m.paneOriginRow() + 3,
+		width:  contentW,
+		height: contentH,
+	}
+}
+
+// tlsPaneGeometry mirrors tlsView/syncTLSViewport.
+func (m *Model) tlsPaneGeometry() textPaneGeometry {
+	width, height := m.width, m.height
+	if width == 0 {
+		width = 80
+	}
+	if height == 0 {
+		height = 24
+	}
+	paneH := m.paneContentH(height)
+	contentW := width - 6
+	if contentW < 1 {
+		contentW = 1
+	}
+	contentH := paneH - 4
+	if contentH < 1 {
+		contentH = 1
+	}
+	return textPaneGeometry{
+		x:      2,
+		y:      m.paneOriginRow() + 3,
+		width:  contentW,
+		height: contentH,
+	}
+}
+
+// runtimeTextPane builds the selection.Pane for the runtime dashboard.
+func (m *Model) runtimeTextPane() *selection.Pane {
+	geo := m.runtimePaneGeometry()
+	src := []byte(m.runtimeViewport.View())
+	// Strip ANSI for plain selection? The viewport View already contains ANSI;
+	// we use the plain content built in syncRuntimeViewport. For now use
+	// the raw string split; ANSI will be tolerated as plain bytes.
+	lines := strings.Split(string(src), "\n")
+	plain := strings.Join(lines, "\n")
+	srcBytes := []byte(plain)
+	return &selection.Pane{
+		Source:       srcBytes,
+		Lines:        lines,
+		Offsets:      lineOffsets(srcBytes),
+		GutterWidth:  0,
+		Height:       geo.height,
+		ContentWidth: geo.width,
+		Scroll:       m.runtimeViewport.YOffset,
+		CellWidth:    paneCellWidth,
+	}
+}
+
+// tlsTextPane builds the selection.Pane for the TLS dashboard.
+func (m *Model) tlsTextPane() *selection.Pane {
+	geo := m.tlsPaneGeometry()
+	src := []byte(m.tlsViewport.View())
+	lines := strings.Split(string(src), "\n")
+	plain := strings.Join(lines, "\n")
+	srcBytes := []byte(plain)
+	return &selection.Pane{
+		Source:       srcBytes,
+		Lines:        lines,
+		Offsets:      lineOffsets(srcBytes),
+		GutterWidth:  0,
+		Height:       geo.height,
+		ContentWidth: geo.width,
+		Scroll:       m.tlsViewport.YOffset,
+		CellWidth:    paneCellWidth,
+	}
+}
+
 // textPaneFor builds the selection.Pane for a text pane on demand. The
 // pane is derived from the current model state (document, log lines, diff
 // lines and viewport scroll), so both mouse mapping and overlay rendering
@@ -308,6 +410,10 @@ func (m *Model) textPaneFor(pane textSelectionPane) *selection.Pane {
 		return m.logTextPane()
 	case textPaneDiff:
 		return m.diffTextPane()
+	case textPaneRuntime:
+		return m.runtimeTextPane()
+	case textPaneTLS:
+		return m.tlsTextPane()
 	}
 	return &selection.Pane{}
 }
@@ -336,6 +442,16 @@ func (m *Model) activeTextSelection() (selection.Range, bool) {
 		}
 	case textPaneDiff:
 		if !m.showDiff {
+			m.clearTextSelection()
+			return selection.Range{}, false
+		}
+	case textPaneRuntime:
+		if !m.showRuntime {
+			m.clearTextSelection()
+			return selection.Range{}, false
+		}
+	case textPaneTLS:
+		if !m.showTLS {
 			m.clearTextSelection()
 			return selection.Range{}, false
 		}
@@ -376,7 +492,7 @@ func (m *Model) selectionSpans(pane textSelectionPane) ([]selection.CellSpan, bo
 func (m *Model) showingMainPanes() bool {
 	return !(m.showUnsavedConfirm || m.showChangeConflict || m.showDiff ||
 		m.showSaveConfirm || m.showReloadConfirm || m.showRollbackConfirm ||
-		m.showBackups || m.showDiagnostics || m.showLogs || m.searchActive ||
+		m.showBackups || m.showDiagnostics || m.showLogs || m.showRuntime || m.showTLS || m.searchActive ||
 		m.showErrorHistory || m.showStructuredAdd || m.showCommandPalette ||
 		m.logDetailOpen)
 }
@@ -416,6 +532,14 @@ func (m *Model) textPaneAt(x, y int) (textSelectionPane, textPaneGeometry, bool)
 	if m.showLogs && !m.logDetailOpen {
 		geo := m.logPaneGeometry()
 		return textPaneLogs, geo, m.pointInPane(x, y, geo)
+	}
+	if m.showRuntime {
+		geo := m.runtimePaneGeometry()
+		return textPaneRuntime, geo, m.pointInPane(x, y, geo)
+	}
+	if m.showTLS {
+		geo := m.tlsPaneGeometry()
+		return textPaneTLS, geo, m.pointInPane(x, y, geo)
 	}
 	if m.showingMainPanes() {
 		geo := m.sourcePaneGeometry()
@@ -579,6 +703,10 @@ func (m *Model) currentTextPane() textSelectionPane {
 		return textPaneDiff
 	case m.showLogs && !m.logDetailOpen:
 		return textPaneLogs
+	case m.showRuntime:
+		return textPaneRuntime
+	case m.showTLS:
+		return textPaneTLS
 	default:
 		return textPaneSource
 	}
@@ -666,6 +794,10 @@ func (m *Model) revealTextCursor(pane textSelectionPane, line int) {
 		vp = &m.logViewport
 	case textPaneDiff:
 		vp = &m.diffViewport
+	case textPaneRuntime:
+		vp = &m.runtimeViewport
+	case textPaneTLS:
+		vp = &m.tlsViewport
 	default:
 		return
 	}

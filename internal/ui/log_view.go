@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
@@ -19,8 +20,13 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.String() {
+	case "?":
+		return m.startCommandPalette()
 	case "y":
 		return m.startCopy()
+	case "F":
+		m.openLogFilter()
+		return m, nil
 	case "esc":
 		m.showLogs = false
 		m.statusMessage = ""
@@ -34,14 +40,15 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.logFollow {
 			m.logFollow = false
 			m.statusMessage = "log follow off"
-			m.logCursor = len(m.logLines) - 1
+			m.logCursor = len(m.filteredLogEntries()) - 1
 		}
 		if m.logCursor > 0 {
 			m.logCursor--
 		}
 		m.revealLogCursor()
 	case "down", "j":
-		if m.logCursor < len(m.logLines)-1 {
+		entries := m.filteredLogEntries()
+		if m.logCursor < len(entries)-1 {
 			m.logCursor++
 		}
 		m.revealLogCursor()
@@ -49,7 +56,7 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.logFollow {
 			m.logFollow = false
 			m.statusMessage = "log follow off"
-			m.logCursor = len(m.logLines) - 1
+			m.logCursor = len(m.filteredLogEntries()) - 1
 		}
 		m.logCursor -= m.logViewport.Height
 		if m.logCursor < 0 {
@@ -57,14 +64,16 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.revealLogCursor()
 	case "pgdown":
+		entries := m.filteredLogEntries()
 		m.logCursor += m.logViewport.Height
-		if m.logCursor > len(m.logLines)-1 {
-			m.logCursor = len(m.logLines) - 1
+		if m.logCursor > len(entries)-1 {
+			m.logCursor = len(entries) - 1
 		}
 		m.revealLogCursor()
 	case "enter", "right":
-		if m.logCursor >= 0 && m.logCursor < len(m.logLines) {
-			m.logDetailEntry = m.logLines[m.logCursor] // copy
+		entries := m.filteredLogEntries()
+		if m.logCursor >= 0 && m.logCursor < len(entries) {
+			m.logDetailEntry = entries[m.logCursor] // copy
 			m.logDetailOpen = true
 			// The detail modal overlays the log pane: the pane's text
 			// selection no longer applies.
@@ -79,9 +88,16 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMessage = "log follow off"
 		} else {
 			m.logFollow = true
-			m.logCursor = len(m.logLines) - 1
+			entries := m.filteredLogEntries()
+			m.logCursor = len(entries) - 1
 			m.logViewport.GotoBottom()
 			m.statusMessage = "log follow on"
+		}
+	case "c", "C":
+		// Clear the active filter (source-aware, bounded, read-only).
+		if m.logFilterActive {
+			m.clearLogFilter()
+			m.statusMessage = "log filter cleared"
 		}
 	case "p":
 		if m.logPaused {
@@ -101,6 +117,8 @@ func (m *Model) updateLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // scroll the wrapped JSON; q/ctrl+c quits.
 func (m *Model) updateLogDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "?":
+		return m.startCommandPalette()
 	case "esc", "left":
 		m.logDetailOpen = false
 	case "q", "ctrl+c":
@@ -150,6 +168,15 @@ func (m *Model) logView(width, height int) string {
 	if m.logErr != nil {
 		title += " · poll error"
 	}
+	title += m.renderLogFilterBadge()
+	// Bounded status-class counts and latency summary in the title suffix.
+	if len(m.logLines) > 0 {
+		counts := m.logStatusCounts()
+		title += formatStatusCounts(counts)
+		if stats := m.logLatencyStats(); stats.Count > 0 {
+			title += formatLatencyStats(stats)
+		}
+	}
 	bodyH := height - 4 // border (2) + title (1) + blank separator (1)
 	if bodyH < 1 {
 		bodyH = 1
@@ -183,11 +210,14 @@ func (m *Model) syncLogViewport(width, height int) {
 	m.logViewport.Width = contentW
 	m.logViewport.Height = contentH
 
+	entries := m.filteredLogEntries()
 	var content strings.Builder
 	if len(m.logLines) == 0 {
 		content.WriteString(dimStyle.Render("no log entries yet — waiting for the first poll"))
+	} else if len(entries) == 0 {
+		content.WriteString(dimStyle.Render("no entries match the current filter — press c to clear"))
 	} else {
-		for i, entry := range m.logLines {
+		for i, entry := range entries {
 			gutter := "  "
 			if i == m.logCursor {
 				gutter = cursorStyle.Render("› ")
@@ -277,4 +307,35 @@ func logDetailSummary(entry logs.Entry, maxWidth int) string {
 		parts = append(parts, entry.Msg)
 	}
 	return truncateToWidth(strings.Join(parts, " "), maxWidth)
+}
+
+func formatStatusCounts(c logs.StatusCounts) string {
+	if c.Total == 0 {
+		return ""
+	}
+	return " · " + dimStyle.Render("2xx:") + " " + truncateToWidth(""+itoa(c.Class2xx), 5) +
+		" " + dimStyle.Render("3xx:") + " " + itoa(c.Class3xx) +
+		" " + dimStyle.Render("4xx:") + " " + itoa(c.Class4xx) +
+		" " + dimStyle.Render("5xx:") + " " + itoa(c.Class5xx)
+}
+
+func formatLatencyStats(s logs.LatencyStats) string {
+	if s.Count == 0 {
+		return ""
+	}
+	return " · " + dimStyle.Render("latency") + " " + formatDuration(s.Avg) + " avg"
+}
+
+func itoa(n int) string {
+	return strings.TrimSpace(strings.Replace(strings.Trim(fmt.Sprintf("%d", n), " "), "", "", -1))
+}
+
+func formatDuration(d float64) string {
+	if d < 0.001 {
+		return "<1ms"
+	}
+	if d < 1 {
+		return strings.TrimSpace(strings.Replace(fmt.Sprintf("%.0fms", d*1000), "", "", -1))
+	}
+	return strings.TrimSpace(strings.Replace(fmt.Sprintf("%.2fs", d), "", "", -1))
 }

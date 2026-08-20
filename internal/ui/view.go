@@ -10,6 +10,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // View implements tea.Model.
@@ -82,16 +83,23 @@ func (m *Model) View() string {
 			b.WriteString(m.diagnosticsView(width, paneH))
 		}
 		b.WriteString("\n")
-	} else if m.showLogs {
-		// The log view is a full screen, not a modal: it replaces the
-		// tree/source panes but stays below the modal layering above.
-		b.WriteString(m.logView(width, paneH))
+	} else if m.showRuntime {
+		b.WriteString(m.runtimeView(width, paneH))
 		b.WriteString("\n")
+	} else if m.showTLS {
+		b.WriteString(m.tlsView(width, paneH))
+		b.WriteString("\n")
+	} else if m.showLogs {
+		// The log view is a full screen. When the detail is open it
+		// replaces the list in-place (single pane) so the header and
+		// footer stay visible — rendering both sequentially doubled the
+		// height and pushed the header off-screen.
 		if m.logDetailOpen {
-			// The detail modal layers over the log view.
 			b.WriteString(m.logDetailView(width, paneH))
-			b.WriteString("\n")
+		} else {
+			b.WriteString(m.logView(width, paneH))
 		}
+		b.WriteString("\n")
 	} else if m.searchActive {
 		// Search is composited as a modal over the normal panes below, just
 		// like the command palette. Keep the underlying application chrome
@@ -140,6 +148,9 @@ func (m *Model) View() string {
 	}
 	if m.searchActive {
 		return m.searchOverlay(view, width, height)
+	}
+	if m.showLogFilter {
+		return m.logFilterOverlay(view, width, height)
 	}
 	if m.showStructuredAdd {
 		return m.structuredAddOverlay(view, width, height)
@@ -277,9 +288,13 @@ func (m *Model) treePane(width, height int) string {
 	if m.err != nil {
 		title = "Documents (unavailable)"
 	}
+	contentW := width - 4 // border (2) + horizontal padding (2)
+	if contentW < 1 {
+		contentW = 1
+	}
 	var body strings.Builder
 	if len(m.items) == 0 {
-		body.WriteString(dimStyle.Render("no documents loaded — raw source view is on the right"))
+		body.WriteString(truncateToWidth(dimStyle.Render("no documents loaded — raw source view is on the right"), contentW))
 	} else {
 		// height is the content height of the pane, and the title consumes
 		// one of those rows. Rendering height tree rows in addition to the
@@ -301,10 +316,11 @@ func (m *Model) treePane(width, height int) string {
 			if i > start {
 				body.WriteByte('\n')
 			}
-			body.WriteString(renderTreeRow(m.items[i], i == m.cursor))
+			row := renderTreeRowTruncated(m.items[i], i == m.cursor, contentW)
+			body.WriteString(row)
 		}
 	}
-	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(title) + "\n" + body.String())
+	return focusedPaneStyle.Width(width).Height(height).Render(activeTitleStyle.Render(truncateToWidth(title, contentW)) + "\n" + body.String())
 }
 
 // renderTreeRow renders one visible tree row: a fixed selector gutter first,
@@ -332,6 +348,33 @@ func renderTreeRow(it item, selected bool) string {
 	return row
 }
 
+// renderTreeRowTruncated is the width-aware variant used by the pane
+// renderer: the plain row is truncated to maxW cells before any style is
+// applied so a long label never wraps and breaks the two-pane layout at
+// narrow widths (e.g. 80 columns). maxW is the pane content width
+// (pane width minus border and padding).
+func renderTreeRowTruncated(it item, selected bool, maxW int) string {
+	sel := "  "
+	if selected {
+		sel = "› "
+	}
+	exp := "  "
+	if it.hasChildren {
+		exp = "+ "
+		if !it.collapsed {
+			exp = "- "
+		}
+	} else if it.hasNode {
+		exp = "· "
+	}
+	plain := fmt.Sprintf("%s%s%s%s", sel, strings.Repeat("  ", it.depth), exp, it.label)
+	plain = truncateToWidth(plain, maxW)
+	if selected {
+		return selectedTreeRowStyle.Render(plain)
+	}
+	return plain
+}
+
 // sourcePane renders the raw, unmodified source of the selected
 // item's document inside a scrollable viewport. Unknown directives,
 // comments and malformed regions are all shown exactly as stored; the
@@ -343,7 +386,15 @@ func (m *Model) sourcePane(srcW, paneH int) string {
 	if spans, ok := m.selectionSpans(textPaneSource); ok {
 		content = renderSelectionOverlay(content, m.viewport.Width, m.viewport.Height, spans)
 	}
-	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(m.sourceTitle) + "\n" + content)
+	contentW := srcW - 4
+	if contentW < 1 {
+		contentW = 1
+	}
+	// Keep the title on one row at narrow widths (e.g. 80 columns) so
+	// the two-pane height stays bounded. The stored m.sourceTitle stays
+	// full for tests and logic; only the rendered view is truncated.
+	title := truncateToWidth(m.sourceTitle, contentW)
+	return paneStyle.Width(srcW).Height(paneH).Render(dimStyle.Render(title) + "\n" + content)
 }
 
 // syncSource keeps the source viewport sized to the pane and refreshes
@@ -454,7 +505,18 @@ func (m *Model) syncSource(srcW, paneH int) {
 		if doc != nil {
 			src = doc.Source
 		}
-		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings, diags, layout))
+		raw := numberedSource(src, key.start, key.end, m.inlineFindings, diags, layout)
+		// At narrow widths (e.g. 80 columns, source content ~36) a long
+		// highlighted line would otherwise wrap in the viewport's lipgloss
+		// render and break the 1:1 source-line → display-row mapping
+		// (fold layout, reveal, gutter). Truncate each display line to the
+		// viewport width so every source line stays one row and the pink
+		// 192.168-style address never leaks onto the next gutter.
+		lines := strings.Split(raw, "\n")
+		for i, l := range lines {
+			lines[i] = ansi.Truncate(l, contentW, "…")
+		}
+		m.viewport.SetContent(strings.Join(lines, "\n"))
 		m.lastCaddyDiags = diags
 		if doc != prevDoc && !refresh {
 			// New document: start at the top; revealRange then scrolls
@@ -599,24 +661,30 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ navigate · PgUp/PgDown scroll · Enter run · Esc close"
 	case m.showBackups:
 		if m.canRollback() {
-			keys = "↑/↓ move · Enter/→ compare & rollback · Esc close"
+			keys = "↑/↓ move · PgUp/PgDown · Enter/→ compare & rollback · Esc close"
 		} else {
-			keys = "↑/↓ move · Enter/→ compare · Esc close"
+			keys = "↑/↓ move · PgUp/PgDown · Enter/→ compare · Esc close"
 		}
 	case m.showDetail:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
 	case m.showDiagnostics:
-		keys = "↑/↓ navigate · Enter/+ or → detail · Esc/← close"
+		keys = "↑/↓ navigate · PgUp/PgDown · Enter/+ or → detail · Esc/← close"
 	case m.logDetailOpen:
-		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back · q quit"
+		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
+	case m.showLogFilter:
+		keys = "type filter · Enter apply · Ctrl-U clear · Esc cancel"
+	case m.showRuntime:
+		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close"
+	case m.showTLS:
+		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close"
 	case m.showLogs:
-		keys = "↑/↓ move · PgUp/PgDown page · Enter/→ detail · f follow (on/off) · p pause/resume · Esc close · q quit"
+		keys = "↑/↓ move · PgUp/PgDown · Enter detail · Esc close · ? commands"
 	case m.searchActive:
 		keys = "type to search · ↑/↓ move · PgUp/PgDown page · Enter open · Esc close"
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.showInlineReview:
-		keys = "↑/↓ move · Enter reveal · → detail · v validate · Esc close"
+		keys = "↑/↓ move · PgUp/PgDown · Enter reveal · → detail · v validate · Esc close"
 	case m.state != nil && m.state.Graph != nil:
 		// The normal footer is deliberately navigation-only. Operational
 		// actions remain available through their direct hotkeys and the
@@ -624,9 +692,11 @@ func (m *Model) footer(width int) string {
 		// advertised only when the selected row has children.
 		navKeys := "↑/↓ move"
 		if sel := m.selectedItem(); sel != nil && sel.hasChildren {
-			navKeys = "↑/↓ move · Enter toggle"
+			navKeys = "↑/↓ move · PgUp/PgDown · Enter toggle"
+		} else {
+			navKeys = "↑/↓ move · PgUp/PgDown"
 		}
-		keys = navKeys + " · PgUp/PgDown · +/- all · ? commands"
+		keys = navKeys + " · +/- all · ? commands"
 	default:
 		keys = "↑/↓ move · PgUp/PgDown · ? commands"
 	}

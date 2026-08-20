@@ -159,6 +159,66 @@ and `y` copy the underlying source bytes (hidden lines included), the cursor
 skips hidden lines and clamps to the nearest visible one, and a click on an
 indicator row opens the fold instead of starting a selection.
 
+## Screens, footers and command palette — common setting
+
+Every screen has **one footer** and, when it makes sense, **one palette**
+(`?`). The palette is always context-aware: it shows only the commands
+that are actually available on the current screen, never the homepage
+commands when the user is in Logs.
+
+At 80 columns the footer must stay on one line, so it is navigation-only
+and the operational keys live in the palette behind `?`.
+
+### Simple screens — no palette, minimal footer
+
+Transient confirmations, detail views and not-yet-interactive dashboards.
+The footer shows only the actions that close or confirm the view; `?` is
+not advertised and does not open the palette.
+
+| Screen | Footer (80-col) | Palette (`?`) |
+|---|---|---|
+| `Unsaved confirm` | `s save · d discard & quit · Esc cancel` | — |
+| `Change conflict` / `compare` | `r reload · Esc keep` / `↑/↓ scroll · Esc back` | — |
+| `Save confirm` | `Enter save · Esc cancel` | — |
+| `Reload confirm` | `Enter reload · Esc cancel` | — |
+| `Rollback confirm` | `Enter rollback · Esc cancel` | — |
+| `Structured add` (`a` / `n` / `o` / `m`) | `type directive · Enter plan & validate · Esc cancel` / `↑/↓ choose sibling · Enter move after & validate · Esc cancel` etc. | — |
+| `Backups` (`B`) | `↑/↓ move · PgUp/PgDown · Enter/→ compare · Esc close` | — |
+| `Diagnostics list` / `detail` | `↑/↓ navigate · PgUp/PgDown · Enter/+ or → detail · Esc/← close` / `↑/↓ scroll · PgUp/PgDown page · Esc/← back` | — |
+| `Diff` (`D`) | `↑/↓ scroll · PgUp/PgDown page · n/N hunk · h/l scroll · Esc close` (plus `Enter` verb when applicable) | — |
+| `Search` (`/` / `Ctrl-F`) | `type to search · ↑/↓ move · Enter open · Esc close` | — |
+| `Log detail` | `↑/↓ scroll · PgUp/PgDown page · Esc/← back` | — (palette reachable via `?` from the list, not from the detail) |
+| `Log filter` (`F` in Logs) | `type filter · Enter apply · Ctrl-U clear · Esc cancel` | — |
+| `Runtime dashboard` (`I`) | `↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close` | — (palette hidden for now, display-only) |
+| `TLS dashboard` (`T`) | `↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close` | — (palette hidden for now, display-only) |
+
+### Screens with command bar — footer + `?` palette, context-aware
+
+Full-screen or highly interactive views. The footer is navigation-only
+(`↑/↓`, `PgUp/PgDown`, primary `Enter` action, `Esc`, `?`) so it fits at
+80 columns; every operational key (`f`/`F`/`c`/`p` in Logs, `v`/`s`/`D`
+/`r`/`e`/`a`/`m`… on the homepage) is still a direct hotkey and is also
+discoverable in the palette. The palette filters to the current screen:
+`filteredCommands()` hides homepage `Source`/`Validation` commands when the
+user is in Logs and hides `Logs`-only commands when the user is on the
+homepage.
+
+| Screen | Footer (80-col) | Palette (`?`) shows |
+|---|---|---|
+| **Homepage** (tree / source, no overlay) | `↑/↓ move · PgUp/PgDown · Enter toggle · +/- all · ? commands` (or `↑/↓ move · PgUp/PgDown · ? commands` when no branch) | `Navigation` (move, toggle, expand, matcher `g`, search `/`, help), `Validation` (`v` validate, `i` review, `D` diff, `s` save), `Source` (`e`/`E` edit, `a` add, `n` new, `o` reorder, `m` form, `d` delete, `y` copy), `Runtime & recovery` (`r` reload, `I` runtime, `T` TLS, `l` logs, `B` backups, `H` errors), `Application` (`q`, `?`) |
+| **Logs list** (`l`) | `↑/↓ move · PgUp/PgDown · Enter detail · Esc close · ? commands` | `Navigation` (`move`), `Logs` (`f` follow, `F` filter, `c` clear, `p` pause, `Enter` detail), `Runtime & recovery` is **hidden** (its commands would appear disabled), `Source`/`Validation` hidden; plus global `y` copy, `help`, `q`, `?` |
+| **Inline findings** (`i`) | `↑/↓ move · PgUp/PgDown · Enter reveal · → detail · v validate · Esc close` | `Navigation` + `Validation` (review) + global |
+| **Error history** (`H`) | `↑/↓ scroll · PgUp/PgDown page · Esc close` + `?` when palette is enabled | `Navigation` + `Runtime & recovery` (`H`) + global |
+
+When the palette is open the footer becomes `↑/↓ navigate · PgUp/PgDown scroll · Enter run · Esc close` and the underlying view is dimmed via `modalOverlay`.
+
+### Rules for every footer at 80 columns
+
+- One line, no wrapping. Long titles and long footers are truncated with `…` (via `truncateToWidth` / `ansi.Truncate`) so the two-pane height stays bounded and the header is never pushed off-screen (regression: `tmp/Caddyfile` at 80–86 columns lost the header and shifted the tree bottom border up by one).
+- Order is always `↑/↓` → `PgUp/PgDown` → `[n/N · h/l where needed]` → `Enter` (primary) → `Esc` (close/cancel/back) → `?` (palette, only on screens with a bar). This is the muscle-memory order and it fits at 80 columns.
+- No `q quit` in any footer. Quit stays a direct hotkey (`q` / `Ctrl-C`) and a palette entry (`Application` → `Quit`), never a footer hint.
+- The title never repeats a footer hint (`Esc close`, `move`, `validate` …).
+
 ## Checklist for new views
 
 When adding a view, decide its class first, then apply:
@@ -169,3 +229,8 @@ When adding a view, decide its class first, then apply:
   Commands/Search-style header that opts into ALL-CAPS.
 - Always: one placement for command hints (the footer), colour is never the
   only signal, and rendering stays byte-lossless.
+- **Footer must fit at 80 columns**: keep it navigation-only and put the rest
+  behind `?`.
+- **Footer order is fixed**: `↑/↓` → `PgUp/PgDown` → `n/N`/`h/l` → `Enter` → `Esc` → `?`.
+- **Palette must be context-aware**: `isCommandVisible()` hides homepage
+  commands when the user is in Logs and vice-versa.

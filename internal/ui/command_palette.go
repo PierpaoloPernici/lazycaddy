@@ -16,32 +16,39 @@ import (
 type commandID string
 
 const (
-	commandMoveSelection commandID = "move-selection"
-	commandToggleBranch  commandID = "toggle-branch"
-	commandExpandAll     commandID = "expand-all"
-	commandCollapseAll   commandID = "collapse-all"
-	commandMatcherNext   commandID = "matcher-next"
-	commandReviewInline  commandID = "review-inline"
-	commandValidate      commandID = "validate"
-	commandDiff          commandID = "diff"
-	commandSave          commandID = "save"
-	commandReload        commandID = "reload"
-	commandLogs          commandID = "logs"
-	commandEdit          commandID = "edit"
-	commandFullEdit      commandID = "full-edit"
-	commandAdd           commandID = "add-structured"
-	commandNew           commandID = "new-node"
-	commandReorder       commandID = "reorder"
-	commandEditForm      commandID = "edit-directive-form"
-	commandDelete        commandID = "delete"
-	commandBackups       commandID = "backups"
-	commandErrors        commandID = "errors"
-	commandCopy          commandID = "copy"
-	commandSelectText    commandID = "select-text"
-	commandSearch        commandID = "search"
-	commandHelp          commandID = "caddyfile-help"
-	commandQuit          commandID = "quit"
-	commandPalette       commandID = "command-palette"
+	commandMoveSelection  commandID = "move-selection"
+	commandToggleBranch   commandID = "toggle-branch"
+	commandExpandAll      commandID = "expand-all"
+	commandCollapseAll    commandID = "collapse-all"
+	commandMatcherNext    commandID = "matcher-next"
+	commandReviewInline   commandID = "review-inline"
+	commandValidate       commandID = "validate"
+	commandDiff           commandID = "diff"
+	commandSave           commandID = "save"
+	commandReload         commandID = "reload"
+	commandLogs           commandID = "logs"
+	commandRuntime        commandID = "runtime-dashboard"
+	commandTLS            commandID = "tls-dashboard"
+	commandLogFollow      commandID = "log-follow"
+	commandLogFilter      commandID = "log-filter"
+	commandLogClearFilter commandID = "log-clear-filter"
+	commandLogPause       commandID = "log-pause"
+	commandLogDetail      commandID = "log-detail"
+	commandEdit           commandID = "edit"
+	commandFullEdit       commandID = "full-edit"
+	commandAdd            commandID = "add-structured"
+	commandNew            commandID = "new-node"
+	commandReorder        commandID = "reorder"
+	commandEditForm       commandID = "edit-directive-form"
+	commandDelete         commandID = "delete"
+	commandBackups        commandID = "backups"
+	commandErrors         commandID = "errors"
+	commandCopy           commandID = "copy"
+	commandSelectText     commandID = "select-text"
+	commandSearch         commandID = "search"
+	commandHelp           commandID = "caddyfile-help"
+	commandQuit           commandID = "quit"
+	commandPalette        commandID = "command-palette"
 )
 
 // uiCommand describes one user action. Keys are the direct shortcuts shown
@@ -174,6 +181,12 @@ func commandDefinitions() []uiCommand {
 		{ID: commandReload, Category: "Runtime & recovery", Label: "Reload Caddy", Description: "Admin API", Keys: []string{"r"}, Enabled: func(m *Model) bool {
 			return m.reloader != nil
 		}, Reason: func(*Model) string { return "Caddy reload unavailable" }},
+		{ID: commandRuntime, Category: "Runtime & recovery", Label: "Runtime dashboard", Description: "Admin API + upstreams", Keys: []string{"I"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
+		{ID: commandTLS, Category: "Runtime & recovery", Label: "TLS dashboard", Description: "certificates", Keys: []string{"T"}, Enabled: func(*Model) bool {
+			return true
+		}, Reason: func(*Model) string { return "" }},
 		{ID: commandLogs, Category: "Runtime & recovery", Label: "Open logs", Description: "journal / file", Keys: []string{"l"}, Enabled: func(m *Model) bool {
 			return m.logSource != nil
 		}, Reason: func(*Model) string { return "no log source configured" }},
@@ -183,6 +196,53 @@ func commandDefinitions() []uiCommand {
 		{ID: commandErrors, Category: "Runtime & recovery", Label: "Open error history", Description: "recent failures", Keys: []string{"H"}, Enabled: func(m *Model) bool {
 			return len(m.errorHistory) > 0
 		}, Reason: func(*Model) string { return "no recorded failures" }},
+		{ID: commandLogFollow, Category: "Logs", Label: "Toggle log follow", Description: "follow on/off", Keys: []string{"f"}, Enabled: func(m *Model) bool {
+			return m.showLogs && m.logSource != nil
+		}, Reason: func(m *Model) string {
+			if !m.showLogs {
+				return "open logs first"
+			}
+			return "no log source configured"
+		}},
+		{ID: commandLogFilter, Category: "Logs", Label: "Filter logs", Description: "host/status/level/text", Keys: []string{"F"}, Enabled: func(m *Model) bool {
+			return m.showLogs && m.logSource != nil
+		}, Reason: func(m *Model) string {
+			if !m.showLogs {
+				return "open logs first"
+			}
+			return "no log source configured"
+		}},
+		{ID: commandLogClearFilter, Category: "Logs", Label: "Clear log filter", Description: "show all", Keys: []string{"c"}, Enabled: func(m *Model) bool {
+			return m.showLogs && m.logFilterActive
+		}, Reason: func(m *Model) string {
+			if !m.showLogs {
+				return "open logs first"
+			}
+			return "no active filter"
+		}},
+		{ID: commandLogPause, Category: "Logs", Label: "Pause/resume log poll", Description: "pause", Keys: []string{"p"}, Enabled: func(m *Model) bool {
+			return m.showLogs && m.logSource != nil
+		}, Reason: func(m *Model) string {
+			if !m.showLogs {
+				return "open logs first"
+			}
+			return "no log source configured"
+		}},
+		{ID: commandLogDetail, Category: "Logs", Label: "Open log detail", Description: "selected entry", Keys: []string{"Enter"}, Enabled: func(m *Model) bool {
+			if !m.showLogs || m.logDetailOpen {
+				return false
+			}
+			entries := m.filteredLogEntries()
+			return m.logCursor >= 0 && m.logCursor < len(entries)
+		}, Reason: func(m *Model) string {
+			if !m.showLogs {
+				return "open logs first"
+			}
+			if m.logDetailOpen {
+				return "detail already open"
+			}
+			return "no log entry selected"
+		}},
 		{ID: commandQuit, Category: "Application", Label: "Quit lazycaddy", Description: "guarded when unsaved", Keys: []string{"q", "Ctrl-C"}, Enabled: func(*Model) bool {
 			return true
 		}, Reason: func(*Model) string { return "" }},
@@ -226,6 +286,60 @@ func (m *Model) runCommand(id commandID) (tea.Model, tea.Cmd) {
 		return m.startReload()
 	case commandLogs:
 		return m.toggleLogView()
+	case commandLogFollow:
+		if !m.showLogs {
+			return m, nil
+		}
+		if m.logFollow {
+			m.logFollow = false
+			m.statusMessage = "log follow off"
+		} else {
+			m.logFollow = true
+			m.logCursor = len(m.filteredLogEntries()) - 1
+			m.logViewport.GotoBottom()
+			m.statusMessage = "log follow on"
+		}
+		return m, nil
+	case commandLogFilter:
+		if m.showLogs {
+			m.openLogFilter()
+		}
+		return m, nil
+	case commandLogClearFilter:
+		if m.showLogs && m.logFilterActive {
+			m.clearLogFilter()
+			m.statusMessage = "log filter cleared"
+		}
+		return m, nil
+	case commandLogPause:
+		if !m.showLogs {
+			return m, nil
+		}
+		if m.logPaused {
+			m.logPaused = false
+			m.statusMessage = "log poll resumed"
+			return m, m.logPollCmd()
+		}
+		m.logPaused = true
+		m.statusMessage = "log poll paused"
+		return m, nil
+	case commandLogDetail:
+		if !m.showLogs || m.logDetailOpen {
+			return m, nil
+		}
+		entries := m.filteredLogEntries()
+		if m.logCursor >= 0 && m.logCursor < len(entries) {
+			m.logDetailEntry = entries[m.logCursor]
+			m.logDetailOpen = true
+			m.clearTextSelection()
+			m.syncLogDetailContent(m.width, m.paneHeight())
+			m.logDetailViewport.GotoTop()
+		}
+		return m, nil
+	case commandRuntime:
+		return m.toggleRuntimeDashboard()
+	case commandTLS:
+		return m.toggleTLSDashboard()
 	case commandEdit:
 		return m.startEditor()
 	case commandFullEdit:
@@ -361,6 +475,9 @@ func (m *Model) filteredCommands() []uiCommand {
 	query := strings.ToLower(strings.TrimSpace(string(m.commandQuery)))
 	var matches []uiCommand
 	for _, command := range commandDefinitions() {
+		if !m.isCommandVisible(command) {
+			continue
+		}
 		if command.ID == commandNew && !m.canNewNode() {
 			continue
 		}
@@ -380,6 +497,59 @@ func (m *Model) filteredCommands() []uiCommand {
 		}
 	}
 	return matches
+}
+
+func (m *Model) isCommandVisible(cmd uiCommand) bool {
+	// Global commands are always visible.
+	if cmd.ID == commandQuit || cmd.ID == commandPalette || cmd.ID == commandHelp || cmd.ID == commandCopy || cmd.ID == commandSelectText {
+		return true
+	}
+	// Full-screen dashboards and modals are context-aware: only their
+	// relevant commands are shown so the palette stays usable at 80
+	// columns and doesn't leak homepage commands into the logs view.
+	if m.showLogs {
+		if m.logDetailOpen {
+			// Detail is a scrollable JSON view: only navigation for the
+			// detail and the global commands are relevant.
+			return cmd.ID == commandMoveSelection
+		}
+		// Log list: navigation move, the log operational commands and
+		// the toggle to close the view. Runtime & recovery is homepage
+		///dashboard-only and would show disabled entries in the log
+		// palette, so it is hidden here.
+		switch cmd.ID {
+		case commandMoveSelection, commandLogs, commandLogFollow, commandLogFilter, commandLogClearFilter, commandLogPause, commandLogDetail:
+			return true
+		}
+		return false
+	}
+	if m.showRuntime || m.showTLS {
+		// Runtime and TLS dashboards are currently display-only; the
+		// palette would open but show only disabled entries, so it is
+		// hidden for now. Global commands remain reachable via direct
+		// hotkeys and the palette is not advertised in the footer.
+		return false
+	}
+	if m.showDiagnostics || m.showDetail {
+		switch cmd.ID {
+		case commandMoveSelection, commandReviewInline, commandValidate, commandDiff, commandHelp:
+			return true
+		}
+		return false
+	}
+	if m.searchActive || m.showInlineReview || m.showErrorHistory || m.showBackups || m.showDiff || m.showSaveConfirm || m.showReloadConfirm || m.showRollbackConfirm || m.showStructuredAdd || m.showChangeConflict || m.showUnsavedConfirm {
+		// Modals and transient views keep the palette navigation-only to
+		// avoid leaking homepage source commands into a focused workflow.
+		return cmd.ID == commandMoveSelection
+	}
+	// Homepage: hide log-only operational commands that require the log
+	// view to be open; everything else (Navigation, Validation, Source,
+	// Runtime) is relevant for the tree/source layout.
+	switch cmd.ID {
+	case commandLogFollow, commandLogFilter, commandLogClearFilter, commandLogPause, commandLogDetail:
+		return false
+	}
+	return true
 }
 
 func (m *Model) revealCommandCursor() {

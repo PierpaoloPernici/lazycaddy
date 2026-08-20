@@ -53,6 +53,12 @@ type Settings struct {
 	// configured": the l keybinding is disabled and the TUI stays fully
 	// browsable. Mutually exclusive with LogPath.
 	JournalUnit string
+	// TLSStorageDir is the filesystem path that holds TLS certificates
+	// (the CertMagic storage directory). Empty means "no TLS source
+	// configured": the TLS dashboard degrades to an explicit unavailable
+	// state and never blocks browsing. It is an explicit setting so the
+	// panel never assumes a private CertMagic layout.
+	TLSStorageDir string
 }
 
 // DefaultConfigPath is the Caddyfile path used as the --config flag

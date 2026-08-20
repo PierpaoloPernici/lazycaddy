@@ -13,6 +13,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/diff"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
+	"github.com/PierpaoloPernici/lazycaddy/internal/tls"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 )
 
@@ -155,6 +156,30 @@ type editorDoneMsg struct {
 // error from Prepare or Complete (for example ErrConflict or ErrNoEditor).
 type editorErrorMsg struct {
 	Err error
+}
+
+// configFetchResultMsg is delivered after a cancellable loaded-config
+// fetch completes. Err is nil on success; Data holds the raw JSON.
+// Gen is the generation token that lets stale results be ignored.
+type configFetchResultMsg struct {
+	Data []byte
+	Err  error
+	Gen  int
+}
+
+// upstreamFetchResultMsg is delivered after a cancellable upstream fetch
+// completes.
+type upstreamFetchResultMsg struct {
+	Upstreams []runtime.Upstream
+	Err       error
+	Gen       int
+}
+
+// tlsFetchResultMsg is delivered after a cancellable TLS fetch completes.
+type tlsFetchResultMsg struct {
+	Certs []tls.Certificate
+	Err   error
+	Gen   int
 }
 
 // deleteValidatedMsg is delivered after the delete candidate (the document
@@ -402,6 +427,18 @@ type Model struct {
 	logDetailEntry logs.Entry
 	// logDetailViewport renders the detail modal body.
 	logDetailViewport viewport.Model
+	// logFilter holds the active source-aware filter for the log dashboard.
+	logFilter logs.Filter
+	// logFilterActive is true when the filter is applied.
+	logFilterActive bool
+	// logFilterText is the free-text part of the filter shown in the
+	// status strip.
+	logFilterText string
+	// showLogFilter is true while the filter input modal is open.
+	showLogFilter bool
+	// logFilterQuery is the typed query while editing the filter.
+	logFilterQuery  []rune
+	logFilterCursor int
 
 	// version is the lazycaddy application version injected at
 	// construction time; it is shown next to the brand label in the
@@ -619,6 +656,45 @@ type Model struct {
 	commandCursor      int
 	commandViewport    viewport.Model
 	commandLineOffsets []int
+
+	// Dashboard fetchers (cancellable Admin API boundaries). Nil disables
+	// the corresponding panel; the UI degrades to an explicit unavailable
+	// state without blocking browsing.
+	configFetcher   app.ConfigFetcher
+	upstreamFetcher app.UpstreamFetcher
+	tlsFetcher      app.TLSFetcher
+
+	// Runtime dashboard state: each panel tracks its own fetch lifecycle
+	// so a failure in one never blocks the others.
+	showRuntime               bool
+	runtimeViewport           viewport.Model
+	runtimeCursor             int
+	runtimeConfigState        runtime.FetchState
+	runtimeConfigData         []byte
+	runtimeConfigErr          error
+	runtimeConfigAt           time.Time
+	runtimeConfigLoading      bool
+	runtimeConfigGen          int
+	runtimeConfigHasFetched   bool
+	runtimeUpstreamState      runtime.FetchState
+	runtimeUpstreams          []runtime.Upstream
+	runtimeUpstreamErr        error
+	runtimeUpstreamAt         time.Time
+	runtimeUpstreamLoading    bool
+	runtimeUpstreamGen        int
+	runtimeUpstreamHasFetched bool
+
+	// TLS dashboard state.
+	showTLS       bool
+	tlsViewport   viewport.Model
+	tlsCursor     int
+	tlsState      tls.FetcherState
+	tlsCerts      []tls.Certificate
+	tlsErr        error
+	tlsAt         time.Time
+	tlsLoading    bool
+	tlsGen        int
+	tlsHasFetched bool
 }
 
 // pendingRollback holds the state of a backup selected for rollback:
@@ -676,6 +752,8 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 		backupViewport:       viewport.New(1, 1),
 		errorHistoryViewport: viewport.New(1, 1),
 		commandViewport:      viewport.New(1, 1),
+		runtimeViewport:      viewport.New(1, 1),
+		tlsViewport:          viewport.New(1, 1),
 		logFollow:            true,
 		clipboard:            clipboard,
 		monitor:              monitor,
@@ -690,6 +768,28 @@ func New(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader a
 func NewWithBrowser(loader app.Loader, formatter app.Formatter, saver app.Saver, reloader app.Reloader, runtimeStatus app.RuntimeStatus, logSource app.LogSource, editor app.Editor, searcher app.Searcher, version string, monitor app.ChangeMonitor, rollbacker app.Rollbacker, readFile app.FileReader, browser app.Browser, clipboards ...app.Clipboard) *Model {
 	m := New(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, readFile, clipboards...)
 	m.browser = browser
+	return m
+}
+
+// WithConfigFetcher injects the cancellable loaded-config fetcher for the
+// runtime dashboard. A nil fetcher degrades the config panel to an
+// explicit unavailable state without blocking browsing.
+func (m *Model) WithConfigFetcher(f app.ConfigFetcher) *Model {
+	m.configFetcher = f
+	return m
+}
+
+// WithUpstreamFetcher injects the upstream health fetcher for the runtime
+// dashboard. A nil fetcher is an explicit unavailable state.
+func (m *Model) WithUpstreamFetcher(f app.UpstreamFetcher) *Model {
+	m.upstreamFetcher = f
+	return m
+}
+
+// WithTLSFetcher injects the TLS certificate source for the TLS dashboard.
+// A nil fetcher keeps the TLS panel unavailable with a clear message.
+func (m *Model) WithTLSFetcher(f app.TLSFetcher) *Model {
+	m.tlsFetcher = f
 	return m
 }
 

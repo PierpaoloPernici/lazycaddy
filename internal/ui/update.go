@@ -23,6 +23,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleReloadResult(msg)
 	case runtimeProbeResultMsg:
 		return m.handleRuntimeProbeResult(msg)
+	case configFetchResultMsg:
+		return m.handleConfigFetchResult(msg)
+	case upstreamFetchResultMsg:
+		return m.handleUpstreamFetchResult(msg)
+	case tlsFetchResultMsg:
+		return m.handleTLSFetchResult(msg)
 	case logTailMsg:
 		return m.handleLogTail(msg)
 	case copyResultMsg:
@@ -101,7 +107,7 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 			m.logLines = m.logLines[len(m.logLines)-logMaxLines:]
 		}
 		if m.logFollow {
-			m.logCursor = len(m.logLines) - 1
+			m.logCursor = len(m.filteredLogEntries()) - 1
 		} else {
 			// Keep the selection stable across the bounded trim: the
 			// dropped front entries shift every index down by `dropped`.
@@ -109,8 +115,9 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 			if m.logCursor < 0 {
 				m.logCursor = 0
 			}
-			if m.logCursor > len(m.logLines)-1 {
-				m.logCursor = len(m.logLines) - 1
+			entries := m.filteredLogEntries()
+			if m.logCursor > len(entries)-1 {
+				m.logCursor = len(entries) - 1
 			}
 		}
 	}
@@ -121,6 +128,18 @@ func (m *Model) handleLogTail(msg logTailMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The log filter modal takes precedence over the log view.
+	if m.showLogFilter {
+		return m.updateLogFilterKey(msg)
+	}
+	// The TLS dashboard takes precedence over the main keymap.
+	if m.showTLS {
+		return m.updateTLSKey(msg)
+	}
+	// The runtime dashboard takes precedence over the main keymap.
+	if m.showRuntime {
+		return m.updateRuntimeKey(msg)
+	}
 	// The unsaved-changes confirmation modal takes precedence over every
 	// other modal and the main keymap: it is the exit guard and can be
 	// opened from any context.
@@ -270,6 +289,10 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runCommand(commandCopy)
 	case "/", "ctrl+f":
 		return m.runCommand(commandSearch)
+	case "T":
+		return m.runCommand(commandTLS)
+	case "I":
+		return m.runCommand(commandRuntime)
 	case "ctrl+h":
 		return m.runCommand(commandHelp)
 	case "?":

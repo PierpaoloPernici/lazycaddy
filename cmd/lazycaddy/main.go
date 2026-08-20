@@ -30,6 +30,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,6 +48,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/discover"
 	"github.com/PierpaoloPernici/lazycaddy/internal/logs"
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
+	"github.com/PierpaoloPernici/lazycaddy/internal/tls"
 	"github.com/PierpaoloPernici/lazycaddy/internal/ui"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 	"github.com/PierpaoloPernici/lazycaddy/internal/watch"
@@ -204,7 +206,16 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 				ReadFile: os.ReadFile,
 			})
 			monitor.Start()
+			// Dashboard fetchers: each panel fetches independently and is
+			// cancellable, so a failure in one never blocks the others.
+			configFetcher := runtime.NewAdminConfigFetcher(client)
+			upstreamFetcher := runtime.NewAdminUpstreamFetcher(client)
+			tlsSource := tls.NewFileSource(settings.TLSStorageDir, os.ReadFile, os.ReadDir, os.Stat)
+			tlsFetcher := app.TLSFetcherFunc(func(ctx context.Context) ([]tls.Certificate, error) {
+				return tlsSource.ListCertificates(ctx)
+			})
 			model := ui.NewWithBrowser(loader, formatter, saver, reloader, runtimeStatus, logSource, editor, searcher, version, monitor, rollbacker, os.ReadFile, webHelp, clip)
+			model.WithConfigFetcher(configFetcher).WithUpstreamFetcher(upstreamFetcher).WithTLSFetcher(tlsFetcher)
 			// Load before starting the program. Parse errors stay inside the
 			// state, so the TUI still shows the raw source; only a missing
 			// or unreadable config file is surfaced as the top-level error.
@@ -238,6 +249,8 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 		"path of a Caddy log file to follow in the log view (default: empty; the log view is disabled)")
 	rootCmd.Flags().StringVar(&settings.JournalUnit, "log-journal-unit", "",
 		"systemd journal unit to follow in the log view (e.g. caddy.service); default: empty; the log view then reads the journal")
+	rootCmd.Flags().StringVar(&settings.TLSStorageDir, "tls-storage-dir", "",
+		"path of the TLS storage directory (CertMagic) for the TLS dashboard (default: empty; the TLS panel is unavailable)")
 
 	return rootCmd
 }

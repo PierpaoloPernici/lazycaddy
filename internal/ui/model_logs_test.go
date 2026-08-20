@@ -359,11 +359,13 @@ func TestModelLogView_Footer(t *testing.T) {
 	if strings.Contains(stripANSI(m.View()), "l logs") {
 		t.Errorf("footer should not list operational commands:\n%s", m.View())
 	}
-	// While the log view is open the footer shows the log-view key hints.
+	// While the log view is open the footer is navigation-only like the
+	// homepage (operational keys via ?), so it fits at 80 columns.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	m = updated.(*Model)
+	m = resize(m, 80, 30)
 	view := stripANSI(m.View())
-	for _, want := range []string{"Enter/→ detail", "f follow", "p pause/resume", "Esc close", "q quit"} {
+	for _, want := range []string{"↑/↓ move", "Enter detail", "Esc close", "? commands"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("footer missing %q while the log view is open:\n%s", want, view)
 		}
