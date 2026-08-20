@@ -661,18 +661,18 @@ func (m *Model) footer(width int) string {
 		keys = "↑/↓ navigate · PgUp/PgDown scroll · Enter run · Esc close"
 	case m.showBackups:
 		if m.canRollback() {
-			keys = "↑/↓ move · Enter/→ compare & rollback · Esc close"
+			keys = "↑/↓ move · PgUp/PgDown · Enter/→ compare & rollback · Esc close"
 		} else {
-			keys = "↑/↓ move · Enter/→ compare · Esc close"
+			keys = "↑/↓ move · PgUp/PgDown · Enter/→ compare · Esc close"
 		}
 	case m.showDetail:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
 	case m.showDiagnostics:
-		keys = "↑/↓ navigate · Enter/+ or → detail · Esc/← close"
+		keys = "↑/↓ navigate · PgUp/PgDown · Enter/+ or → detail · Esc/← close"
 	case m.logDetailOpen:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc/← back"
 	case m.showLogFilter:
-		keys = "type filter · Enter apply · Esc cancel · Ctrl-U clear"
+		keys = "type filter · Enter apply · Ctrl-U clear · Esc cancel"
 	case m.showRuntime:
 		keys = "↑/↓ move · PgUp/PgDown page · r refresh · y copy · Esc close"
 	case m.showTLS:
@@ -684,7 +684,7 @@ func (m *Model) footer(width int) string {
 	case m.showErrorHistory:
 		keys = "↑/↓ scroll · PgUp/PgDown page · Esc close"
 	case m.showInlineReview:
-		keys = "↑/↓ move · Enter reveal · → detail · v validate · Esc close"
+		keys = "↑/↓ move · PgUp/PgDown · Enter reveal · → detail · v validate · Esc close"
 	case m.state != nil && m.state.Graph != nil:
 		// The normal footer is deliberately navigation-only. Operational
 		// actions remain available through their direct hotkeys and the
@@ -692,9 +692,11 @@ func (m *Model) footer(width int) string {
 		// advertised only when the selected row has children.
 		navKeys := "↑/↓ move"
 		if sel := m.selectedItem(); sel != nil && sel.hasChildren {
-			navKeys = "↑/↓ move · Enter toggle"
+			navKeys = "↑/↓ move · PgUp/PgDown · Enter toggle"
+		} else {
+			navKeys = "↑/↓ move · PgUp/PgDown"
 		}
-		keys = navKeys + " · PgUp/PgDown · +/- all · ? commands"
+		keys = navKeys + " · +/- all · ? commands"
 	default:
 		keys = "↑/↓ move · PgUp/PgDown · ? commands"
 	}
