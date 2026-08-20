@@ -219,7 +219,7 @@ func (m *Model) header(width int) string {
 	// The loaded-state badge sits between the PARSE ERROR marker and the
 	// read/write badge. Explicit text labels carry the state, never color
 	// alone, matching the RO convention. The initial state is shown
-	// as UNKNOWN (nothing proven yet) only when reloading is possible, so
+	// as NOT VERIFIED (nothing proven yet) only when reloading is possible, so
 	// a read-only session without a caddy binary stays quiet.
 	if m.reloading {
 		right = reloadingBadge.Render(" RELOADING ") + right
@@ -230,7 +230,7 @@ func (m *Model) header(width int) string {
 	} else if m.loaded == loadedUnreachable {
 		right = unreachableBadge.Render(" UNREACHABLE ") + right
 	} else if m.reloader != nil {
-		right = unknownBadge.Render(" UNKNOWN ") + right
+		right = unknownBadge.Render(" NOT VERIFIED ") + right
 	}
 	// The unsaved badge is the leftmost marker: it is the most immediate
 	// state and is an explicit text badge, never color alone.
