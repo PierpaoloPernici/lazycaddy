@@ -10,6 +10,7 @@ import (
 	"github.com/PierpaoloPernici/lazycaddy/internal/runtime"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // View implements tea.Model.
@@ -496,7 +497,18 @@ func (m *Model) syncSource(srcW, paneH int) {
 		if doc != nil {
 			src = doc.Source
 		}
-		m.viewport.SetContent(numberedSource(src, key.start, key.end, m.inlineFindings, diags, layout))
+		raw := numberedSource(src, key.start, key.end, m.inlineFindings, diags, layout)
+		// At narrow widths (e.g. 80 columns, source content ~36) a long
+		// highlighted line would otherwise wrap in the viewport's lipgloss
+		// render and break the 1:1 source-line → display-row mapping
+		// (fold layout, reveal, gutter). Truncate each display line to the
+		// viewport width so every source line stays one row and the pink
+		// 192.168-style address never leaks onto the next gutter.
+		lines := strings.Split(raw, "\n")
+		for i, l := range lines {
+			lines[i] = ansi.Truncate(l, contentW, "…")
+		}
+		m.viewport.SetContent(strings.Join(lines, "\n"))
 		m.lastCaddyDiags = diags
 		if doc != prevDoc && !refresh {
 			// New document: start at the top; revealRange then scrolls
