@@ -82,7 +82,13 @@ missing changelog classification.
 - Commit subjects use Conventional Commits with a supported English type such
   as `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`, `ci`, `build`
   or `revert`; an optional scope should identify the affected area, for example
-  `feat(logs): add journalctl source`.
+  `feat(logs): add journalctl source`. The scope, when present, must be a
+  single identifier matching `[a-z0-9._/-]*` (no commas, spaces or multiple
+  scopes like `fix(tls, runtime)`); when several areas are touched, use a
+  single most relevant scope or no scope at all and detail the other areas
+  in the body. The repository validates this with
+  `^\(feat|fix|...)(\([a-z0-9][a-z0-9._/-]*\))?!?: .+` in
+  `scripts/check-release-metadata.sh`.
 - Subjects are short, imperative, specific and final. Do not use messages such
   as `updates`, `work in progress`, `fix stuff`, or release-numbered
   placeholders. Do not add a version number to a commit or pull request title
