@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,14 +104,18 @@ var (
 // missing sidecars, permission errors and partial parses by surfacing
 // them as unavailable states rather than blocking the TUI.
 type FileSource struct {
-	Dir      string
-	ReadFile func(string) ([]byte, error)
-	ReadDir  func(string) ([]os.DirEntry, error)
-	Stat     func(string) (os.FileInfo, error)
+	Dir        string
+	ReadFile   func(string) ([]byte, error)
+	ReadHeader func(string) ([]byte, error)
+	ReadDir    func(string) ([]os.DirEntry, error)
+	Stat       func(string) (os.FileInfo, error)
 }
 
 // NewFileSource returns a FileSource for dir. Nil callbacks default to
 // os.ReadFile/os.ReadDir/os.Stat so tests can inject a fake filesystem.
+// ReadHeader always opens the file and reads at most 2048 bytes so a
+// private key PEM never enters memory in full, even when production
+// passes os.ReadFile as readFile.
 func NewFileSource(dir string, readFile func(string) ([]byte, error), readDir func(string) ([]os.DirEntry, error), stat func(string) (os.FileInfo, error)) *FileSource {
 	if readFile == nil {
 		readFile = os.ReadFile
@@ -121,7 +126,48 @@ func NewFileSource(dir string, readFile func(string) ([]byte, error), readDir fu
 	if stat == nil {
 		stat = os.Stat
 	}
-	return &FileSource{Dir: dir, ReadFile: readFile, ReadDir: readDir, Stat: stat}
+	readHeader := func(p string) ([]byte, error) {
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		buf := make([]byte, 2048)
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return nil, err
+		}
+		return buf[:n], nil
+	}
+	return &FileSource{Dir: dir, ReadFile: readFile, ReadHeader: readHeader, ReadDir: readDir, Stat: stat}
+}
+
+// NewFileSourceWithHeader is like NewFileSource but allows tests to inject
+// a custom ReadHeader for the private-key check without reading the whole
+// file.
+func NewFileSourceWithHeader(dir string, readFile func(string) ([]byte, error), readHeader func(string) ([]byte, error), readDir func(string) ([]os.DirEntry, error), stat func(string) (os.FileInfo, error)) *FileSource {
+	if readFile == nil {
+		readFile = os.ReadFile
+	}
+	if readHeader == nil {
+		readHeader = func(p string) ([]byte, error) {
+			f, err := os.Open(p)
+			if err != nil {
+				return nil, err
+			}
+			defer f.Close()
+			buf := make([]byte, 2048)
+			n, _ := f.Read(buf)
+			return buf[:n], nil
+		}
+	}
+	if readDir == nil {
+		readDir = os.ReadDir
+	}
+	if stat == nil {
+		stat = os.Stat
+	}
+	return &FileSource{Dir: dir, ReadFile: readFile, ReadHeader: readHeader, ReadDir: readDir, Stat: stat}
 }
 
 // ListCertificates implements Source.
@@ -168,20 +214,12 @@ func (s *FileSource) ListCertificates(ctx context.Context) ([]Certificate, error
 			return nil
 		}
 		if ext == ".pem" {
-			// Avoid loading an entire private key into memory: peek at
-			// the first 2 KiB and skip if it looks like a private key.
-			// Valid certificates named private.example.com.crt are not
-			// affected because they are .crt, not .pem, and the check is
-			// extension-specific.
-			bHead, err := s.ReadFile(path)
+			bHead, err := s.ReadHeader(path)
 			if err != nil {
 				if os.IsPermission(err) {
 					out = append(out, Certificate{StoragePath: path, RenewalState: "unknown", OCSPState: "unknown"})
 				}
 				return nil
-			}
-			if len(bHead) > 2048 {
-				bHead = bHead[:2048]
 			}
 			if strings.Contains(string(bHead), "PRIVATE KEY") {
 				return nil

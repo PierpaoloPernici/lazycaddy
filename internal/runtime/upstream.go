@@ -186,6 +186,8 @@ func EnrichUpstreamsWithLive(static []Upstream, liveBody []byte) []Upstream {
 				}
 				if addr, ok := m["address"].(string); ok && addr != "" {
 					liveMap[addr] = liveFromMap(m)
+				} else if addr, ok := m["dial"].(string); ok && addr != "" {
+					liveMap[addr] = liveFromMap(m)
 				}
 			}
 		}
