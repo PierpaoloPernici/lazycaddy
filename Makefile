@@ -3,7 +3,7 @@ GORELEASER ?= goreleaser
 
 .DEFAULT_GOAL := help
 
-.PHONY: build check clean coverage dist fmt fmt-check help release-check run test test-race vet
+.PHONY: build check clean coverage dist fmt fmt-check fuzz help release-check run test test-race vet
 
 build:
 	mkdir -p bin
@@ -27,6 +27,10 @@ fmt:
 fmt-check:
 	test -z "$$($(GO)fmt -l .)"
 
+fuzz:
+	$(GO) test ./internal/caddyfile/ -run '^$$' -fuzz FuzzParseNoPanic -fuzztime 60s
+	$(GO) test ./internal/caddyfile/ -run '^$$' -fuzz FuzzPatchRoundTrip -fuzztime 60s
+
 help:
 	@printf '%s\n' 'Available targets:'
 	@printf '  %-18s %s\n' 'make build' 'Build a local binary in bin/'
@@ -36,6 +40,7 @@ help:
 	@printf '  %-18s %s\n' 'make dist' 'Build local release artifacts'
 	@printf '  %-18s %s\n' 'make fmt' 'Format Go sources'
 	@printf '  %-18s %s\n' 'make fmt-check' 'Verify formatting without changing files'
+	@printf '  %-18s %s\n' 'make fuzz' 'Fuzz the parser and patcher (60s per target)'
 	@printf '  %-18s %s\n' 'make help' 'Show this help'
 	@printf '  %-18s %s\n' 'make release-check' 'Validate the GoReleaser configuration'
 	@printf '  %-18s %s\n' 'make run' 'Run lazycaddy locally'
