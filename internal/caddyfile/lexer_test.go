@@ -208,6 +208,20 @@ func TestLexHeredoc(t *testing.T) {
 			wantErrSub: "incomplete heredoc <<EOF",
 		},
 		{
+			name:        "CRLF line endings",
+			src:         "heredoc <<EOF\r\ncontent\r\nEOF same-line-arg\r\n",
+			wantHeredoc: true,
+			wantText:    "content",
+			wantAfter:   []string{"same-line-arg"},
+		},
+		{
+			name:        "CRLF indented marker strips indentation",
+			src:         "heredoc <<EOF\r\n\t\tmulti\r\n\t\tline\r\n\tEOF\r\n",
+			wantHeredoc: true,
+			wantText:    "\tmulti\n\tline",
+			wantAfter:   nil,
+		},
+		{
 			name:       "mismatched indentation",
 			src:        "heredoc <<EOF\n\tcontent\n\t\tEOF\n",
 			wantErrSub: "mismatched leading whitespace",
