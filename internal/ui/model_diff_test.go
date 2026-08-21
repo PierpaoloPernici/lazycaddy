@@ -135,6 +135,17 @@ func TestModelDiff_ScrollKeys(t *testing.T) {
 	if m.diffViewport.YOffset >= afterPgDown {
 		t.Errorf("PgUp did not retreat scroll: afterPgDown=%d, after=%d", afterPgDown, m.diffViewport.YOffset)
 	}
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	beforeUp := m.diffViewport.YOffset
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.diffViewport.YOffset <= beforeUp {
+		t.Errorf("Down did not advance scroll: before=%d, after=%d", beforeUp, m.diffViewport.YOffset)
+	}
+	afterDown := m.diffViewport.YOffset
+	m = keyPress(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.diffViewport.YOffset >= afterDown {
+		t.Errorf("Up did not retreat scroll: afterDown=%d, after=%d", afterDown, m.diffViewport.YOffset)
+	}
 }
 
 // TestModelFooter_DiffContext verifies that the bottom footer shows
