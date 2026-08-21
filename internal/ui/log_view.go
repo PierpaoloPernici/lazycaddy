@@ -124,9 +124,9 @@ func (m *Model) updateLogDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m.requestQuit()
 	case "up", "k":
-		m.logDetailViewport.LineUp(1)
+		m.logDetailViewport.ScrollUp(1)
 	case "down", "j":
-		m.logDetailViewport.LineDown(1)
+		m.logDetailViewport.ScrollDown(1)
 	case "pgup":
 		m.logDetailViewport.PageUp()
 	case "pgdown":

@@ -52,6 +52,8 @@ The user may communicate in any language, but all repository artifacts must be w
 
 Test import resolution, nested/globbed imports and cycles, source-range parsing, byte-preserving patches, `$EDITOR` round-trips, validation guards, atomic backups, `fsnotify` conflicts, diff confirmation, permission failures, read-only fallback, capability gating, saved/validated/loaded states, and runtime timeouts. Before multi-file editing is enabled, test transaction preflight and complete rollback. Name tests `Test<Behavior>`; use table-driven cases where useful. Every write or reload operation needs guard-condition tests.
 
+Fuzz targets live beside the code they exercise (currently `internal/caddyfile/fuzz_test.go`: `FuzzParseNoPanic`, `FuzzPatchRoundTrip`). Plain `go test` only replays their seed corpus plus any recorded crasher; run `make fuzz` (or `go test ./internal/caddyfile/ -run '^$' -fuzz FuzzParseNoPanic`) to explore with the real fuzzer before parser- or patch-related releases. Crashers are written to `testdata/fuzz/<Name>/` and replayed by every subsequent test run, so a found regression can never hide.
+
 ## Caddy Compatibility Monitoring
 
 When a task affects parsing, directives, modules, runtime integration, the Admin API, or supported Caddy versions, review current compatibility information from these sources:

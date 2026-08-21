@@ -653,7 +653,9 @@ func (m *Model) mousePress(x, y int) {
 // one (or the point falls outside the content rectangle). A click anywhere
 // on the indicator row — including its gutter — opens the fold.
 func (m *Model) foldRowAtPanePoint(geo textPaneGeometry, x, y int) int {
-	x, y = x-geo.x, y-geo.y
+	// x is deliberately ignored: a click anywhere on the indicator row,
+	// including its gutter, opens the fold.
+	y = y - geo.y
 	if y < 0 || y >= geo.height {
 		return -1
 	}

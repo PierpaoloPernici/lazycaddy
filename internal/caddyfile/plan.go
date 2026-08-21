@@ -645,31 +645,6 @@ func (p *Planner) Delete(n Node) (*PlannedEdit, error) {
 	return &PlannedEdit{DocID: p.doc.Path, Range: located.Range, NewText: "", Op: EditDelete}, nil
 }
 
-// findCommonParent returns the first node whose children contain both a and
-// b as direct children, or nil when there is none.
-func (p *Planner) findCommonParent(a, b Node) *Node {
-	var parent *Node
-	var walk func(ns []Node)
-	walk = func(ns []Node) {
-		if parent != nil {
-			return
-		}
-		for _, n := range ns {
-			if parent != nil {
-				return
-			}
-			if indexOfChild(n, a) >= 0 && indexOfChild(n, b) >= 0 {
-				c := n
-				parent = &c
-				return
-			}
-			walk(n.Children)
-		}
-	}
-	walk(p.doc.Nodes)
-	return parent
-}
-
 // isTopLevel reports whether n is a direct child of the document.
 func (p *Planner) isTopLevel(n Node) bool {
 	want := nodeIdent(n)

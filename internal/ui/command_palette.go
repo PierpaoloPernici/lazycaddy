@@ -683,7 +683,7 @@ func renderCommandPaletteRow(key, label string, width int, selected, enabled boo
 	keyStyle := keyHintStyle
 	labelStyle := lipgloss.NewStyle()
 	if !enabled {
-		keyStyle = commandPaletteDisabledStyle.Copy().Bold(true)
+		keyStyle = commandPaletteDisabledStyle.Bold(true)
 		labelStyle = commandPaletteDisabledStyle
 	}
 	keyPart := keyStyle.Width(keyW).Render(keyText)

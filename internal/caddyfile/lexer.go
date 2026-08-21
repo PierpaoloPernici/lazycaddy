@@ -137,6 +137,13 @@ func lexToken(src []byte, i *int, line, skipped, col *int, docID string) (Token,
 			if ch == ' ' {
 				goto done // "<<" followed by a space is a regular token
 			}
+			if ch == '\r' {
+				// Skip CR so a CRLF-terminated marker line does not poison
+				// the marker, mirroring Caddy's lexer (which only cares
+				// about LF while detecting the opener).
+				*i++
+				continue
+			}
 			if ch == '\n' {
 				if len(val) == 2 {
 					return Token{}, fmt.Errorf("missing opening heredoc marker on line %d; must contain only alphanumeric characters, dashes and underscores; got empty string", startLine)

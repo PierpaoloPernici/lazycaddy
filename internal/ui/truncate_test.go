@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -63,5 +64,48 @@ func TestTruncateToWidth_MultibyteSafe(t *testing.T) {
 	}
 	if w := lipgloss.Width(got); w > 5 {
 		t.Errorf("truncateToWidth(%q, 5) = %q (width %d), want width <= 5", s, got, w)
+	}
+}
+
+func TestTruncateToWidth_WideRunesRespectBudget(t *testing.T) {
+	// CJK runes occupy two cells each: the cut must leave room for the
+	// ellipsis and never exceed the budget.
+	s := strings.Repeat("日本語", 10)
+	got := truncateToWidth(s, 7)
+	if w := lipgloss.Width(got); w > 7 {
+		t.Errorf("truncateToWidth(cjk, 7) = %q (width %d), want width <= 7", got, w)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncateToWidth(cjk, 7) = %q, want to end with '…'", got)
+	}
+}
+
+func TestTruncateToWidth_ZeroWidthRunesKept(t *testing.T) {
+	// A combining mark adds no cells: it belongs to the truncated prefix
+	// whenever its base rune fits, exactly like the whole-string width
+	// measurement reports.
+	s := "e\u0301x\u0301ample text"
+	got := truncateToWidth(s, 3)
+	if w := lipgloss.Width(got); w > 3 {
+		t.Errorf("truncateToWidth(%q, 3) = %q (width %d), want width <= 3", s, got, w)
+	}
+	if !strings.HasPrefix(got, "e\u0301") {
+		t.Errorf("truncateToWidth(%q, 3) = %q, want the combining sequence kept intact", s, got)
+	}
+}
+
+func TestTruncateToWidth_LongLineIsLinear(t *testing.T) {
+	// A regression guard against the quadratic reverse scan: 100k cells
+	// must truncate in bounded time. The old implementation needed tens
+	// of seconds at this length; the single pass needs milliseconds.
+	s := strings.Repeat("x", 100_000)
+	start := time.Now()
+	got := truncateToWidth(s, 80)
+	elapsed := time.Since(start)
+	if lipgloss.Width(got) != 80 {
+		t.Errorf("truncateToWidth(long, 80) width = %d, want 80", lipgloss.Width(got))
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("truncateToWidth on a 100k-cell line took %v; the scan is no longer linear", elapsed)
 	}
 }

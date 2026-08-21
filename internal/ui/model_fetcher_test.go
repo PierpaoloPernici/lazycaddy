@@ -36,8 +36,6 @@ func TestModel_WithFetchers(t *testing.T) {
 	if m2.browser == nil {
 		t.Error("NewWithBrowser not set")
 	}
-	// Test findCommonParent via plan (indirect)
-	// Just call a simple plan to cover findCommonParent
 	_ = caddyfile.Plan{}
 	_ = config.DefaultSettings()
 }

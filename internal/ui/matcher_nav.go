@@ -130,7 +130,7 @@ func matcherStatus(r caddyfile.MatcherRef, idx, total int) string {
 	name := r.Name
 	directive := r.Node.Name
 	if directive == "" {
-		directive = fmt.Sprintf("%s", r.Node.Kind)
+		directive = r.Node.Kind.String()
 	}
 	return fmt.Sprintf("matcher @%s: %s %d/%d · %s · line %d",
 		name, kind, idx+1, total, directive, r.Node.Range.StartLine)

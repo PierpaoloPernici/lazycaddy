@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // truncateToWidth returns s truncated to fit within maxW cells, with
 // an ellipsis appended when truncation occurs. The input is treated
@@ -12,6 +16,11 @@ import "github.com/charmbracelet/lipgloss"
 // A non-positive maxW returns an empty string. A maxW of 1 returns
 // only the ellipsis (no room for content). A string that already
 // fits is returned unchanged.
+//
+// The scan is a single forward pass that accumulates display cells:
+// it runs in linear time so a very long log line cannot stall the
+// render loop (the previous reverse scan re-measured a shrinking
+// prefix per rune, which was quadratic).
 func truncateToWidth(s string, maxW int) string {
 	if maxW <= 0 {
 		return ""
@@ -23,11 +32,15 @@ func truncateToWidth(s string, maxW int) string {
 	if target <= 0 {
 		return "…"
 	}
-	runes := []rune(s)
-	for i := len(runes); i > 0; i-- {
-		if lipgloss.Width(string(runes[:i])) <= target {
-			return string(runes[:i]) + "…"
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > target {
+			break
 		}
+		b.WriteRune(r)
+		w += rw
 	}
-	return "…"
+	return b.String() + "…"
 }
