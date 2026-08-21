@@ -73,6 +73,31 @@ release:
     Caddy itself, backed up before writing, saved atomically and reloaded
     only when you ask. Ambiguous constructs refuse the form instead of
     guessing, and the raw editor remains the always-available escape hatch.
+    {{- else if eq .Version "0.4.0" }}
+    lazycaddy {{ .Version }} is now available.
+
+    This release completes the v0.4 runtime and TLS observability milestone,
+    while making the Caddyfile easier to inspect without compromising source
+    fidelity or safety.
+
+    It adds semantic source highlighting, matcher navigation, advisory inline
+    validation, Caddy diagnostic mapping and display-only source folding. The
+    new runtime and TLS dashboards expose loaded configuration, upstream
+    health, certificate and storage state, while source-aware log filtering
+    makes operational information easier to navigate.
+
+    The release also includes a broad UI/UX refinement pass: responsive
+    layouts for narrow terminals, clearer source headers, context-aware
+    footers and command palettes, consistent master-detail navigation, and
+    more predictable refresh and unavailable-state feedback across views.
+
+    Source-aware views and editing workflows preserve comments, whitespace,
+    ordering, imports and unknown directives, keeping the Caddyfile as the
+    only source of truth.
+
+    Runtime and TLS views remain read-only and cancellation-aware. The
+    Caddyfile remains the source of truth, and no operation reloads or
+    modifies Caddy implicitly.
     {{- else }}
     lazycaddy {{ .Version }} is now available.
 

@@ -84,151 +84,27 @@ The release process is documented in [docs/releasing.md](docs/releasing.md).
 
 ## Current status
 
-The lossless Caddyfile parser and patcher are complete. The current application
-is a read-only-by-default inspector with an opt-in format, validate, diff,
-edit, save and reload workflow, and the complete v0.3 structured-editing
-milestone (released as v0.3.0):
+The v0.4 milestone is complete. Current capabilities include:
 
-- load a Caddyfile and resolve nested imports while keeping imported files as
-  separate documents;
-- browse sites, directives, parse errors and raw source without discarding
-  comments, whitespace or unknown directives;
-- run `caddy fmt` and `caddy validate` (`v`) against a temporary working copy,
-  with structured diagnostics and a detailed view;
-- review a colored unified diff (`D`) before applying formatting changes;
-- save only after successful validation (`s` in writable mode), creating a
-  timestamped backup and replacing the source through a same-directory atomic
-  write;
-- reload through the local Admin API (`r`) only after a validated, saved
-  configuration and a confirmation that names the target, with saved,
-  validated and loaded states shown in the header;
-- watch the loaded root and imported files for external changes, offering
-  explicit reload, compare and keep actions without overwriting changes;
-- detect external changes before saving and report a recovery backup if a
-  write fails after backup creation;
-- inspect the backup history of any document (`B`), diff a selected backup
-  against the current file, and roll back to it in writable mode — following
-  the same validate, diff, backup and confirmation workflow as a save, never
-  reloading Caddy implicitly and always creating a fresh backup of the current
-  file before the restore;
-- prune old backups with `--backup-retention N` (maximum backups kept per
-  source file; disabled by default).
+- lossless browsing of Caddyfiles, imports, snippets and unknown directives;
+- read-only source inspection with search, semantic highlighting, matcher
+  navigation and display-only folding;
+- safe editing with Caddy formatting and validation, diff review, backups,
+  atomic writes and explicit reloads;
+- `$EDITOR` workflows, node creation, deletion, reordering and rollback;
+- read-only runtime, upstream health, logs and TLS dashboards;
+- responsive layouts, state-aware headers, contextual footers and command
+  palettes;
+- clipboard integration and a bounded error history.
 
-The inspector also provides:
+The Caddyfile remains the source of truth. lazycaddy is read-only by default,
+never reloads Caddy implicitly and keeps browsing available when optional
+runtime or filesystem capabilities are unavailable.
 
-- Caddy version, Admin API reachability and capability status in the header;
-- an opt-in, rotation-aware log view with bounded history and JSON
-  highlighting (`--log-file` or `--log-journal-unit`, `l`), now with
-  source-aware filtering by host/status/level/text (`F` in logs, `c` clear),
-  `f`/`p` follow/pause, and bounded `2xx`/`3xx`/`4xx`/`5xx` counts plus
-  latency summaries in the title;
-- a read-only runtime dashboard (`I`) with loaded config (`GET /config/`) and
-  live upstream health (`GET /reverse_proxy/upstreams` → `fails`/`active`)
-  alongside static `health_checks`, and a TLS dashboard (`T`) with
-  certificate metadata, storage location, renewal/OCSP states and lock/
-  permission handling — both with explicit `loading`/`available`/`stale`/
-  `unavailable` and `r` refresh without blocking the TUI;
-- `$EDITOR` editing for a selected node (`e`) or an entire document (`E`),
-  including imported files, with validation, diff review and the same backup
-  and atomic-save pipeline;
-- read-only global search across nodes, files, source lines and loaded logs
-  (`/` or `Ctrl-F`);
-- exact source copying with `y`: with mouse tracking enabled, drag to
-  select text in the source, log or diff panes (or use `Shift`+arrows as a
-  keyboard fallback); right-clicking inside a pane with an active selection
-  also copies it. `y` copies exactly the selected visible text —
-  source bytes, plain log text or the diff body without decorations; without
-  a text selection `y` copies the selected document or node range as before.
-  Copying uses OSC 52 in the terminal and falls back to an available local
-  clipboard command (`pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip`);
-- exact-range node deletion (`d`) with diff confirmation and post-save tree
-  rebuilding;
-- moving a structural block after a same-document sibling (`o`) through a
-  picker, with validation, diff confirmation, backup, atomic save and post-save
-  tree re-anchoring;
-- per-document diff review (`D`): the root diffs the validated working
-  copy, while imported documents (and the root without a working copy) are
-  diffed against their current on-disk bytes; the diff modal supports hunk
-  navigation (`n`/`N`), horizontal scrolling for long lines (`h`/`l`) and
-  a change summary in the title;
-- an unsaved-changes guard: the header shows an explicit `UNSAVED` badge
-  while edits are pending, and quitting with unsaved edits opens a prompt
-  (`s` save and stay, `d` discard and quit, `Esc` cancel) — navigation
-  never prompts;
-- a bounded error history (`H`) that records every failure with a safe
-  next action, including save/rollback/reload failures, monitor failures
-  and retention failures, and recovery hints that point you at the
-  recovery backup (`B`) or the editor's pre-edit snapshot.
-
-The merged v0.3 foundation also provides:
-
-- context-aware directive insertion with `a`;
-- dedicated structured forms with `m` for `reverse_proxy`, `respond`,
-  `redir`, `file_server`, `php_fastcgi`, `encode`, `header`, `tls`, `log`
-  and `import` (ambiguous constructs keep the raw editor);
-- structural-node creation with `n` for sites, snippets, named routes,
-  global options and nested handler blocks;
-- exact-range deletion with `d`, all using byte-preserving patches,
-  validation, diff confirmation and the existing save/reload safety pipeline;
-- line/column token spans, semantic roles, an advisory directive catalog,
-  compatibility fixtures and structural-navigation primitives;
-- official Caddyfile help from the command palette and structured forms with
-  `Ctrl-H`.
-
-The v0.3 structured-editing milestone is complete and released as v0.3.0.
-The source pane now also renders advisory semantic highlighting (site
-addresses, directive names, domains, paths, ports, IP/CIDR values, matchers,
-placeholders, durations, status codes, strings and heredoc boundaries) on top
-of the lexical base, so common patterns are easier to scan without weakening
-the raw-source fallback or byte-preservation guarantees. The `g` keybinding
-cycles through named matcher definitions and their references, re-anchoring the
-tree and source view on each occurrence, and the `i` keybinding opens the
-inline findings review (document-local, non-blocking lint plus the
-authoritative Caddy validation). Caddy's own `validate` diagnostics are now
-mapped onto the source pane: error lines carry a red `E` gutter badge (blue
-`i` advisory-info, amber `!` hint and orange `W` warning badges complete the
-set, with every line reserving the marker cell so the source text never
-shifts), the offending token is styled, and a failed `v` auto-reveals the
-first authoritative error in its document instead of forcing the diagnostics
-modal open. The review lists one row per Caddy diagnostic with its line and
-relative path, `Enter` reveals it and `→` opens the full detail; list views
-(logs, diagnostics, backups) follow the same `→`/`←` master-detail
-navigation. Display-only source folding is merged too (PR #49): collapsing a
-structural tree row (`Enter`, `+`/`-`, `←`/`→`, or the palette's
-expand/collapse all) replaces the block body with a single `⋯ N lines`
-indicator row while the header and the closing brace stay visible — the
-source fold is the tree expansion state itself, so the two panes never
-disagree, and clicking an indicator row reopens the fold. The folded view
-never rewrites the source — every byte, line number and range stays valid
-for patching, selection and copying — and fold state is keyed by the exact
-source range, so it survives selection changes, saves, reloads and
-rollbacks. A reveal (selection, search hit, diagnostic jump) auto-expands
-the fold hiding the target line, and mouse selection, `Shift`+arrows and `y`
-keep returning the exact source bytes across folds.
-
-The v0.1 vertical slice and the v0.2 milestone are complete. The current UI
-also provides a searchable command palette (`?`) alongside the direct hotkeys,
-keeps the normal footer navigation-only, and uses compact `RW`/`RO` header
-badges with a prominent status strip. Terminal directives remain available in
-the source and search views without expanding the tree into one row per
-directive. The v0.2 release also landed journal-backed logs and sensible path
-defaults: lazycaddy now discovers
-`./Caddyfile` (falling back to `/etc/caddy/Caddyfile`) and the `caddy`
-binary through `PATH` when they are not given explicitly, and keeps format,
-validate and reload disabled when `caddy` is unavailable. The interface also
-provides a persistent state-aware header, semantic status strip, responsive
-pane layout, adaptive theme colors, a compact navigation footer and exact
-source clipboard copying with OSC 52 and local fallbacks. The v0.4 milestone
-is complete and merged as PR #52: advisory semantic highlighting, matcher
-definition↔reference navigation, document-local inline lint, Caddy-diagnostic
-mapping, display-only source folding **plus the runtime/TLS dashboards and
-source-aware log filtering** are done — all without weakening the raw-source
-fallback or byte-preservation guarantees. The next milestone is v0.5
-(remote/operations).
-
-The application is read-only by default and never reloads Caddy implicitly.
-Unavailable capabilities disable only the affected actions, while browsing
-and raw source inspection remain available.
+The next planned milestone is v0.5: remote server profiles and remote
+operations. See [PLAN.md](PLAN.md) for the detailed capability list,
+implementation status and roadmap, and [docs/designsystem.md](docs/designsystem.md)
+for the UI/UX rules and keybindings.
 
 ### Safe change workflow
 
