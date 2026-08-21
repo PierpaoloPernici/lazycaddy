@@ -26,6 +26,18 @@ It is the operational compatibility record; broader design guidance remains in
 | Versions older than `v2.11.4` | Unverified | — | Generic browsing may still work, but no compatibility claim is made for structured editing or version-specific behavior. |
 | Versions newer than `v2.11.4` | Unverified until reviewed | — | Preserve unknown syntax and defer version-specific behavior until the release review is complete. |
 
+## v0.4.1 compatibility review (2026-08-21)
+
+The official Caddy release page still identifies `v2.11.4` as the latest
+release at this review. The current Caddyfile documentation continues to
+document heredocs, and the `v2.11.4` lexer explicitly ignores carriage returns
+while recognizing heredoc openings and while finalizing heredoc content.
+
+The `v0.4.1` CRLF heredoc fix aligns lazycaddy with that behavior. No newer
+Caddy release or parser, directive, module, Admin API or capability change was
+identified that requires a compatibility update. The reviewed baseline remains
+`v2.11.4`; unknown syntax and plugin directives remain preserved and raw-editable.
+
 ## Reviewed behavior baseline
 
 The following behaviors are the compatibility boundaries for v0.3:

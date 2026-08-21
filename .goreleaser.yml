@@ -98,6 +98,20 @@ release:
     Runtime and TLS views remain read-only and cancellation-aware. The
     Caddyfile remains the source of truth, and no operation reloads or
     modifies Caddy implicitly.
+    {{- else if eq .Version "0.4.1" }}
+    lazycaddy {{ .Version }} is now available.
+
+    This patch release improves reliability across Caddyfile parsing,
+    external-change handling and long-line rendering.
+
+    It fixes CRLF heredoc parsing, discards stale external-change results
+    after a monitor resync and keeps the TUI responsive when rendering very
+    long lines. Parser and patcher fuzz targets, regression tests and UI
+    cleanup further strengthen the release without changing the safe,
+    source-preserving workflow.
+
+    The Caddyfile remains the source of truth, and no operation reloads or
+    modifies Caddy implicitly.
     {{- else }}
     lazycaddy {{ .Version }} is now available.
 
