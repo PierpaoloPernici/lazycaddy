@@ -392,11 +392,14 @@ func (m *Monitor) queueResult(r result) {
 	}
 }
 
-// drain discards any result that has not been consumed yet. Called by
+// drain discards every result that has not been consumed yet. Called by
 // Update so a resync supersedes everything detected before it.
 func (m *Monitor) drain() {
-	select {
-	case <-m.queue:
-	default:
+	for {
+		select {
+		case <-m.queue:
+		default:
+			return
+		}
 	}
 }

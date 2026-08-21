@@ -496,6 +496,25 @@ func TestMonitorQueueDropsOldestWhenFull(t *testing.T) {
 	}
 }
 
+// TestMonitorUpdateDiscardsAllQueuedResults verifies that a resync
+// supersedes every result queued before it: a full batch of stale
+// detections must never surface through Next after Update.
+func TestMonitorUpdateDiscardsAllQueuedResults(t *testing.T) {
+	m := NewMonitor(Options{Watcher: newFakeWatcher(), ReadFile: memFS{}.read})
+	for i := 0; i < queueCap; i++ {
+		m.queueResult(result{change: Change{Path: "stale"}})
+	}
+	if got := len(m.queue); got != queueCap {
+		t.Fatalf("queue length before Update = %d, want %d", got, queueCap)
+	}
+	if err := m.Update([]Target{{Path: "Caddyfile", Source: []byte("x")}}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if got := len(m.queue); got != 0 {
+		t.Fatalf("queue length after Update = %d, want 0", got)
+	}
+}
+
 // TestRealClockAfter verifies the production Clock seam fires the returned
 // channel after the requested duration.
 func TestRealClockAfter(t *testing.T) {
