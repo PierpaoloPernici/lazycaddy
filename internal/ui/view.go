@@ -249,7 +249,6 @@ func (m *Model) header(width int) string {
 	available := contentWidth - leftW - caddyW - rightW - separatorW*2
 	if caddyVersion != "" && available < minPathW {
 		caddyVersion = ""
-		available = contentWidth - leftW - rightW - separatorW
 	}
 	if caddyVersion != "" {
 		left += separator + caddyVersion
