@@ -123,9 +123,9 @@ func (m *Model) updateErrorHistoryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m.requestQuit()
 	case "up", "k":
-		m.errorHistoryViewport.LineUp(1)
+		m.errorHistoryViewport.ScrollUp(1)
 	case "down", "j":
-		m.errorHistoryViewport.LineDown(1)
+		m.errorHistoryViewport.ScrollDown(1)
 	case "pgup":
 		m.errorHistoryViewport.PageUp()
 	case "pgdown":

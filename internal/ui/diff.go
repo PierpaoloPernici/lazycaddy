@@ -170,9 +170,9 @@ func (m *Model) updateDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.saveCmd()
 		}
 	case "up", "k":
-		m.diffViewport.LineUp(1)
+		m.diffViewport.ScrollUp(1)
 	case "down", "j":
-		m.diffViewport.LineDown(1)
+		m.diffViewport.ScrollDown(1)
 	case "pgup":
 		m.diffViewport.PageUp()
 	case "pgdown":

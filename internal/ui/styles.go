@@ -105,7 +105,7 @@ var (
 			Padding(0, 1)
 	// focusedPaneStyle is the focused/active pane border. It uses the
 	// single accent color so the current input target is obvious.
-	focusedPaneStyle = paneStyle.Copy().
+	focusedPaneStyle = paneStyle.
 				BorderForeground(accentColor)
 	// selectedTreeRowStyle uses the same blue accent as the command palette
 	// selector so the active structural row is visible without a full-width

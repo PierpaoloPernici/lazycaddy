@@ -26,9 +26,9 @@ func (m *Model) updateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closeDetail()
 		}
 	case "up", "k":
-		m.detailViewport.LineUp(1)
+		m.detailViewport.ScrollUp(1)
 	case "down", "j":
-		m.detailViewport.LineDown(1)
+		m.detailViewport.ScrollDown(1)
 	case "pgup":
 		m.detailViewport.PageUp()
 	case "pgdown":
