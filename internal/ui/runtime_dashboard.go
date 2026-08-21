@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -127,7 +128,7 @@ func (m *Model) toggleRuntimeDashboard() (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.runtimeConfigFetchCmd())
 	} else {
 		m.runtimeConfigState = runtime.FetchUnavailable
-		m.runtimeConfigErr = fmt.Errorf("Admin API not configured")
+		m.runtimeConfigErr = errors.New("admin API not configured")
 	}
 	if m.upstreamFetcher != nil {
 		m.runtimeUpstreamGen++
@@ -432,10 +433,10 @@ func healthCheckSummary(hc *runtime.HealthCheck) string {
 		return "—"
 	}
 	parts := []string{}
-	if hc.Active != nil && len(hc.Active) > 0 {
+	if len(hc.Active) > 0 {
 		parts = append(parts, "active")
 	}
-	if hc.Passive != nil && len(hc.Passive) > 0 {
+	if len(hc.Passive) > 0 {
 		parts = append(parts, "passive")
 	}
 	if len(parts) == 0 {

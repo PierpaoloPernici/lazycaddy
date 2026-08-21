@@ -31,9 +31,7 @@ func parseLogFilter(query string) logs.Filter {
 				}
 			case "class":
 				// Allow "2", "2xx", "200" (class is 2..5).
-				if strings.HasSuffix(val, "xx") {
-					val = val[:len(val)-2]
-				}
+				val = strings.TrimSuffix(val, "xx")
 				if n, err := strconv.Atoi(val); err == nil {
 					if n >= 1 && n <= 5 {
 						f.Class = n
@@ -61,9 +59,7 @@ func parseLogFilter(query string) logs.Filter {
 					f.Status = n
 				}
 			case "class":
-				if strings.HasSuffix(val, "xx") {
-					val = val[:len(val)-2]
-				}
+				val = strings.TrimSuffix(val, "xx")
 				if n, err := strconv.Atoi(val); err == nil {
 					if n >= 1 && n <= 5 {
 						f.Class = n
