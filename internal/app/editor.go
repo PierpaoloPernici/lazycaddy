@@ -3,12 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
@@ -19,12 +21,13 @@ import (
 // branch deterministically instead of relying on permission-dependent
 // failures.
 var (
-	createTemp = os.CreateTemp
-	mkdirAll   = os.MkdirAll
-	removePath = os.Remove
-	writePath  = os.WriteFile
-	fileWrite  = (*os.File).Write
-	fileClose  = (*os.File).Close
+	createTemp  = os.CreateTemp
+	mkdirAll    = os.MkdirAll
+	removePath  = os.Remove
+	writePath   = os.WriteFile
+	fileWrite   = (*os.File).Write
+	fileClose   = (*os.File).Close
+	atomicWrite = caddyfile.WriteAtomic
 )
 
 // ErrNoEditor reports that neither $VISUAL nor $EDITOR names a command, so
@@ -64,8 +67,10 @@ type EditSession struct {
 	// TempFile is the temporary file holding RangeBytes. Complete always
 	// removes it.
 	TempFile string
-	// SnapshotPath is the snapshot file written before launch. Snapshots
-	// are kept for recovery and are never removed by the editor.
+	// SnapshotPath is the document's single-slot snapshot written before
+	// launch. The slot is overwritten on each round-trip of the same
+	// document: it is crash recovery for the last edit session, not a
+	// history — saved states are covered by the backup pipeline.
 	SnapshotPath string
 	// Cmd is the ready-to-run argv: the editor command plus TempFile.
 	Cmd []string
@@ -88,7 +93,8 @@ type EditResult struct {
 	// Changed reports whether the recomposed document differs from the
 	// original.
 	Changed bool
-	// SnapshotPath repeats the session snapshot for the recovery trail.
+	// SnapshotPath repeats the session's snapshot slot for the recovery
+	// hint.
 	SnapshotPath string
 }
 
@@ -133,14 +139,13 @@ type EditorOptions struct {
 	// ReadFile reads the document on disk for the conflict checks.
 	// Defaults to os.ReadFile.
 	ReadFile FileReader
-	// SnapshotDir is where the pre-edit snapshot and its .range sidecar
-	// are written. Empty falls back to the system temp directory.
+	// SnapshotDir is where the per-document pre-edit snapshot slots and
+	// their .range sidecars are written. Empty falls back to the system
+	// temp directory.
 	SnapshotDir string
 	// TempDir is where the editor temp file is created. Empty defaults to
 	// os.TempDir().
 	TempDir string
-	// Clock stamps snapshot names. Defaults to time.Now.
-	Clock func() time.Time
 }
 
 // NewEditor returns an Editor wired from opts, applying the documented
@@ -152,7 +157,6 @@ func NewEditor(opts EditorOptions) Editor {
 		readFile:    opts.ReadFile,
 		snapshotDir: opts.SnapshotDir,
 		tempDir:     opts.TempDir,
-		clock:       opts.Clock,
 	}
 	if e.lookupEnv == nil {
 		e.lookupEnv = os.LookupEnv
@@ -162,9 +166,6 @@ func NewEditor(opts EditorOptions) Editor {
 	}
 	if e.tempDir == "" {
 		e.tempDir = os.TempDir()
-	}
-	if e.clock == nil {
-		e.clock = time.Now
 	}
 	return e
 }
@@ -176,7 +177,6 @@ type editor struct {
 	readFile    FileReader
 	snapshotDir string
 	tempDir     string
-	clock       func() time.Time
 }
 
 // Prepare implements Editor for a node-range edit.
@@ -215,9 +215,10 @@ func (e *editor) PrepareInsert(ctx context.Context, doc *caddyfile.Document, pos
 
 // prepareSeeded is the shared implementation behind Prepare, PrepareFull
 // and PrepareInsert: it resolves the editor command, preflights against
-// external changes, snapshots the full document plus a plain-text range
-// sidecar, extracts the exact range bytes (or the seed, for insertions)
-// into a temp file and assembles the argv ready for exec.Command.
+// external changes, writes the document's single-slot pre-edit snapshot
+// plus a plain-text sidecar, extracts the exact range bytes (or the seed,
+// for insertions) into a temp file and assembles the argv ready for
+// exec.Command.
 func (e *editor) prepareSeeded(ctx context.Context, doc *caddyfile.Document, r caddyfile.SourceRange, mode EditMode, seed []byte) (*EditSession, error) {
 	if doc == nil {
 		return nil, errors.New("editor: nil document")
@@ -248,7 +249,7 @@ func (e *editor) prepareSeeded(ctx context.Context, doc *caddyfile.Document, r c
 	if !bytes.Equal(current, doc.Source) {
 		return nil, fmt.Errorf("%w", ErrConflict)
 	}
-	snapshotPath, err := e.writeSnapshot(doc.Source, r)
+	snapshotPath, err := e.writeSnapshot(doc, r)
 	if err != nil {
 		return nil, fmt.Errorf("editor: snapshot: %w", err)
 	}
@@ -284,38 +285,44 @@ func (e *editor) prepareSeeded(ctx context.Context, doc *caddyfile.Document, r c
 	}, nil
 }
 
-// writeSnapshot writes the full document bytes to a fresh snapshot file in
-// the snapshot directory and a plain-text "<start> <end>\n" sidecar next to
-// it. The sidecar is deliberately not JSON. Snapshots are never removed.
-// The file name embeds the injected clock's timestamp so recovery trails
-// are sortable; os.CreateTemp still appends a random suffix, so two
-// snapshots taken in the same second never collide.
-func (e *editor) writeSnapshot(src []byte, r caddyfile.SourceRange) (string, error) {
-	if e.snapshotDir != "" {
-		// The snapshot holds the full Caddyfile, which may contain
+// slotName derives the stable single-slot file name for a document:
+// "editor-" plus the first 16 hex characters (64 bits) of the SHA-256 of
+// the exact document path. The hash keeps the name filesystem-safe for any
+// path and gives two documents that share a basename (for example
+// a/site.caddy and b/site.caddy) separate slots; the exact identity is
+// carried by the sidecar instead of the name.
+func slotName(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return "editor-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// writeSnapshot writes the full document bytes to the document's
+// single-slot snapshot file in the snapshot directory and a two-line
+// plain-text sidecar next to it: "<start> <end>\n<document path>\n".
+// The sidecar is deliberately not JSON. The slot is overwritten on every
+// editor round-trip of the same document: it is crash recovery for the
+// last edit session, not a history — saved states are covered by the
+// backup pipeline (--backup-retention). The write is atomic
+// (same-directory temp file + fsync + rename), so a crash mid-write never
+// corrupts an existing slot.
+func (e *editor) writeSnapshot(doc *caddyfile.Document, r caddyfile.SourceRange) (string, error) {
+	dir := e.snapshotDir
+	if dir == "" {
+		dir = os.TempDir()
+	} else {
+		// The slot holds the full Caddyfile, which may contain
 		// secrets: the directory must be private to the operator.
-		if err := mkdirAll(e.snapshotDir, 0o700); err != nil {
+		if err := mkdirAll(dir, 0o700); err != nil {
 			return "", err
 		}
 	}
-	pattern := fmt.Sprintf("editor-%s-*.snapshot", e.clock().Format("20060102-150405"))
-	tmp, err := createTemp(e.snapshotDir, pattern)
-	if err != nil {
-		return "", err
-	}
-	name := tmp.Name()
-	if _, err := fileWrite(tmp, src); err != nil {
-		fileClose(tmp)
-		removePath(name)
-		return "", err
-	}
-	if err := fileClose(tmp); err != nil {
-		removePath(name)
+	name := filepath.Join(dir, slotName(doc.Path)+".snapshot")
+	if err := atomicWrite(name, doc.Source); err != nil {
 		return "", err
 	}
 	sidecar := name + ".range"
-	content := strconv.Itoa(r.Start) + " " + strconv.Itoa(r.End) + "\n"
-	if err := writePath(sidecar, []byte(content), 0o600); err != nil {
+	content := strconv.Itoa(r.Start) + " " + strconv.Itoa(r.End) + "\n" + doc.Path + "\n"
+	if err := atomicWrite(sidecar, []byte(content)); err != nil {
 		return "", err
 	}
 	return name, nil

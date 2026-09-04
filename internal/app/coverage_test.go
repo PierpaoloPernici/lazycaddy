@@ -111,16 +111,16 @@ func TestSearcherFunc_Delegates(t *testing.T) {
 }
 
 // TestEditor_NewEditorDefaults verifies NewEditor fills in the documented
-// defaults (os.LookupEnv, os.ReadFile, os.TempDir, time.Now) when the
-// hooks are left nil.
+// defaults (os.LookupEnv, os.ReadFile, os.TempDir) when the hooks are
+// left nil.
 func TestEditor_NewEditorDefaults(t *testing.T) {
 	e := NewEditor(EditorOptions{})
 	typed, ok := e.(*editor)
 	if !ok {
 		t.Fatalf("NewEditor returned %T, want *editor", e)
 	}
-	if typed.lookupEnv == nil || typed.readFile == nil || typed.clock == nil {
-		t.Fatal("NewEditor must default nil lookupEnv/readFile/clock hooks")
+	if typed.lookupEnv == nil || typed.readFile == nil {
+		t.Fatal("NewEditor must default nil lookupEnv/readFile hooks")
 	}
 	if typed.tempDir == "" {
 		t.Fatal("NewEditor must default tempDir to the OS temp directory")

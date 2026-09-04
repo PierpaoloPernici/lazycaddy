@@ -341,7 +341,7 @@ func (m *Model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
 // handleEditorError surfaces a Prepare or Complete failure (an
 // external-change conflict, a missing editor command or a patch error) in
 // the status line. When the session already produced a snapshot, the
-// snapshot path is surfaced as the recovery trail.
+// document's snapshot slot path is surfaced as the recovery hint.
 func (m *Model) handleEditorError(msg editorErrorMsg) (tea.Model, tea.Cmd) {
 	snapshot := ""
 	if m.editorSession != nil {
