@@ -3,13 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/PierpaoloPernici/lazycaddy/internal/caddyfile"
 	"github.com/PierpaoloPernici/lazycaddy/internal/validator"
@@ -67,9 +68,6 @@ func newTestEditor(t *testing.T, opts ...EditorOptions) *editor {
 		if opt.TempDir != "" {
 			o.TempDir = opt.TempDir
 		}
-		if opt.Clock != nil {
-			o.Clock = opt.Clock
-		}
 	}
 	e := NewEditor(o)
 	typed, ok := e.(*editor)
@@ -114,9 +112,10 @@ func TestEditorPrepare_WritesRangeAndSnapshot(t *testing.T) {
 	if got := readFileContent(t, session.SnapshotPath); got != src {
 		t.Errorf("snapshot = %q, want the full document %q", got, src)
 	}
-	// The sidecar is plain text: "start end\n", never JSON.
+	// The sidecar is plain text, never JSON: the range line plus the
+	// exact document identity.
 	sidecar := session.SnapshotPath + ".range"
-	wantRange := fmt.Sprintf("%d %d\n", r.Start, r.End)
+	wantRange := fmt.Sprintf("%d %d\n%s\n", r.Start, r.End, path)
 	if got := readFileContent(t, sidecar); got != wantRange {
 		t.Errorf("sidecar = %q, want %q", got, wantRange)
 	}
@@ -165,25 +164,60 @@ func TestEditorPrepare_UsesDocumentPath(t *testing.T) {
 	}
 }
 
-func TestEditorPrepare_SnapshotNameUsesClock(t *testing.T) {
+func TestEditorPrepare_SingleSlotPerDocument(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "Caddyfile")
 	src := "example.test {\n\trespond ok\n}\n"
 	writeFile(t, path, src)
 
-	fixed := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	e := newTestEditor(t, EditorOptions{Clock: func() time.Time { return fixed }})
+	e := newTestEditor(t)
 	doc := sampleDoc(t, path, src)
 	session, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	// The injected clock stamps the snapshot name so recovery trails are
-	// sortable; os.CreateTemp still appends its own random suffix.
-	name := filepath.Base(session.SnapshotPath)
-	wantPrefix := "editor-20260102-030405-"
-	if !strings.HasPrefix(name, wantPrefix) {
-		t.Errorf("snapshot name %q, want the %q prefix from the injected clock", name, wantPrefix)
+	// The slot name is a stable 16-hex SHA-256 prefix of the document
+	// path: no timestamp and no random suffix.
+	sum := sha256.Sum256([]byte(path))
+	want := filepath.Join(e.snapshotDir, "editor-"+hex.EncodeToString(sum[:])[:16]+".snapshot")
+	if session.SnapshotPath != want {
+		t.Fatalf("SnapshotPath = %q, want the stable slot %q", session.SnapshotPath, want)
+	}
+	// The slot holds the full Caddyfile, which may contain secrets: it
+	// must be private to the operator.
+	fi, err := os.Stat(session.SnapshotPath)
+	if err != nil {
+		t.Fatalf("stat slot: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("slot mode = %o, want 0600", got)
+	}
+	// A second round-trip of the same document overwrites the same slot
+	// instead of accumulating a new file: stale slot content is replaced.
+	stale := append([]byte(nil), src...)
+	stale[0] = 'x'
+	writeFile(t, session.SnapshotPath, string(stale))
+	session2, err := e.Prepare(context.Background(), doc, doc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("second Prepare: %v", err)
+	}
+	if session2.SnapshotPath != session.SnapshotPath {
+		t.Errorf("second Prepare = %q, want the same slot %q", session2.SnapshotPath, session.SnapshotPath)
+	}
+	if got := readFileContent(t, session.SnapshotPath); got != src {
+		t.Errorf("slot = %q, want the document bytes after the overwrite", got)
+	}
+	// A second document gets its own slot, separate from the first.
+	imported := filepath.Join(dir, "site.caddy")
+	importedSrc := "site.test {\n\trespond ok\n}\n"
+	writeFile(t, imported, importedSrc)
+	importedDoc := sampleDoc(t, imported, importedSrc)
+	session3, err := e.Prepare(context.Background(), importedDoc, importedDoc.Nodes[0].Range)
+	if err != nil {
+		t.Fatalf("imported Prepare: %v", err)
+	}
+	if session3.SnapshotPath == session.SnapshotPath {
+		t.Errorf("imported slot = %q, want a slot separate from %q", session3.SnapshotPath, session.SnapshotPath)
 	}
 }
 
@@ -877,41 +911,38 @@ func TestEditorPrepare_TempFileErrorBranches(t *testing.T) {
 
 func TestEditorWriteSnapshot_ErrorBranches(t *testing.T) {
 	boom := errors.New("boom")
-	src := []byte("example.test {\n\trespond ok\n}\n")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Caddyfile")
+	src := "example.test {\n\trespond ok\n}\n"
+	writeFile(t, path, src)
+	doc := sampleDoc(t, path, src)
 	r := caddyfile.SourceRange{Start: 0, End: len(src)}
 
 	t.Run("mkdir", func(t *testing.T) {
 		e := newTestEditor(t, EditorOptions{SnapshotDir: filepath.Join(t.TempDir(), "snap")})
 		swap(t, &mkdirAll, func(string, os.FileMode) error { return boom })
-		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+		if _, err := e.writeSnapshot(doc, r); !errors.Is(err, boom) {
 			t.Errorf("err = %v, want the mkdir failure", err)
 		}
 	})
-	t.Run("create temp", func(t *testing.T) {
-		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
-		swap(t, &createTemp, func(string, string) (*os.File, error) { return nil, boom })
-		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
-			t.Errorf("err = %v, want the create-temp failure", err)
+	t.Run("slot write", func(t *testing.T) {
+		e := newTestEditor(t)
+		swap(t, &atomicWrite, func(string, []byte) error { return boom })
+		if _, err := e.writeSnapshot(doc, r); !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the slot write failure", err)
 		}
 	})
-	t.Run("write", func(t *testing.T) {
-		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
-		swap(t, &fileWrite, func(*os.File, []byte) (int, error) { return 0, boom })
-		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
-			t.Errorf("err = %v, want the write failure", err)
-		}
-	})
-	t.Run("close", func(t *testing.T) {
-		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
-		swap(t, &fileClose, func(*os.File) error { return boom })
-		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
-			t.Errorf("err = %v, want the close failure", err)
-		}
-	})
-	t.Run("sidecar", func(t *testing.T) {
-		e := newTestEditor(t, EditorOptions{SnapshotDir: t.TempDir()})
-		swap(t, &writePath, func(string, []byte, os.FileMode) error { return boom })
-		if _, err := e.writeSnapshot(src, r); !errors.Is(err, boom) {
+	t.Run("sidecar write", func(t *testing.T) {
+		e := newTestEditor(t)
+		calls := 0
+		swap(t, &atomicWrite, func(string, []byte) error {
+			calls++
+			if calls == 2 {
+				return boom
+			}
+			return nil
+		})
+		if _, err := e.writeSnapshot(doc, r); !errors.Is(err, boom) {
 			t.Errorf("err = %v, want the sidecar write failure", err)
 		}
 	})

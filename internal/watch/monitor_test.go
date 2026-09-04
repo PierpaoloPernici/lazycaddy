@@ -271,6 +271,38 @@ func TestMonitorIgnoresSiblingEventsInSharedDirectory(t *testing.T) {
 	}
 }
 
+// TestMonitorIgnoresSnapshotSlotWrites documents the editor single-slot
+// layout: pre-edit slots live in a <config dir>/.lazycaddy/snapshots
+// subdirectory, never in a watched document's directory, so a slot write
+// must not mark any watched document pending. Worst case, a directory-
+// level event for the config directory itself (for example the
+// .lazycaddy directory created on first use) re-reads the watched
+// documents and reports nothing while their bytes are unchanged.
+func TestMonitorIgnoresSnapshotSlotWrites(t *testing.T) {
+	w := newFakeWatcher()
+	dir := filepath.Join("etc", "caddy")
+	doc := filepath.Join(dir, "Caddyfile")
+	fs := memFS{doc: "same"}
+	m := newMonitor(t, w, fs, Target{Path: doc, Source: []byte("same")})
+
+	// A slot write in the snapshots subdirectory is an unrelated entry.
+	slot := filepath.Join(dir, ".lazycaddy", "snapshots", "editor-0123456789abcdef.snapshot")
+	m.handleEvent(Event{Path: slot, Op: OpWrite})
+	if len(m.pending) != 0 {
+		t.Fatalf("slot event marked %v as pending", m.pending)
+	}
+
+	// Directory-level event for the config directory: the flush re-reads
+	// the watched documents and reports only meaningful differences.
+	m.handleEvent(Event{Path: dir, Op: OpWrite})
+	m.flush()
+	select {
+	case r := <-m.queue:
+		t.Fatalf("unchanged document reported a change: %+v", r)
+	default:
+	}
+}
+
 func TestMonitorDirLevelEventRescansWatchedFiles(t *testing.T) {
 	w := newFakeWatcher()
 	dir := filepath.Join("etc", "caddy")

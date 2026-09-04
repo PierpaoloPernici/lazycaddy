@@ -31,7 +31,7 @@ func TestEditorPrepareInsert_SeedsTemplateAtOffset(t *testing.T) {
 		t.Errorf("temp file = %q, want the seeded comment template", got)
 	}
 	sidecar := session.SnapshotPath + ".range"
-	wantRange := fmt.Sprintf("%d %d\n", pos, pos)
+	wantRange := fmt.Sprintf("%d %d\n%s\n", pos, pos, path)
 	if got := readFileContent(t, sidecar); got != wantRange {
 		t.Errorf("sidecar = %q, want %q", got, wantRange)
 	}

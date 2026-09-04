@@ -157,7 +157,6 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 					Formatter:   formatter,
 					ReadFile:    os.ReadFile,
 					SnapshotDir: filepath.Join(filepath.Dir(settings.ConfigPath), ".lazycaddy", "snapshots"),
-					Clock:       time.Now,
 				})
 			}
 			// The startup runtime probe queries the configured caddy
