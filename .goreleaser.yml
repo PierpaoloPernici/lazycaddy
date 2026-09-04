@@ -112,6 +112,32 @@ release:
 
     The Caddyfile remains the source of truth, and no operation reloads or
     modifies Caddy implicitly.
+    {{- else if eq .Version "0.4.2" }}
+    lazycaddy {{ .Version }} is now available.
+
+    This patch release caps the on-disk footprint of the editor
+    crash-recovery mechanism.
+
+    Instead of appending a new pre-edit snapshot pair for every `$EDITOR`
+    round-trip (`e`/`E`/`a`), lazycaddy now keeps a single snapshot slot
+    per document, atomically overwritten before each edit. The model matches
+    the crash-recovery semantics of Vim, nano and Emacs: the snapshot exists
+    to recover the in-progress edit after a crash, not as edit history.
+    Saved states remain covered by the timestamped backups with their own
+    retention (`--backup-retention`), so no recovery coverage is lost.
+
+    Pre-existing trail snapshot files are left untouched. This stops the
+    unbounded growth of the `.lazycaddy/snapshots` directory and reduces
+    the number of full Caddyfile copies held on disk, which may contain
+    secrets.
+
+    Editor recovery paths were verified against the external-change monitor:
+    snapshot writes never surface as external document changes.
+
+    The Caddyfile remains the source of truth, and no operation reloads or
+    modifies Caddy implicitly.
+
+    Maintenance: the Codecov CI action was updated from v5 to v7.
     {{- else }}
     lazycaddy {{ .Version }} is now available.
 

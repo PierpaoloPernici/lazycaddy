@@ -21,9 +21,10 @@ goreleaser --version
   defaults of the application.
 - Every release starts with the header defined in `.goreleaser.yml`. It uses
   first-release wording for `v0.1.0`, a milestone introduction for `v0.2.0`
-  and `v0.3.0`, a dedicated v0.4 milestone introduction for `v0.4.0`, and a
-  dedicated patch-release introduction for `v0.4.1`, followed by GitHub's
-  generated categorized changelog. Later versions use a reusable introduction.
+  and `v0.3.0`, a dedicated v0.4 milestone introduction for `v0.4.0`, and
+  dedicated patch-release introductions for `v0.4.1` and `v0.4.2`, followed by
+  GitHub's generated categorized changelog. Later versions use a reusable
+  introduction.
 - Windows and package-manager publishing are deferred until the release
   process and platform behavior are stable.
 
@@ -85,13 +86,13 @@ release:
 ```sh
 gh api --method POST \
   repos/PierpaoloPernici/lazycaddy/releases/generate-notes \
-  -f tag_name=v0.4.1 \
+  -f tag_name=v0.4.2 \
   -f target_commitish=main \
   --jq '.body'
 ```
 
 The preview uses merged pull requests and their labels. This release has a
-previous tag, so the preview includes the changes since `v0.4.0`; review
+previous tag, so the preview includes the changes since `v0.4.1`; review
 the generated body before publishing. The API preview does not include
 GoReleaser's configured release header; GoReleaser prepends it when creating
 the release.
@@ -102,8 +103,8 @@ Release from an up-to-date `main` after reviewing the changelog and the
 working tree:
 
 ```sh
-git tag -a v0.4.1 -m "Release v0.4.1"
-git push origin v0.4.1
+git tag -a v0.4.2 -m "Release v0.4.2"
+git push origin v0.4.2
 ```
 
 The `Release` workflow runs `make check`, builds the release matrix and
