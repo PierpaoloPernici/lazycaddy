@@ -38,6 +38,30 @@ Caddy release or parser, directive, module, Admin API or capability change was
 identified that requires a compatibility update. The reviewed baseline remains
 `v2.11.4`; unknown syntax and plugin directives remain preserved and raw-editable.
 
+## Compatibility review (2026-09-06)
+
+The official Caddy release page still identifies `v2.11.4` as the latest
+release at this review; no newer Caddy version has been published since the
+2026-08-21 review, so parser, directive, formatting and documentation
+boundaries reviewed earlier remain current.
+
+Signal reviewed: CVE-2026-27589 (GHSA-879p-475x-rqh2), a CSRF vulnerability in
+the local Admin API that lets browser-delivered cross-origin requests apply an
+attacker-supplied configuration via `POST /load`. It is fixed in Caddy
+`v2.11.1` by enforcing origin checks on unsafe admin API methods. Impact
+assessment for lazycaddy:
+
+- The reviewed baseline `v2.11.4` already includes the fix, so the Admin API
+  behavior lazycaddy expects is the patched one.
+- lazycaddy's Admin API client (`internal/runtime/admin.go`) is a local
+  non-browser client: it POSTs to `/load` with only `Content-Type` and
+  `Cache-Control` headers and never sends an `Origin` header, so origin
+  enforcement does not block or alter its reloads.
+- No code, fixture or capability-detection change is required.
+
+The reviewed baseline remains `v2.11.4`; unknown syntax and plugin directives
+remain preserved and raw-editable.
+
 ## Reviewed behavior baseline
 
 The following behaviors are the compatibility boundaries for v0.3:
