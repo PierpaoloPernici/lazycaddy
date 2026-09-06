@@ -1,9 +1,9 @@
 // Package discover implements v0.2 path discovery and sensible defaults.
 // When the operator does not pass an explicit --config, --caddy-path or
 // --backup-dir, the resolver finds a Caddyfile, locates the caddy binary
-// and picks a user-writable backup location. Every external lookup flows
-// through injectable seams (Deps) so the resolution rules are deterministic
-// under test; production wiring uses DefaultDeps.
+// and picks user-writable backup and snapshot locations. Every external
+// lookup flows through injectable seams (Deps) so the resolution rules are
+// deterministic under test; production wiring uses DefaultDeps.
 package discover
 
 import (
@@ -156,14 +156,45 @@ func (r Resolver) BackupDir(explicit bool, value string) (string, error) {
 	if explicit {
 		return value, nil
 	}
+	stateHome, err := r.stateHome()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine the default backup directory: %w", err)
+	}
+	return filepath.Join(stateHome, "lazycaddy", "backups"), nil
+}
+
+// SnapshotDir returns the editor recovery snapshot directory, using the
+// same user-writable default location policy as BackupDir:
+// $XDG_STATE_HOME/lazycaddy/snapshots, or
+// ~/.local/state/lazycaddy/snapshots when XDG_STATE_HOME is unset. The
+// default never derives from the config directory, because system
+// Caddyfiles under /etc/caddy live in directories the operator usually
+// cannot write to; the recovery slots must not add a write requirement
+// beyond the one saving the edited document already implies. This is not
+// a CLI flag: the slot layout is an internal mechanism keyed by document
+// path, and the slot identity sidecar makes the location irrelevant to
+// recovery. As with BackupDir this is a default location, not a
+// writability guarantee: the editor reports any writability failure at
+// edit time.
+func (r Resolver) SnapshotDir() (string, error) {
+	stateHome, err := r.stateHome()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine the default snapshot directory: %w", err)
+	}
+	return filepath.Join(stateHome, "lazycaddy", "snapshots"), nil
+}
+
+// stateHome returns the effective XDG state home: $XDG_STATE_HOME when set,
+// otherwise ~/.local/state.
+func (r Resolver) stateHome() (string, error) {
 	d := r.Deps.fill()
 	home, err := d.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("cannot determine the default backup directory: %w", err)
+		return "", err
 	}
 	stateHome := d.Getenv("XDG_STATE_HOME")
 	if stateHome == "" {
 		stateHome = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(stateHome, "lazycaddy", "backups"), nil
+	return stateHome, nil
 }

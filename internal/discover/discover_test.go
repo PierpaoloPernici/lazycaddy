@@ -245,3 +245,46 @@ func TestBackupDir_HomeErrorIsSurfaced(t *testing.T) {
 		t.Fatal("BackupDir: expected an error, got nil")
 	}
 }
+
+func TestSnapshotDir_DefaultUnderHome(t *testing.T) {
+	r := Resolver{Deps: Deps{
+		UserHomeDir: func() (string, error) { return "/home/op", nil },
+		Getenv:      func(string) string { return "" },
+	}}
+	got, err := r.SnapshotDir()
+	if err != nil {
+		t.Fatalf("SnapshotDir: %v", err)
+	}
+	want := filepath.Join("/home/op", ".local", "state", "lazycaddy", "snapshots")
+	if got != want {
+		t.Errorf("SnapshotDir = %q, want %q", got, want)
+	}
+}
+
+func TestSnapshotDir_HonorsXDGStateHome(t *testing.T) {
+	r := Resolver{Deps: Deps{
+		UserHomeDir: func() (string, error) { return "/home/op", nil },
+		Getenv: func(key string) string {
+			if key == "XDG_STATE_HOME" {
+				return "/state"
+			}
+			return ""
+		},
+	}}
+	got, err := r.SnapshotDir()
+	if err != nil {
+		t.Fatalf("SnapshotDir: %v", err)
+	}
+	if got != filepath.Join("/state", "lazycaddy", "snapshots") {
+		t.Errorf("SnapshotDir = %q, want /state/lazycaddy/snapshots", got)
+	}
+}
+
+func TestSnapshotDir_HomeErrorIsSurfaced(t *testing.T) {
+	r := Resolver{Deps: Deps{UserHomeDir: func() (string, error) {
+		return "", errors.New("no home")
+	}}}
+	if _, err := r.SnapshotDir(); err == nil {
+		t.Fatal("SnapshotDir: expected an error, got nil")
+	}
+}

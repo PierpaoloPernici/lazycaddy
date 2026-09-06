@@ -24,6 +24,14 @@ type Settings struct {
 	// file, applied after a successful save or rollback. Zero (the
 	// default) disables retention: backups are never auto-removed.
 	BackupRetention int
+	// SnapshotDir is where the editor writes its per-document pre-edit
+	// recovery snapshot slots and their .range sidecars. Empty means "use
+	// the user-state default location" (~/.local/state/lazycaddy/snapshots,
+	// honoring $XDG_STATE_HOME); cmd/lazycaddy resolves that default before
+	// wiring. The default never derives from the config directory, so a
+	// system Caddyfile under /etc/caddy does not require write access
+	// beside the config just to open the raw editor.
+	SnapshotDir string
 	// BinaryPath is the absolute or PATH-relative path to the caddy
 	// binary. Empty means "no binary available": the TUI starts, but
 	// format and validate are disabled. When --caddy-path is not given,

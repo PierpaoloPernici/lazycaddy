@@ -33,7 +33,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -156,7 +155,7 @@ func newRootCommand(settings *config.Settings, write *bool) *cobra.Command {
 					LookupEnv:   os.LookupEnv,
 					Formatter:   formatter,
 					ReadFile:    os.ReadFile,
-					SnapshotDir: filepath.Join(filepath.Dir(settings.ConfigPath), ".lazycaddy", "snapshots"),
+					SnapshotDir: settings.SnapshotDir,
 				})
 			}
 			// The startup runtime probe queries the configured caddy
@@ -273,7 +272,10 @@ var teaProgram = func(model tea.Model) *tea.Program {
 //   - binary: caddy through PATH, leaving the binary empty (format,
 //     validate and reload disabled) when it is unavailable;
 //   - backup: a user-writable XDG state directory, so system Caddyfiles
-//     never force backups into a root-owned config directory.
+//     never force backups into a root-owned config directory;
+//   - snapshots: the same user-writable XDG state policy for editor
+//     recovery slots, so system Caddyfiles never force snapshot writes
+//     beside a root-owned config.
 //
 // All external lookups go through deps (discover.DefaultDeps in
 // production), keeping the rules deterministic under test.
@@ -290,6 +292,11 @@ func resolvePaths(flags *pflag.FlagSet, settings *config.Settings, deps discover
 		return err
 	}
 	settings.BackupDir = backupDir
+	snapshotDir, err := resolver.SnapshotDir()
+	if err != nil {
+		return err
+	}
+	settings.SnapshotDir = snapshotDir
 	return nil
 }
 

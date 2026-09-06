@@ -63,7 +63,12 @@ func TestResolvePaths_ExplicitFlagsWin(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	if err := resolvePaths(cmd.Flags(), &settings, failingDeps()); err != nil {
+	deps := failingDeps()
+	// The snapshot directory is always defaulted (there is no flag), so it
+	// needs a resolvable home even in this otherwise-failing scenario; the
+	// explicit flags under test are config, binary and backup.
+	deps.UserHomeDir = func() (string, error) { return "/home/operator", nil }
+	if err := resolvePaths(cmd.Flags(), &settings, deps); err != nil {
 		t.Fatalf("resolvePaths: %v", err)
 	}
 	if settings.ConfigPath != "/srv/caddy/Caddyfile" {
@@ -74,6 +79,9 @@ func TestResolvePaths_ExplicitFlagsWin(t *testing.T) {
 	}
 	if settings.BackupDir != "/srv/caddy/backups" {
 		t.Errorf("BackupDir = %q, want the explicit --backup-dir", settings.BackupDir)
+	}
+	if settings.SnapshotDir != filepath.Join("/home/operator", ".local", "state", "lazycaddy", "snapshots") {
+		t.Errorf("SnapshotDir = %q, want the defaulted user-state location", settings.SnapshotDir)
 	}
 }
 
@@ -109,6 +117,45 @@ func TestResolvePaths_ConfigDiscoveryFallsBackToSystem(t *testing.T) {
 	}
 	if settings.ConfigPath != "/etc/caddy/Caddyfile" {
 		t.Errorf("ConfigPath = %q, want /etc/caddy/Caddyfile", settings.ConfigPath)
+	}
+}
+
+func TestResolvePaths_SnapshotDefaultHomeErrorIsSurfaced(t *testing.T) {
+	settings := config.DefaultSettings()
+	var write bool
+	cmd := newRootCommand(&settings, &write)
+	if err := cmd.ParseFlags([]string{
+		"--config", "/srv/caddy/Caddyfile",
+		"--caddy-path", "/usr/bin/caddy",
+		"--backup-dir", "/srv/caddy/backups",
+	}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	err := resolvePaths(cmd.Flags(), &settings, failingDeps())
+	if err == nil {
+		t.Fatal("resolvePaths: expected a snapshot directory error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot determine the default snapshot directory") {
+		t.Errorf("error %q does not mention the snapshot directory failure", err)
+	}
+}
+
+func TestResolvePaths_BackupDefaultHomeErrorIsSurfaced(t *testing.T) {
+	settings := config.DefaultSettings()
+	var write bool
+	cmd := newRootCommand(&settings, &write)
+	if err := cmd.ParseFlags([]string{
+		"--config", "/srv/caddy/Caddyfile",
+		"--caddy-path", "/usr/bin/caddy",
+	}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	err := resolvePaths(cmd.Flags(), &settings, failingDeps())
+	if err == nil {
+		t.Fatal("resolvePaths: expected a backup directory error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot determine the default backup directory") {
+		t.Errorf("error %q does not mention the backup directory failure", err)
 	}
 }
 

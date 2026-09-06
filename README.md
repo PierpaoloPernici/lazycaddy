@@ -125,14 +125,18 @@ for contextual commands and explanations of unavailable actions.
 
 ### Requirements and limits
 
-- **Permissions:** the current user needs access to the configuration and the
-  directories required for backups, editor snapshots and atomic replacement.
-  `--write` does not grant permissions or elevate privileges. Browsing does not
-  require running the entire TUI as root.
-- **Editor snapshots:** pre-edit crash-recovery snapshots currently live under
-  `<root-config-dir>/.lazycaddy/snapshots/`, with one slot per document. Creating
-  or updating them requires access there, even when backups use a different
-  directory.
+- **Permissions:** saving needs write access to the configuration file and its
+  directory (atomic replacement writes a temporary file in the same
+  directory). Backups and editor recovery snapshots live in the user state
+  directory, so a system Caddyfile under `/etc/caddy` does not need write
+  access beside the config for them. `--write` does not grant permissions or
+  elevate privileges. Browsing does not require running the entire TUI as
+  root.
+- **Editor snapshots:** pre-edit crash-recovery snapshots live under
+  `~/.local/state/lazycaddy/snapshots/` (honoring `$XDG_STATE_HOME`), with one
+  slot per document; they are overwritten on each new `$EDITOR` round-trip.
+  Legacy slots written next to the config by earlier versions are left
+  untouched.
 - **Structured editing:** ambiguous or unsupported constructs fall back to raw
   editing. Leaf directives without nested blocks are not tree rows; use `E` to
   edit existing leaf directives. Forms do not replace Caddy's syntax authority.
