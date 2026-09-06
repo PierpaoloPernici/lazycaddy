@@ -2,7 +2,7 @@
 
 <p align="center"><img src="docs/assets/lazycaddy-logo.png" alt="lazycaddy logo with sloth mascot" width="420"></p>
 
-<p align="center"><em>🦥 The lazier way to manage your Caddyfile.</em></p>
+<p align="center"><em>The lazier way to manage your Caddyfile.</em></p>
 
 <p align="center">
   <a href="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml"><img src="https://github.com/PierpaoloPernici/lazycaddy/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -12,206 +12,247 @@
   <a href="https://github.com/PierpaoloPernici/lazycaddy/blob/main/go.mod"><img src="https://img.shields.io/github/go-mod/go-version/PierpaoloPernici/lazycaddy" alt="Go version"></a>
 </p>
 
-<p align="center">lazycaddy is a keyboard-first terminal user interface for inspecting and managing Caddy while preserving the Caddyfile as the source of truth.</p>
+**Inspect and edit your Caddyfile from the terminal, with validation, diff review and a backup before every save.**
 
-<p align="center">
-  <sub>The 🦥 is lazycaddy's mascot: deliberately unhurried, careful with your configuration.</sub>
-</p>
+lazycaddy is a keyboard-first companion for people who manage their own Caddy
+configuration on a local machine, VPS or homelab. Find a site, follow its imports,
+make a focused change and review it before saving — without handing ownership of
+your configuration to another tool.
 
-## Screenshot
+- **Your Caddyfile stays yours.** Source-range edits preserve unrelated bytes,
+  comments and unknown directives. Imported files remain separate documents.
+- **Read-only by default.** Saving requires `--write`; browsing does not require
+  Caddy to be installed or running.
+- **No implicit reloads.** Saving and reloading are separate, confirmed actions.
+  A saved file is not presented as proof that Caddy has loaded it.
 
-The TUI combines a navigable document tree, source inspection,
-validation status and explicit editing actions in one terminal workspace.
+<p align="center"><img src="docs/assets/lazycaddy-demo.gif" alt="lazycaddy document tree, source inspection and editing workflow" width="1200"></p>
 
-<p align="center">
-  <img src="docs/assets/lazycaddy-demo.gif" alt="lazycaddy terminal user interface demo" width="1200">
-</p>
+## Install
 
-The project is under active development. Read the project direction and implementation constraints first:
+### Download a binary
 
-- [VISION.md](VISION.md) — product vision and design principles;
-- [PLAN.md](PLAN.md) — scope, architecture, safety workflow and roadmap;
-- [AGENTS.md](AGENTS.md) — repository and contributor guidelines;
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development and contribution workflow;
-- [SECURITY.md](SECURITY.md) — vulnerability reporting and security model;
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — participation and conduct standards.
+Get the archive for your platform from the
+[latest release](https://github.com/PierpaoloPernici/lazycaddy/releases/latest).
+Builds are available for **Linux and macOS**, on **amd64 and arm64**.
 
-## Development
+1. Download the archive and `checksums.txt`.
+2. Verify the archive's SHA-256 hash against the manifest (`sha256sum` on Linux
+   or `shasum -a 256` on macOS).
+3. Extract it and place `lazycaddy` in a directory on your `PATH`, such as
+   `~/.local/bin`.
 
-Requirements:
-
-- Go 1.26 or newer;
-- Caddy is not required for unit tests;
-- network access is not required by tests.
-
-Run the current TUI:
-
-~~~sh
-go run ./cmd/lazycaddy
-~~~
-
-Run checks:
-
-~~~sh
-make check
-~~~
-
-Run `make` without a target to list the available development commands.
-
-Build a local binary, check the release configuration or run additional
-quality checks with `make build`, `make release-check`, `make fmt-check`,
-`make test-race` and `make coverage`.
-
-Build local release artifacts for installation and testing on another machine:
-
-~~~sh
-make dist
-~~~
-
-Remove generated local artifacts (`bin/`, `dist/` and coverage files):
-
-~~~sh
-make clean
-~~~
-
-Show build information:
-
-~~~sh
-go run ./cmd/lazycaddy --version
-~~~
-
-The release process is documented in [docs/releasing.md](docs/releasing.md).
-
-## Current status
-
-The v0.4 milestone is complete. Current capabilities include:
-
-- lossless browsing of Caddyfiles, imports, snippets and unknown directives;
-- read-only source inspection with search, semantic highlighting, matcher
-  navigation and display-only folding;
-- safe editing with Caddy formatting and validation, diff review, backups,
-  atomic writes and explicit reloads;
-- `$EDITOR` workflows, node creation, deletion, reordering and rollback;
-- read-only runtime, upstream health, logs and TLS dashboards;
-- responsive layouts, state-aware headers, contextual footers and command
-  palettes;
-- clipboard integration and a bounded error history.
-
-The Caddyfile remains the source of truth. lazycaddy is read-only by default,
-never reloads Caddy implicitly and keeps browsing available when optional
-runtime or filesystem capabilities are unavailable.
-
-The next planned milestone is v0.5: remote server profiles and remote
-operations. See [PLAN.md](PLAN.md) for the detailed capability list,
-implementation status and roadmap, and [docs/designsystem.md](docs/designsystem.md)
-for the UI/UX rules and keybindings.
-
-### Safe change workflow
-
-```text
-load -> edit working copy -> format and validate -> review diff
-  -> confirm -> create backup -> atomic save -> optional confirmed reload
+```sh
+lazycaddy --version
 ```
 
-Without `--config`, lazycaddy uses `./Caddyfile` when present and falls back
-to `/etc/caddy/Caddyfile`. Without `--caddy-path`, it discovers `caddy`
-through `PATH`; if the binary is unavailable, formatting, validation and
-reload stay disabled. To pin both explicitly:
+Release binaries do not require Go. Windows is not currently supported.
 
-~~~sh
-go run ./cmd/lazycaddy --config ./Caddyfile --caddy-path /usr/bin/caddy
-~~~
+### Install with Go
 
-To enable saving, add `--write`. The default backup directory is
-`~/.local/state/lazycaddy/backups` (honoring `$XDG_STATE_HOME` when set) —
-a user-state location chosen so system Caddyfiles never force backups next
-to a root-owned config; it can be overridden with `--backup-dir`. The
-default is a location, not a writability guarantee: if the resolved backup
-directory is not writable, the save pipeline reports the failure. Formatting,
-validation and saving use temporary or atomic file operations and do not
-require a running Caddy daemon. Reloading does require Caddy to be running
-with its Admin API enabled and reachable at the configured endpoint.
+With Go 1.26 or newer:
 
-Backups keep the `<timestamp>-<seq>-<basename>` naming contract and each
-also carries a plain-text `.src` identity sidecar holding its exact source
-path, so backups of imported files that share a basename are never mixed
-up. `B` opens the backup history of the selected document (read-only
-comparison works without `--write`); in writable mode with a caddy binary
-you can review the diff and roll back to a selected backup with an explicit
-confirmation. Rollback validates the restored content in the context of
-the full document graph — every document is mirrored into a temporary tree
-that preserves its real directory layout, so relative imports and imported
-snippet/fragment files resolve exactly as they do on disk — then backs up
-the current file before the restore, never reloads Caddy implicitly, and
-marks the loaded state unknown until you reload explicitly.
+```sh
+go install github.com/PierpaoloPernici/lazycaddy/cmd/lazycaddy@latest
+```
 
-Backup retention is disabled by default. `--backup-retention N` keeps at
-most `N` backups per source file, applied only after a successful save or
-rollback; the newest backup and the backup created for the current
-operation are always preserved, identity-less legacy backups and unrelated
-files are never deleted, and any cleanup failure is reported without
-undoing the completed operation.
+Make sure your Go binary directory (`$(go env GOPATH)/bin` by default) is on
+`PATH`.
 
-Reloads use the local Admin API at `http://localhost:2019` by default;
-override the endpoint with `--admin-endpoint` and the per-request timeout
-with `--admin-timeout`. A reload never happens implicitly.
+## Try it without changing your configuration
 
-`D` diffs the currently selected document: the root compares the
-validated working copy against the original after `v`, and any document
-(imported files included, plus the root before `v`) is compared against
-its current on-disk bytes. Inside the diff modal, `n`/`N` jump between
-`@@` hunks, `h`/`l` scroll long lines horizontally, and the title shows
-the change summary (`N hunks · +A −R`).
+```sh
+lazycaddy --config /path/to/Caddyfile
+```
 
-Quitting with unsaved edits opens a confirmation instead of exiting:
-`s` saves (asynchronously, staying in the app), `d` discards and quits,
-`Esc` cancels. The header shows an `UNSAVED` badge while edits are
-pending; moving the cursor, searching, opening the log view or switching
-documents never prompts.
+Without `--config`, lazycaddy looks for `./Caddyfile`, then
+`/etc/caddy/Caddyfile`. It never enables writes just because a file is writable.
 
-Failures are recorded in a bounded error history opened with `H`, each
-entry naming the failed operation and a safe next action. After a failed
-save or rollback the status line points you at the recovery backup
-(`B` on the affected document), and a cancelled editor edit surfaces its
-pre-edit recovery snapshot path.
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Select a document or structural block |
+| `Enter` / `Space` | Expand or collapse the selected branch |
+| `/` or `Ctrl-F` | Search sites, files and loaded log history |
+| `Ctrl-E` | Toggle raw source view |
+| `y` | Copy selected text, or the selected node/document source |
+| `?` | Open the searchable command palette |
+| `q` | Quit; pending edits require a decision |
 
-### Log sources
+The source view includes highlighting, tree-driven folding and matcher
+navigation. Unsupported syntax stays visible; a parse error still leaves raw
+source available for inspection.
 
-The log view (`l`) is opt-in and strictly read-only. Choose exactly one
-source:
+To use lazycaddy on a server today, install it there and run it in your SSH
+session. Native remote profiles and multi-server management are not implemented.
 
-- `--log-file <path>` follows a Caddy log file (polling, rotation-aware),
-  for example:
+## Make your first change
 
-  ~~~sh
-  go run ./cmd/lazycaddy --log-file /var/log/caddy/access.log
-  ~~~
+Start with a disposable configuration or a non-production setup while learning
+the workflow. Enable writable mode explicitly:
 
-- `--log-journal-unit <unit>` follows a systemd journal unit, for example:
+```sh
+lazycaddy --config /path/to/Caddyfile --write
+```
 
-  ~~~sh
-  go run ./cmd/lazycaddy --log-journal-unit caddy.service
-  ~~~
+lazycaddy discovers `caddy` through `PATH`. If needed, select the binary explicitly
+with `--caddy-path /usr/bin/caddy`. Formatting and validation need the binary,
+not a running daemon.
 
-The journal source consumes `journalctl --output=json` without a shell,
-keeps the journal cursor between the bounded initial history and follow
-phases, and surfaces journal errors through the log view's poll status line
-while the rest of the TUI stays browsable. `--log-file` and
-`--log-journal-unit` are mutually exclusive; passing both is an error.
-Without either option the log view is disabled.
+1. Select the site or structural block you want to change.
+2. Press `e` to edit its exact source range in `$VISUAL` / `$EDITOR`, or `E`
+   to edit the entire selected document. Imported files are edited in their own
+   document, never silently redirected to the root Caddyfile.
+3. On return, lazycaddy validates the candidate. A failed validation cannot
+   write the source or trigger a reload.
+4. Review the diff. In the editor workflow, **Enter confirms and saves**;
+   **Esc discards the candidate**. The save checks for external changes,
+   creates a backup and atomically replaces the target file.
+5. If you want Caddy to load the saved configuration, press `r` and review the
+   separate confirmation naming the target and Admin API endpoint.
 
-## Project disclaimer
+```text
+edit working copy → format / validate → review diff → confirm
+  → backup → atomic save → separate, explicitly confirmed reload
+```
 
-This project is almost entirely vibe coded. It serves as my personal testbed
-for evaluating how much value AI-assisted software development can provide
-when guided by clear engineering practices, deliberate human direction and
-the right tools.
+You can also use `v` to format and validate, `D` to inspect the diff and `s` to
+save a validated working copy without reloading. Inside a diff, `n` / `N` jump
+between hunks and `h` / `l` scroll long lines horizontally.
 
-The project team remains responsible for the code, design decisions, tests and
+Common directives have structured forms through `m` where the selected node is
+supported; `a` inserts a directive and `n` creates a structural node. Use `?`
+for contextual commands and explanations of unavailable actions.
+
+### Requirements and limits
+
+- **Permissions:** the current user needs access to the configuration and the
+  directories required for backups, editor snapshots and atomic replacement.
+  `--write` does not grant permissions or elevate privileges. Browsing does not
+  require running the entire TUI as root.
+- **Editor snapshots:** pre-edit crash-recovery snapshots currently live under
+  `<root-config-dir>/.lazycaddy/snapshots/`, with one slot per document. Creating
+  or updating them requires access there, even when backups use a different
+  directory.
+- **Structured editing:** ambiguous or unsupported constructs fall back to raw
+  editing. Leaf directives without nested blocks are not tree rows; use `E` to
+  edit existing leaf directives. Forms do not replace Caddy's syntax authority.
+- **Single-file changes:** each edit changes one source document. Multi-file
+  transactions are not implemented.
+- **Runtime access:** reload requires a running Caddy instance with its Admin
+  API enabled and reachable. The default endpoint is `http://localhost:2019`;
+  use `--admin-endpoint` and `--admin-timeout` to configure it. Missing runtime
+  access does not prevent source inspection.
+
+See the [Caddy compatibility record](docs/caddy-compatibility.md) for reviewed
+versions, supported constructs and known limitations.
+
+## Backups and recovery
+
+Before replacing a source file, lazycaddy creates a timestamped backup. The
+default directory is `$XDG_STATE_HOME/lazycaddy/backups`, falling back to
+`~/.local/state/lazycaddy/backups`. Override it with `--backup-dir`. This default
+avoids placing backups beside system configurations, but does not guarantee
+that the resolved location is writable; a backup failure aborts the save.
+
+- Press **`B`** to browse backups for the selected document and compare one with
+  the current file. Read-only comparison does not require `--write`.
+- Rollback requires writable mode, a validation binary, diff review and explicit
+  confirmation. It validates the restored document in the full import graph,
+  checks for external changes and backs up the current file before replacement.
+- A rollback **never reloads Caddy implicitly**. Reload explicitly when ready.
+- Press **`H`** for the bounded error history and safe next actions. Failed save
+  or rollback operations report a recovery backup path when one is available;
+  cancelled editor edits report their pre-edit snapshot path.
+
+Backups include a `.src` identity sidecar so imported files with identical
+basenames are not mixed up. Retention is disabled by default.
+`--backup-retention N` enables per-source cleanup after successful saves or
+rollbacks, preserving the newest/current-operation backup, legacy backups
+without identity and unrelated files. Cleanup failures do not undo a completed
+save or rollback.
+
+## Inspect runtime, logs and TLS
+
+These views are read-only and depend on independently available data sources.
+Unavailable data is reported explicitly rather than treated as a healthy state.
+
+- **`I` — Runtime:** inspect loaded configuration and observed upstream health
+  through the configured Admin API, where the Caddy build exposes the data.
+- **`l` — Logs:** browse bounded history, search and filter by host, status,
+  level or text. Use `F` for filters, `c` to clear them, `f` for follow mode and
+  `p` to pause/resume.
+- **`T` — TLS:** inspect certificate metadata from an explicitly configured
+  storage directory; unavailable storage, renewal or OCSP information remains
+  distinct from verified data.
+
+Choose one log source:
+
+```sh
+# Follow a log file, including rotation.
+lazycaddy --log-file /var/log/caddy/access.log
+
+# Or read a systemd journal unit.
+lazycaddy --log-journal-unit caddy.service
+```
+
+`--log-file` and `--log-journal-unit` are mutually exclusive. Without either,
+the log view is disabled. Journal access requires `journalctl` and permission
+to read the selected unit; it does not enable service start, stop or restart.
+
+To configure the TLS view:
+
+```sh
+lazycaddy --tls-storage-dir /path/to/caddy/storage
+```
+
+Use `lazycaddy --help` for all flags and
+[the UI guide](docs/designsystem.md) for detailed interactions and keybindings.
+
+## Status and feedback
+
+The v0.4 milestone is complete, including source-preserving editing, rollback,
+source diagnostics and runtime/log/TLS inspection. The project is still pre-1.0
+and under active development. Native remote operations remain future work; see
+[PLAN.md](PLAN.md) for the canonical roadmap.
+
+Feedback from real Caddy installations is especially useful. If you try it,
+[open an issue](https://github.com/PierpaoloPernici/lazycaddy/issues) describing
+what you wanted to do, where you got stuck, your OS and the lazycaddy/Caddy
+versions. Sanitized reproduction fixtures are welcome — do not post credentials,
+private configuration or unredacted logs. Report security concerns through
+[SECURITY.md](SECURITY.md), not a public issue.
+
+## Development and project direction
+
+Requirements: Go 1.26 or newer. Tests use fakes and do not require an installed
+Caddy daemon or network access.
+
+```sh
+go run ./cmd/lazycaddy   # Run from source
+make check              # Formatting, tests and vet
+make build              # Build bin/lazycaddy
+make test-race          # Run tests with the race detector
+make coverage           # Generate coverage and print the summary
+```
+
+Run `make` to list all targets. `make dist` builds local release artifacts;
+`make release-check` validates release configuration; `make clean` removes
+build and coverage artifacts. See [the release guide](docs/releasing.md) for
+the publishing procedure.
+
+- [VISION.md](VISION.md) — product vision and design principles.
+- [PLAN.md](PLAN.md) — specification, safety boundaries and roadmap.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution workflow.
+- [AGENTS.md](AGENTS.md) — contributor and coding-agent guidelines.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — participation standards.
+
+### AI-assisted development
+
+This project is almost entirely vibe coded and is a personal testbed for
+AI-assisted software development guided by explicit engineering practices.
+The maintainer remains responsible for the code, design decisions, tests and
 documentation. AI assistance does not replace human review, security analysis,
-testing or maintenance. This repository is both a working project and an
-ongoing experiment in AI-assisted development. It is all great fun—and highly
-instructive!
+testing or maintenance.
 
 ## License
 

@@ -21,13 +21,15 @@ The UI must never reload Caddy implicitly after an edit.
 
 ## Current implementation status
 
-The repository has completed the configuration-engine spike, the v0.1/v0.2
-read-only-by-default TUI milestones and the v0.3 structured-editing
-foundation (released as v0.3.0). The v0.4 work — advisory semantic
-highlighting, named-matcher navigation, document-local inline lint,
-Caddy-diagnostic mapping, display-only source folding **and the runtime/TLS
-dashboards with source-aware log filtering** — is merged into `main` (PR #52);
-the v0.5 milestone is next.
+The latest release is v0.4.2. The configuration-engine spike, v0.1/v0.2
+read-only-by-default TUI milestones, v0.3 structured editing and v0.4 source
+inspection and runtime/TLS dashboards are complete. The v0.4 series includes
+semantic highlighting, matcher navigation, inline findings, Caddy diagnostics,
+source folding, source-aware log filtering, safety/performance fixes and
+single-slot editor recovery snapshots. Remote operations remain the next
+planned area, organized as independent inspection / write / service-control
+tracks with separate entry criteria (see "v0.5 and later"); none is committed
+to a v0.5 delivery yet.
 
 Completed:
 
@@ -74,7 +76,7 @@ Completed:
   targets and probes directory writability, then a temp file in the
   same directory with fsync and atomic rename, preserving permission
   bits) and `internal/backup` (timestamped, collision-safe backups in
-  `<config-dir>/.lazycaddy/backups/` with a rebuildable index and an
+  a configurable user-state directory, with a rebuildable index and an
   injected clock). The `app.Saver` boundary orchestrates preflight →
   external-change conflict check → backup → atomic write, returning
   `ErrConflict` when the file changed on disk since load and
@@ -361,7 +363,11 @@ load -> edit working copy -> caddy fmt (temporary file)
 
 Validation must be cancellable, must capture stdout/stderr and must enforce a timeout. The command path, arguments and exit status are shown in a diagnostic view. The application must not expose secrets from environment variables or command output unnecessarily.
 
-Backups live beside the configuration in a configurable directory (default: `<config-dir>/.lazycaddy/backups/`) and use a collision-safe timestamp plus sequence number, for example:
+Backups default to `$XDG_STATE_HOME/lazycaddy/backups`, falling back to
+`~/.local/state/lazycaddy/backups`, and can be redirected with `--backup-dir`.
+This avoids requiring backup storage beside a system configuration; it does
+not guarantee writability. A backup failure aborts the save. Backups use a
+collision-safe timestamp plus sequence number, for example:
 
 ```text
 2026-08-01T20-10-00-001-Caddyfile
@@ -402,8 +408,9 @@ In v0.1, keybinding gating is adapter-based, not capability-driven: a nil
 formatter/saver/reloader disables the corresponding action, and the startup
 runtime probe is a read-only report (version, runtime status badge, status
 message) that does not gate keys. Capability-driven gating (e.g. disabling
-`r` until the Admin API is provably reachable) is deferred to the runtime
-dashboard milestone, where it can react to capability changes.
+`r` until the Admin API is provably reachable) was left out of v0.4 and
+remains deferred; a runtime milestone successor could implement it by
+reacting to capability changes.
 
 Process/service-manager control integration (`systemd`, Docker, launchd, etc.)
 is deferred to the remote/operations milestone. The v0.2 `journalctl`
@@ -685,19 +692,19 @@ source bytes without panel decorations.
 
 ### v0.3 — structured editing
 
-Current progress (2026-08-12): the v0.3 foundation and the initial editing
-workflows are merged into `main`. Implemented are token spans, compatibility
+Status: complete and released as v0.3.0. The foundation and all in-scope
+editing workflows are implemented. Implemented are token spans, compatibility
 fixtures, source-preserving planner primitives, semantic roles and advisory
 catalog, structural-navigation primitives, the pane-aware selection model,
 and the planner's `CreateNode` API. The UI now exposes `a` for directive
-insertion, `m` for `reverse_proxy` fields, `n` for structural-node creation,
+insertion, `m` for supported common-directive forms, `n` for structural-node creation,
 `d` for deletion, `o` for same-document structural reordering, and pane-aware
 mouse selection with full clipboard integration, all using validation, diff
 confirmation, save and post-save
 graph reload where applicable. Official Caddy help is available through
 `Ctrl-H`.
 
-The next structured-editing increment adds editable top-level comment groups.
+Editable top-level comment groups are also implemented.
 Comments remain source annotations rather than parser `Node` values: they are
 selectable source ranges that must not affect structural parsing, folding,
 deletion or reordering. The existing `E` full-document editor remains the
@@ -770,8 +777,8 @@ escape hatch for arbitrary comment and source changes.
   nested handler blocks; `a` remains the directive-insertion action. For v0.3,
   directive forms remain explicit,
   hand-authored implementations; build-time form-schema generation from Caddy
-  sources or documentation is deferred to v0.4 so it does not become a second
-  syntax authority.
+  sources or documentation remains deferred without a committed release target,
+  so it does not become a second syntax authority.
 - [x] Add editable top-level comment groups as source annotations (PR #43). Detect
   contiguous full-line comments outside structural blocks, preserve their
   exact byte ranges and keep them separate from `caddyfile.Node` values. Show
@@ -801,8 +808,8 @@ escape hatch for arbitrary comment and source changes.
   directives remain planner-supported but are not exposed as tree targets.
 - [x] Preserve token spans with line/column information alongside byte offsets
   so source selection and copy operations can identify the exact visible text
-  without weakening byte-preserving patches. Inline diagnostics still need
-  richer semantic validation.
+  without weakening byte-preserving patches. Advisory inline findings and
+  authoritative Caddy diagnostic overlays were subsequently delivered in v0.4.
 - [x] Add an advisory metadata catalog for descriptions and suggestions for common
   directives and global options. The catalog must never define valid syntax or
   hide unknown/plugin directives, and its entries should be version- and
@@ -899,31 +906,63 @@ never blocks configuration browsing. Runtime, log and TLS panels remain
 responsive under refresh failures, preserve bounded state, and never enable a
 mutating service action without a verified service adapter.
 
-### v0.5 and later
+### v0.5 and later — remote operations in independent tracks
+
+The remote backlog is three separate work streams, not one milestone. Each
+track has its own entry criteria and must be scoped into its own milestone
+before work starts; nothing below is a commitment to deliver in v0.5.
+Sequencing follows risk: read-only inspection first, configuration changes
+second, service control last.
+
+#### Track 1 — SSH inspection (read-only)
 
 - Add named remote server profiles through SSH or Tailscale SSH with explicit
   authentication, host-key policy, timeouts, cancellation and target identity.
   Never expose credentials or silently reuse a different target profile.
-- Run remote formatting, validation, backup, write and reload operations on the
-  selected target node, and identify that node in every confirmation and result.
-  Extend the same target boundary to remote Admin API inspection, logs
-  (`journalctl` or file sources) and TLS data, with independent offline/error
-  states when one target is unavailable.
-- Add explicit per-target service adapters for systemd, Docker, launchd or
-  another supported manager before enabling restart/stop. Each action requires
-  target-specific confirmation, capability verification and a recoverable
-  failure report.
+- Inspect remote configuration sources, remote `caddy fmt` / `validate`
+  results, the remote Admin API (loaded state, upstreams), and remote logs
+  (`journalctl` or file sources) and TLS data, each with independent
+  offline/error states and read-only defaults.
 - Detect the target Caddy version and installed modules before enabling
-  module-specific summaries or actions, and maintain an explicit supported
-  version/module compatibility record with fixture and UI impact notes.
+  module-specific summaries or actions, and extend the supported
+  version/module compatibility record with per-target fixture and UI notes.
+
+Entry criteria: a demonstrated need that installing lazycaddy on the target
+over SSH does not cover. The first increment is one target, read-only.
+
+#### Track 2 — remote configuration changes
+
+- Run remote formatting, validation, backup, write and reload operations on
+  the selected target node, identifying that node in every confirmation, diff,
+  backup and result, with the same validate → diff → backup → confirm →
+  atomic-write workflow as local editing.
 - Detect and display generated-versus-user-authored configuration ownership
   where integrations such as Docker proxy are present. Never regenerate,
   overwrite or reload a generated configuration without an explicit ownership
   boundary and confirmation.
+
+Entry criteria: Track 1 proven on real targets, plus per-target backup,
+rollback and recovery semantics designed and tested. Track 2 does not start
+before Track 1 ships.
+
+#### Track 3 — remote service control
+
+- Add explicit per-target service adapters for systemd, Docker, launchd or
+  another supported manager before enabling restart/stop. Each action requires
+  target-specific confirmation, capability verification and a recoverable
+  failure report.
+
+Entry criteria: a service-management need that an explicit reload through the
+Admin API does not cover. This is the highest-risk track and ships last, if
+ever.
+
+#### Independent of the remote tracks
+
 - Add metrics integrations, multi-instance views and richer plugin-aware
   summaries while keeping bounded state, read-only defaults and per-target
   capability gating.
-- Stabilize rollback, recovery and the lossless editing engine for a v1.0 release.
+- Stabilize rollback, recovery and the lossless editing engine for a v1.0
+  release. A local-first v1.0 does not depend on any remote track.
 
 ## Caddy compatibility monitoring
 
