@@ -186,6 +186,27 @@ missing changelog classification.
 - Delete the local and remote feature branches only after confirming that the pull request is merged and no unique work remains.
 - Keep active Dependabot branches until their pull requests are merged or closed.
 
+### Dependency updates
+
+`.github/dependabot.yml` groups routine Go module patch/minor bumps into one
+weekly pull request (`go-minor-patch`) and all GitHub Actions bumps into one
+monthly pull request; major Go module updates stay ungrouped so each one gets
+its own review and migration note. Do not remove the grouping without a reason:
+without it every module opens its own pull request and the transitive set drifts.
+
+- Dependabot only surfaces modules declared in `go.mod`. When the transitive set
+  behind the TUI stack needs a refresh, upgrade it in one dedicated
+  `chore(deps)` pull request and verify with `make check` and `make test-race`.
+- `go list -u -m all` also reports modules that are not in this module's build
+  graph (tool dependencies of dependencies such as `golang.org/x/tools`,
+  `golang.org/x/mod`, `cpuguy83/go-md2man`). Do not try to upgrade those here;
+  they move only when the module that requires them moves.
+- A dependency bump must not raise the toolchain floor: `go get -u` rewrites
+  `go 1.26` to `go 1.26.0`, so restore the short form before committing.
+- Transitive upgrades are patch-level by default. Treat a major bump of a
+  rendering or terminal dependency as a feature change with its own review,
+  and check the corresponding release notes first.
+
 ## Security & Configuration Tips
 
 Never log secrets or blindly expose command output. Keep UI code away from file writes and shell execution. Validate temporary files, back up before replacement, detect concurrent changes, and require confirmation for reloads or destructive actions. Use least privilege: browsing must work without elevation, missing capabilities must disable only affected actions, and the entire TUI must not require `root`. Any future elevation mechanism must be explicit, narrowly scoped and isolated behind a dedicated adapter.
