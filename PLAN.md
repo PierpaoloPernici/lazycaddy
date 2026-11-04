@@ -21,12 +21,14 @@ The UI must never reload Caddy implicitly after an edit.
 
 ## Current implementation status
 
-The latest release is v0.4.2. The configuration-engine spike, v0.1/v0.2
+The latest release is v0.4.3. The configuration-engine spike, v0.1/v0.2
 read-only-by-default TUI milestones, v0.3 structured editing and v0.4 source
 inspection and runtime/TLS dashboards are complete. The v0.4 series includes
 semantic highlighting, matcher navigation, inline findings, Caddy diagnostics,
 source folding, source-aware log filtering, safety/performance fixes and
-single-slot editor recovery snapshots. Remote operations remain the next
+single-slot editor recovery snapshots. v0.4.3 is a compatibility update: the
+reviewed Caddy baseline moved to v2.11.8 and a rejected reload now reports the
+warnings Caddy returns with the error. Remote operations remain the next
 planned area, organized as independent inspection / write / service-control
 tracks with separate entry criteria (see "v0.5 and later"); none is committed
 to a v0.5 delivery yet.

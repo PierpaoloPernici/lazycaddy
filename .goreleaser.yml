@@ -138,6 +138,41 @@ release:
     modifies Caddy implicitly.
 
     Maintenance: the Codecov CI action was updated from v5 to v7.
+    {{- else if eq .Version "0.4.3" }}
+    lazycaddy {{ .Version }} is now available.
+
+    This patch release is a Caddy compatibility update: the parser,
+    validation, reload and documentation boundaries were reviewed against
+    Caddy v2.11.6, v2.11.7 and v2.11.8, and the compatibility record now
+    names v2.11.8 as the reviewed baseline and the recommended minimum.
+
+    The one change that reaches lazycaddy code is the Admin API contract
+    Caddy v2.11.6 introduced: a rejected reload now answers 400 with a
+    single JSON body carrying both an error and a warnings array. A
+    rejected reload therefore explains why Caddy refused the configuration,
+    listing each warning as `file:line: message (directive)` instead of
+    dropping it.
+
+    Everything else was verified rather than changed: quoted braces already
+    lex as literal arguments, imports inside named routes already resolve,
+    long heredoc markers parse in linear time, and `caddy fmt` keeps its
+    delegated behavior. The new matchers, directives and options
+    (url_pattern, timeouts, log_level, tls_automate_names,
+    expected_underscore_headers, expected_dot_headers, max_header_size,
+    proxy_status_name, the not matcher for TLS policies and tls() in CEL
+    expressions) remain preserved verbatim and raw-editable until they get
+    their own form review. The stricter validation Caddy added is surfaced
+    as diagnostics, never re-implemented.
+
+    Note that Caddy v2.11.5 was tagged but its GitHub release was removed;
+    it is not supported.
+
+    Maintenance: the Go module set was refreshed (charmbracelet/x/ansi
+    0.11.9 plus transitive modules) and Dependabot now groups routine patch
+    and minor updates into one pull request.
+
+    The Caddyfile remains the source of truth, and no operation reloads or
+    modifies Caddy implicitly.
     {{- else }}
     lazycaddy {{ .Version }} is now available.
 
