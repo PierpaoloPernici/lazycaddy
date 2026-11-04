@@ -62,7 +62,8 @@ func NewAdminClient(baseURL string, timeout time.Duration) *AdminClient {
 //
 // Error mapping:
 //   - non-2xx response -> ErrAdminRejected wrapped, message includes the
-//     body's {"error":"..."} field when present
+//     body's {"error":"..."} field when present and the {"warnings":[...]}
+//     entries Caddy 2.11.6+ returns in the same body
 //   - context deadline exceeded (client timeout or ctx deadline) -> ErrAdminTimeout wrapped
 //   - context canceled -> context.Canceled returned as-is (NOT a sentinel)
 //   - any other transport/network error -> ErrAdminUnreachable wrapped
@@ -158,17 +159,64 @@ func mapAdminErr(err error) error {
 
 // adminErrorBody builds a readable failure message from a non-2xx response.
 // It prefers the JSON {"error":"..."} field Caddy emits for rejected
-// configurations, tolerates malformed or empty bodies by falling back to
-// the raw body text, and finally to the HTTP status text.
+// configurations, appends the {"warnings":[...]} entries that Caddy 2.11.6+
+// returns in the same body, tolerates malformed or empty bodies by falling
+// back to the raw body text, and finally to the HTTP status text.
 func adminErrorBody(status int, body []byte) string {
 	var payload struct {
-		Error string `json:"error"`
+		Error    string         `json:"error"`
+		Warnings []adminWarning `json:"warnings"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != "" {
-		return payload.Error
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if payload.Error != "" || len(payload.Warnings) > 0 {
+			msg := payload.Error
+			if msg == "" {
+				msg = http.StatusText(status)
+			}
+			if warnings := formatAdminWarnings(payload.Warnings); warnings != "" {
+				msg += " (warnings: " + warnings + ")"
+			}
+			return msg
+		}
 	}
 	if msg := strings.TrimSpace(string(body)); msg != "" {
 		return msg
 	}
 	return http.StatusText(status)
+}
+
+// adminWarning mirrors the caddyconfig/warning.Warning JSON shape that Caddy
+// embeds in an Admin API error body. The fields are optional: Caddy only sets
+// file and line when the warning is tied to a source position.
+type adminWarning struct {
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	Directive string `json:"directive"`
+	Message   string `json:"message"`
+}
+
+// formatAdminWarnings renders warnings as "file:line: message (directive)",
+// joined by "; ". Entries without a message are skipped so a partially
+// populated array never produces empty punctuation.
+func formatAdminWarnings(warnings []adminWarning) string {
+	parts := make([]string, 0, len(warnings))
+	for _, w := range warnings {
+		msg := strings.TrimSpace(w.Message)
+		if msg == "" {
+			continue
+		}
+		if w.Directive != "" {
+			msg += " (" + w.Directive + ")"
+		}
+		switch {
+		case w.File != "" && w.Line > 0:
+			msg = fmt.Sprintf("%s:%d: %s", w.File, w.Line, msg)
+		case w.File != "":
+			msg = w.File + ": " + msg
+		case w.Line > 0:
+			msg = fmt.Sprintf("line %d: %s", w.Line, msg)
+		}
+		parts = append(parts, msg)
+	}
+	return strings.Join(parts, "; ")
 }
