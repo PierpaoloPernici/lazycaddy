@@ -627,7 +627,7 @@ Acceptance: an existing Caddyfile containing comments, unknown directives, neste
   Target layout preview:
 
   ```text
-   lazycaddy dev · Caddy v2.11.4 · Config: Caddyfile       UNKNOWN  RUNNING  RO
+   lazycaddy dev · Caddy v2.11.8 · Config: Caddyfile       UNKNOWN  RUNNING  RO
   +---------------------------+ +--------------------------------------------------+
   | Documents                 | | Source: /etc/caddy/Caddyfile                     |
   | ...                       | | ...                                              |

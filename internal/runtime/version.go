@@ -26,7 +26,7 @@ var (
 
 // QueryVersion runs "caddy version" through runner and returns the first
 // whitespace-separated field of stdout. That field is the version for
-// release and xcaddy builds (e.g. "v2.11.4"), a commit SHA for git-built
+// release and xcaddy builds (e.g. "v2.11.8"), a commit SHA for git-built
 // binaries, or the literal string "unknown" for pathological builds. The
 // leading "v" is deliberately preserved: it is display text, not a
 // formatting artifact.
