@@ -192,6 +192,96 @@ func TestAdminErrorBody_FallsBackToStatusText(t *testing.T) {
 	}
 }
 
+// TestLoadJSON_RejectedWithWarnings covers the Admin API contract Caddy 2.11.6
+// introduced (#7267): an invalid configuration is rejected with 400 and a
+// single JSON body carrying both "error" and "warnings", where older releases
+// answered 200 with two concatenated JSON objects. Both fields must reach the
+// caller, because the warnings explain why the config was refused.
+func TestLoadJSON_RejectedWithWarnings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"loading new config: adapting config using caddyfile: unrecognized directive: nope","warnings":[{"file":"/etc/caddy/Caddyfile","line":12,"directive":"nope","message":"unrecognized directive"}]}`)
+	}))
+	defer srv.Close()
+
+	c := NewAdminClient(srv.URL, time.Second)
+	err := c.LoadJSON(context.Background(), []byte(`{}`))
+	if !errors.Is(err, ErrAdminRejected) {
+		t.Fatalf("err = %v, want ErrAdminRejected", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"unrecognized directive: nope",
+		"/etc/caddy/Caddyfile:12: unrecognized directive (nope)",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message = %q, want it to contain %q", msg, want)
+		}
+	}
+}
+
+// TestAdminErrorBody_WarningsOnly covers a rejected body that carries warnings
+// but no error message: the status text is still the leading message.
+func TestAdminErrorBody_WarningsOnly(t *testing.T) {
+	got := adminErrorBody(http.StatusBadRequest, []byte(`{"warnings":[{"line":7,"message":"deprecated directive"}]}`))
+	want := "Bad Request (warnings: line 7: deprecated directive)"
+	if got != want {
+		t.Errorf("adminErrorBody = %q, want %q", got, want)
+	}
+}
+
+// TestFormatAdminWarnings pins the rendering of every field combination Caddy
+// emits, including entries that must be skipped entirely.
+func TestFormatAdminWarnings(t *testing.T) {
+	tests := []struct {
+		name     string
+		warnings []adminWarning
+		want     string
+	}{
+		{
+			name:     "empty slice",
+			warnings: nil,
+			want:     "",
+		},
+		{
+			name:     "file line directive and message",
+			warnings: []adminWarning{{File: "Caddyfile", Line: 3, Directive: "encode", Message: "unknown format"}},
+			want:     "Caddyfile:3: unknown format (encode)",
+		},
+		{
+			name:     "file without line",
+			warnings: []adminWarning{{File: "Caddyfile", Message: "server block is empty"}},
+			want:     "Caddyfile: server block is empty",
+		},
+		{
+			name:     "line without file",
+			warnings: []adminWarning{{Line: 9, Message: "placeholder is unknown"}},
+			want:     "line 9: placeholder is unknown",
+		},
+		{
+			name:     "message only",
+			warnings: []adminWarning{{Message: "no automatic HTTPS"}},
+			want:     "no automatic HTTPS",
+		},
+		{
+			name: "blank entries are skipped and survivors joined",
+			warnings: []adminWarning{
+				{File: "Caddyfile", Line: 1, Message: "   "},
+				{File: "Caddyfile", Line: 2, Message: "first"},
+				{Message: "second"},
+			},
+			want: "Caddyfile:2: first; second",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatAdminWarnings(tt.warnings); got != tt.want {
+				t.Errorf("formatAdminWarnings = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // errRoundTripper fails every request at the transport layer.
 type errRoundTripper struct{}
 
