@@ -4,8 +4,22 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Group routine patch/minor bumps into one reviewable pull request. Major
+    # updates stay ungrouped so each one gets its own review and migration note.
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
-
+    # Action pins move by major tag, so grouping is not split by update type:
+    # one monthly pull request covers every action bump.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
